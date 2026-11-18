@@ -699,8 +699,28 @@ public static class FlexboxLayout
                     break;
             }
 
+            float? containerWidth = constants.NodeInnerSize.Main(dir);
+            float boxSizingAdjustment = (childStyle.BoxSizing == BoxSizing.ContentBox
+                ? childStyle.Padding.ResolveOrZero(containerWidth, calc)
+                    .Add(childStyle.Border.ResolveOrZero(containerWidth, calc))
+                    .SumAxes()
+                : GeometryExtensions.SizeZero).Main(dir);
+            bool flexBasisIsAuto = childStyle.FlexBasis.IsAuto;
+            float? flexBasis = childStyle.FlexBasis
+                .MaybeResolve(containerWidth, calc)
+                .MaybeAdd(boxSizingAdjustment);
+
             // Known dimensions for child sizing
             var childKnownDimensions = child.Size.WithMain(dir, null);
+
+            // upstream 3155d6a: a provisional ratio transfer from the authored main size is not
+            // a definite cross size when measuring a content basis.
+            if (!flexBasis.HasValue && !flexBasisIsAuto
+                && child.AspectRatio.HasValue && child.CrossSizeIsAuto)
+            {
+                childKnownDimensions.SetCross(dir, null);
+            }
+
             if (child.AlignSelf == AlignSelf.Stretch
                 && !child.MarginIsAuto.CrossStart(constants.Dir)
                 && !child.MarginIsAuto.CrossEnd(constants.Dir)
@@ -711,21 +731,15 @@ public static class FlexboxLayout
                     crossAxisAvailableSpace.IntoOption().MaybeSub(child.Margin.CrossAxisSum(dir)));
             }
 
-            float? containerWidth = constants.NodeInnerSize.Main(dir);
-            float boxSizingAdjustment = (childStyle.BoxSizing == BoxSizing.ContentBox
-                ? childStyle.Padding.ResolveOrZero(containerWidth, calc)
-                    .Add(childStyle.Border.ResolveOrZero(containerWidth, calc))
-                    .SumAxes()
-                : GeometryExtensions.SizeZero).Main(dir);
-            float? flexBasis = childStyle.FlexBasis
-                .MaybeResolve(containerWidth, calc)
-                .MaybeAdd(boxSizingAdjustment);
-
-            // A / B: a definite used flex basis, or a ratio-derived main size
-            float? mainSize = child.Size.Main(dir);
-            // upstream fded066: only `auto` retrieves the authored main size. An unresolved
-            // percentage basis (calc() included) uses the content instead, as in Chromium.
-            float? definiteBasis = flexBasis ?? (childStyle.FlexBasis.IsAuto ? mainSize : null);
+            // A / B: a definite used flex basis, or a ratio-derived main size.
+            // upstream fded066 / 3155d6a: only `auto` retrieves the authored main size. An
+            // unresolved percentage basis (calc() included) uses the content instead, as in
+            // Chromium, which may transfer a definite cross size through the aspect ratio.
+            float? definiteBasis = flexBasis
+                ?? (flexBasisIsAuto
+                    ? child.Size.Main(dir)
+                    : MaybeApplyPreferredAspectRatio(
+                        childKnownDimensions, child.AspectRatio, child.AspectRatioAdjustment).Main(dir));
             if (definiteBasis.HasValue)
             {
                 child.FlexBasis = definiteBasis.Value;
@@ -962,7 +976,15 @@ public static class FlexboxLayout
                         float? styleMax = item.MaxSize.Main(constants.Dir);
 
                         // Matches Chrome and Firefox; see the spec discussion in the Rust source.
-                        float? clampingBasis = ((float?)item.FlexBasis).MaybeMax(stylePreferred);
+                        // upstream 3155d6a: a percentage basis with an indefinite basis
+                        // contributes content, not a definite flex-basis clamp. Preferred
+                        // inline sizes still constrain row contributions.
+                        Dimension basisStyle = tree.GetFlexboxChildStyle(item.Node).FlexBasis;
+                        bool contentBasis = !basisStyle.IsAuto
+                            && !basisStyle.MaybeResolve(constants.NodeInnerSize.Main(dir), tree.CalcResolver()).HasValue;
+                        float? clampingBasis = contentBasis
+                            ? (constants.IsRow ? stylePreferred : null)
+                            : ((float?)item.FlexBasis).MaybeMax(stylePreferred);
                         float? flexBasisMin = item.FlexShrink == 0.0f ? clampingBasis : null;
                         float? flexBasisMax = item.FlexGrow == 0.0f ? clampingBasis : null;
 
@@ -1018,7 +1040,7 @@ public static class FlexboxLayout
                                 childKnownDimensions,
                                 constants.NodeInnerSize,
                                 childAvailableSpace,
-                                SizingMode.InherentSize,
+                                contentBasis ? SizingMode.ContentSize : SizingMode.InherentSize,
                                 dir.MainAxis(),
                                 GeometryExtensions.LineFalse) + item.Margin.MainAxisSum(constants.Dir);
 
@@ -1039,8 +1061,13 @@ public static class FlexboxLayout
                         }
                         else if (diff < 0.0f)
                         {
-                            float scaledShrinkFactor = Sys.F32Max(1.0f, item.FlexShrink * item.InnerFlexBasis);
-                            item.ContentFlexFraction = diff / scaledShrinkFactor;
+                            // upstream 3155d6a: a content basis matches the reconstruction below
+                            // even when an inflexible item's content contribution is smaller
+                            // than its ratio-derived basis.
+                            float scaledShrinkFactor = contentBasis
+                                ? Sys.F32Max(1.0f, item.FlexShrink) * item.InnerFlexBasis
+                                : Sys.F32Max(1.0f, item.FlexShrink * item.InnerFlexBasis);
+                            item.ContentFlexFraction = scaledShrinkFactor > 0.0f ? diff / scaledShrinkFactor : 0.0f;
                         }
                         else
                         {

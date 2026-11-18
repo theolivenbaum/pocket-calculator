@@ -95,13 +95,71 @@ public sealed class FunctionalFlexBasisTests
     {
         DomTree tree = HtmlParsing.ParseHtml(
             "<!doctype html><style>body{margin:0}div{min-width:0;min-height:0}</style>"
-            + $"<div style='{parent}'><div id=item style='flex-shrink:0;{basis}'>"
+            + $"<div id=parent style='{parent}'><div id=item style='flex-shrink:0;{basis}'>"
             + "<div style='width:40px;height:20px'></div></div></div>");
         DomLayout layout = RenderDom.LayoutDom(tree, (1400f, 900f));
         Rect rect = layout.Rects[tree.GetElementById("item")!.Value];
         Assert.True(
             MathF.Abs(rect.Width - width) < 0.01f && MathF.Abs(rect.Height - height) < 0.01f,
             $"parent={parent}, basis={basis}: {rect}, expected=({width}, {height})");
+
+        // upstream 3155d6a: a column container's own height takes the content contribution.
+        if (parent.Contains("flex-direction:column", StringComparison.Ordinal)
+            && !parent.Contains("height:", StringComparison.Ordinal))
+        {
+            Assert.Equal(height, layout.Rects[tree.GetElementById("parent")!.Value].Height);
+        }
+    }
+
+    /// <remarks>upstream 3155d6a.</remarks>
+    [Theory]
+    [InlineData("50%")]
+    [InlineData("calc(50% - 10px)")]
+    [InlineData("auto")]
+    public void FunctionalFlexBasisPreservesContentAspectRatioTransfer(string basis)
+    {
+        foreach ((string width, string height, float expectedCross) in new[]
+        {
+            ("width:100px", "", 100f),
+            ("width:100px", "height:90px", 100f),
+            ("", "height:90px", 300f),
+        })
+        {
+            DomTree tree = HtmlParsing.ParseHtml(
+                "<!doctype html><style>body{margin:0}div{min-width:0;min-height:0}</style>"
+                + "<div id=parent style='display:flex;flex-direction:column;width:300px'>"
+                + $"<div id=item style='flex:0 0 {basis};aspect-ratio:2;{width};{height}'></div></div>");
+            DomLayout layout = RenderDom.LayoutDom(tree, (800f, 600f));
+            Rect rect = layout.Rects[tree.GetElementById("item")!.Value];
+            float expectedMain = basis == "auto" && height.Length != 0 ? 90f : expectedCross / 2f;
+            Assert.True(rect.Width == expectedCross && rect.Height == expectedMain, $"{basis};{width};{height}: {rect}");
+            Assert.True(
+                layout.Rects[tree.GetElementById("parent")!.Value].Height == expectedMain,
+                $"container {basis};{width};{height}: {layout.Rects[tree.GetElementById("parent")!.Value]}");
+        }
+    }
+
+    /// <remarks>upstream 3155d6a.</remarks>
+    [Theory]
+    [InlineData("50%", 0.5f, 0f)]
+    [InlineData("calc(50% - 10px)", 0.5f, 10f)]
+    [InlineData("auto", 1f, 0f)]
+    public void FunctionalFlexBasisResolvesAfterIntrinsicRowRatioSizing(string basis, float fraction, float offset)
+    {
+        foreach ((string width, float expectedParent) in new[] { ("width:90px", 90f), ("", 200f) })
+        {
+            DomTree tree = HtmlParsing.ParseHtml(
+                "<!doctype html><style>body{margin:0}div{min-width:0;min-height:0}</style>"
+                + "<div id=parent style='display:inline-flex'>"
+                + $"<div id=item style='height:100px;aspect-ratio:2;flex:0 0 {basis};{width}'></div></div>");
+            DomLayout layout = RenderDom.LayoutDom(tree, (800f, 600f));
+            Rect rect = layout.Rects[tree.GetElementById("item")!.Value];
+            Rect parentRect = layout.Rects[tree.GetElementById("parent")!.Value];
+            Assert.True(parentRect.Width == expectedParent, $"{basis};{width}: parent {parentRect}");
+            Assert.True(
+                rect.Width == (expectedParent * fraction) - offset && rect.Height == 100f,
+                $"{basis};{width}: {rect}");
+        }
     }
 
     [Fact]
