@@ -435,7 +435,27 @@ internal static class ServerSupport
         }
 
         interceptedPaused.Remove(requestId, out var paused);
-        paused!.Resolver.TrySetResult(resolution);
+        if (paused!.Resolver.TrySetResult(resolution)
+            && resolution is InterceptResolution.Fail fail
+            && !paused.MainDocument)
+        {
+            // upstream 5e58c86: the request the client failed finishes on the wire. A main
+            // document's failure is the navigation's to report, under its loader (b76d966).
+            replyTx.TryWrite(CdpJson.Serialize(new JsonObject
+            {
+                ["method"] = "Network.loadingFailed",
+                ["sessionId"] = req.SessionId,
+                ["params"] = new JsonObject
+                {
+                    ["requestId"] = requestId,
+                    ["type"] = "Fetch",
+                    ["errorText"] = PocketCalculator.Browser.Page.NetErrorName(fail.Reason),
+                    ["canceled"] = string.Equals(fail.Reason, "Aborted", StringComparison.Ordinal),
+                    ["timestamp"] = UnixSeconds(),
+                },
+            }));
+        }
+
         replyTx.TryWrite(
             CdpResponse.Success(req.Id, new JsonObject(), req.SessionId).ToJson());
         return true;

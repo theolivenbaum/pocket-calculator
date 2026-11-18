@@ -282,6 +282,7 @@ public sealed partial class Page
                 ResponseHeaders = ev.ResponseHeaders,
                 BodySize = ev.BodySize,
                 Timestamp = ev.Timestamp,
+                Intercepted = ev.Intercepted,
             });
         }
     }

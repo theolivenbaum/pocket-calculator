@@ -709,6 +709,12 @@ public sealed class JsNetworkEvent
     public required int BodySize { get; init; }
 
     public required double Timestamp { get; init; }
+
+    /// <summary>
+    /// A CDP client fulfilled the request (upstream 5e58c86): it was announced when it paused,
+    /// under <see cref="RequestId"/>, so only its completion is reported.
+    /// </summary>
+    public bool Intercepted { get; init; }
 }
 
 /// <summary>

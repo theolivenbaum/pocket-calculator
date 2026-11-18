@@ -391,7 +391,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       navigation's loader; fulfill (exact bytes, repeated Set-Cookie), continue (request-local
       URL/method/headers/body) and fail; see Known deviations. Page.stopLoading of a paused
       document is not ported
-- [ ] CDP Fetch: `5e58c86`; with open `dfc546d`
+- [x] CDP Fetch `5e58c86`: a script request paused during an awaited evaluate is published
+      before the next autonomous pump turn (it starved behind the pump until the await timed
+      out); a fulfilled fetch/XHR reports responseReceived/loadingFinished and its body under its
+      pause id; Fetch.failRequest of a non-document request emits Network.loadingFailed
+- [ ] CDP: open `dfc546d`
 - [x] `939086a`/`e70183d` setBypassCSP (validated ack), `e5bcd75` Page.close and stopLoading
       (stopLoading drops a queued navigation; cancelling loads is `361f15d`),
       `192561c` removeScriptToEvaluateOnNewDocument errors on an unknown id (preload scripts
@@ -2373,6 +2377,11 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   extra or request-local headers now go on the request body (they used to throw), and the
   Fetch redirect rule (301/302 rewrite only POST, 303 anything but GET/HEAD) applies to every
   navigation, as upstream.
+- Awaited evaluations under Fetch interception (`5e58c86`): upstream holds every other command
+  until the awaited one finishes; the port keeps parking it (ParkedCommand) and answers other
+  commands meanwhile, as Chromium does. A fulfilled internal load (frame document, classic
+  script, stylesheet) is not recorded as a network completion; upstream records it like a
+  fetch.
 
 ### Operator font directories load per render pass, not into a cached base database
 

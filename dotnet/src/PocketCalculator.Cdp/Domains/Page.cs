@@ -632,13 +632,17 @@ public static partial class Page
         foreach (NetworkEvent networkEvent in networkEvents)
         {
             string requestId = networkEvent.RequestId;
-            ctx.PendingEvents.Add(new CdpEvent
+            // An intercepted request was announced when it paused (upstream 5e58c86).
+            if (!networkEvent.Intercepted)
             {
-                Method = "Network.requestWillBeSent",
-                Params = RequestWillBeSent(
-                    requestId, loaderId, pageUrl, networkEvent, frameId, "script"),
-                SessionId = sessionId,
-            });
+                ctx.PendingEvents.Add(new CdpEvent
+                {
+                    Method = "Network.requestWillBeSent",
+                    Params = RequestWillBeSent(
+                        requestId, loaderId, pageUrl, networkEvent, frameId, "script"),
+                    SessionId = sessionId,
+                });
+            }
             ctx.PendingEvents.Add(new CdpEvent
             {
                 Method = "Network.responseReceived",

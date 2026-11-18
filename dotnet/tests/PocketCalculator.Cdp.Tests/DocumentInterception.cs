@@ -304,6 +304,202 @@ public sealed class DocumentInterception
         }
     }
 
+    /// <summary>
+    /// upstream 5e58c86 <c>fetch_resolution_is_handled_once_by_the_outer_processor</c>, second
+    /// half: failing a script request finishes it with one <c>Network.loadingFailed</c> before
+    /// the command's response; failing a main document leaves that to the navigation.
+    /// </summary>
+    [Fact]
+    public void FailRequestFinishesAScriptRequestOnce()
+    {
+        var resolution = new TaskCompletionSource<InterceptResolution>();
+        var document = new TaskCompletionSource<InterceptResolution>();
+        Dictionary<string, PausedIntercept> paused = new(StringComparer.Ordinal)
+        {
+            ["request-2"] = new(resolution),
+            ["page-1.1"] = new(document, true),
+        };
+        var reply = Channel.CreateUnbounded<string>();
+        Assert.True(ServerSupport.HandleFetchResolution(
+            """{"id":18,"method":"Fetch.failRequest","sessionId":"page-session","params":{"requestId":"request-2","errorReason":"Aborted"}}""",
+            CdpContext.New(), reply.Writer, paused));
+        Assert.Equal("Aborted", Assert.IsType<InterceptResolution.Fail>(resolution.Task.Result).Reason);
+        Assert.True(reply.Reader.TryRead(out string? eventText));
+        JsonNode failed = JsonNode.Parse(eventText)!;
+        Assert.Equal("Network.loadingFailed", failed["method"]!.GetValue<string>());
+        Assert.Equal("page-session", failed["sessionId"]!.GetValue<string>());
+        Assert.Equal("request-2", failed["params"]!["requestId"]!.GetValue<string>());
+        Assert.Equal("Fetch", failed["params"]!["type"]!.GetValue<string>());
+        Assert.Equal("net::ERR_ABORTED", failed["params"]!["errorText"]!.GetValue<string>());
+        Assert.True(failed["params"]!["canceled"]!.GetValue<bool>());
+        Assert.True(reply.Reader.TryRead(out string? responseText));
+        Assert.Equal(18, JsonNode.Parse(responseText)!["id"]!.GetValue<int>());
+        Assert.False(reply.Reader.TryRead(out _), "abort emits one failure and one response");
+
+        Assert.True(ServerSupport.HandleFetchResolution(
+            """{"id":19,"method":"Fetch.failRequest","sessionId":"page-session","params":{"requestId":"page-1.1","errorReason":"ConnectionRefused"}}""",
+            CdpContext.New(), reply.Writer, paused));
+        Assert.IsType<InterceptResolution.Fail>(document.Task.Result);
+        Assert.True(reply.Reader.TryRead(out responseText));
+        Assert.Equal(19, JsonNode.Parse(responseText)!["id"]!.GetValue<int>());
+        Assert.False(reply.Reader.TryRead(out _), "a main document's failure is the navigation's to report");
+    }
+
+    /// <summary>
+    /// upstream 5e58c86 <c>awaited_runtime_requests_keep_servicing_route_replies</c>: an awaited
+    /// evaluation whose fetches pause still gets their resolutions, and each fulfilled request
+    /// finishes. Upstream also asserts an unrelated evaluate sent meanwhile is answered only after
+    /// the awaited one; the port parks an awaited command and serves others meanwhile, as
+    /// Chromium does (ParkedCommand), so that ordering is not asserted.
+    /// </summary>
+    [Fact]
+    public async Task AwaitedRuntimeRequestsKeepServicingRouteReplies()
+    {
+        var server = Channel.CreateUnbounded<ServerMessage>();
+        var replies = Channel.CreateUnbounded<string>();
+        using var shutdown = new CancellationTokenSource();
+        using var stop = new CancellationTokenSource();
+        Task processor = CdpServer.CdpProcessorAsync(
+            server.Reader, CdpContext.New().DefaultContext, shutdown.Token, stop.Token);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        async Task<JsonNode> NextAsync() =>
+            JsonNode.Parse(await replies.Reader.ReadAsync(deadline.Token))!;
+
+        void Send(JsonObject value) =>
+            server.Writer.TryWrite(new ServerMessage.Cdp(value.ToJsonString(), replies.Writer));
+
+        try
+        {
+            server.Writer.TryWrite(new ServerMessage.NewConnection(replies.Writer));
+            await NextAsync();
+            Send(new JsonObject
+            {
+                ["id"] = 1,
+                ["method"] = "Target.createTarget",
+                ["params"] = new JsonObject { ["url"] = "about:blank" },
+            });
+            string? session = null;
+            while (true)
+            {
+                JsonNode value = await NextAsync();
+                session ??= value["params"]?["sessionId"]?.GetValue<string>();
+                if (value["id"]?.GetValue<int>() == 1)
+                {
+                    break;
+                }
+            }
+
+            Assert.NotNull(session);
+            Send(new JsonObject
+            {
+                ["id"] = 2,
+                ["method"] = "Fetch.enable",
+                ["sessionId"] = session,
+                ["params"] = new JsonObject
+                {
+                    ["patterns"] = new JsonArray { new JsonObject { ["urlPattern"] = "http://example.test/*" } },
+                },
+            });
+            while ((await NextAsync())["id"]?.GetValue<int>() != 2)
+            {
+            }
+
+            const string Body =
+                "let result=''; for(let i=0;i<2;i++) result+=await (await fetch('http://example.test/'+i)).text(); return result";
+            foreach (var (id, method, parameters) in new[]
+            {
+                (3, "Runtime.evaluate", new JsonObject
+                {
+                    ["expression"] = "(async()=>{" + Body + "})()",
+                    ["awaitPromise"] = true,
+                    ["returnByValue"] = true,
+                }),
+                (4, "Runtime.callFunctionOn", new JsonObject
+                {
+                    ["functionDeclaration"] = "async function(){" + Body + "}",
+                    ["awaitPromise"] = true,
+                    ["returnByValue"] = true,
+                }),
+            })
+            {
+                Send(new JsonObject { ["id"] = id, ["method"] = method, ["sessionId"] = session, ["params"] = parameters });
+                Send(new JsonObject
+                {
+                    ["id"] = 10 + id,
+                    ["method"] = "Runtime.evaluate",
+                    ["sessionId"] = session,
+                    ["params"] = new JsonObject { ["expression"] = "21*2", ["returnByValue"] = true },
+                });
+                int pauses = 0;
+                int finished = 0;
+                bool completed = false;
+                bool otherCompleted = false;
+                HashSet<string> pausedIds = [];
+                while (!(completed && otherCompleted && finished == 2))
+                {
+                    JsonNode value = await NextAsync();
+                    string? eventName = value["method"]?.GetValue<string>();
+                    if (eventName == "Fetch.requestPaused")
+                    {
+                        Assert.Equal(session, value["sessionId"]!.GetValue<string>());
+                        pauses++;
+                        string requestId = value["params"]!["requestId"]!.GetValue<string>();
+                        pausedIds.Add(requestId);
+                        Send(new JsonObject
+                        {
+                            ["id"] = 100 + pauses,
+                            ["method"] = "Fetch.fulfillRequest",
+                            ["sessionId"] = session,
+                            ["params"] = new JsonObject
+                            {
+                                ["requestId"] = requestId,
+                                ["responseCode"] = 200,
+                                ["body"] = "b2s=",
+                                ["responseHeaders"] = new JsonArray
+                                {
+                                    new JsonObject { ["name"] = "access-control-allow-origin", ["value"] = "*" },
+                                },
+                            },
+                        });
+                    }
+
+                    if (eventName == "Network.loadingFinished"
+                        && pausedIds.Contains(value["params"]!["requestId"]!.GetValue<string>()))
+                    {
+                        finished++;
+                    }
+
+                    // A paused request is announced once, when it pauses.
+                    if (eventName == "Network.requestWillBeSent")
+                    {
+                        Assert.DoesNotContain(value["params"]!["requestId"]!.GetValue<string>(), pausedIds);
+                    }
+
+                    if (value["id"]?.GetValue<int>() == id)
+                    {
+                        Assert.True(value["error"] is null, value.ToJsonString());
+                        Assert.Equal("okok", value["result"]!["result"]!["value"]!.GetValue<string>());
+                        Assert.Equal(2, pauses);
+                        completed = true;
+                    }
+
+                    if (value["id"]?.GetValue<int>() == 10 + id)
+                    {
+                        Assert.Equal(42.0, value["result"]!["result"]!["value"]!.GetValue<double>());
+                        otherCompleted = true;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            server.Writer.TryComplete();
+            await stop.CancelAsync();
+            await processor.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
     [Fact]
     public void InterceptedDocumentsKeepTheirOwnLoaderAndPageIdentity()
     {

@@ -552,7 +552,8 @@ public static partial class FetchOps
         string pageOrigin,
         string mode,
         FetchCredentials credentials,
-        bool internalLoad)
+        bool internalLoad,
+        string? requestId = null)
     {
         var crossOrigin = RequestOrigin(url) is { } requestOrigin
             && !string.Equals(requestOrigin, pageOrigin, StringComparison.Ordinal);
@@ -570,6 +571,13 @@ public static partial class FetchOps
                 ? new Dictionary<string, string>(StringComparer.Ordinal)
                 : VisibleResponseHeaders(headers, crossOrigin, credentials));
         sb.Append(",\"opaque\":").Append(opaque ? "true" : "false");
+        if (requestId is not null)
+        {
+            // upstream 5e58c86: the id CDP reports the fulfilled response under.
+            sb.Append(",\"requestId\":");
+            SerdeJson.AppendString(sb, requestId);
+        }
+
         sb.Append('}');
         return sb.ToString();
     }

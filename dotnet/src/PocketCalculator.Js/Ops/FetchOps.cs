@@ -211,6 +211,51 @@ public static partial class FetchOps
     /// upstream 2d323dd: a scripted request pauses only when it matches a <c>Fetch.enable</c>
     /// pattern; no patterns means every request.
     /// </summary>
+    /// <summary>
+    /// Rust <c>record_js_network_completion</c> for a fulfilled request (upstream 5e58c86): the
+    /// network event CDP reports and the body <c>Network.getResponseBody</c> returns, bounded
+    /// like a transport response's. The body is kept base64 when the client supplied bytes.
+    /// </summary>
+    internal static void RecordInterceptedCompletion(
+        PocketCalculatorState gs,
+        string requestId,
+        string url,
+        string method,
+        InterceptResolution.Fulfill fulfill)
+    {
+        var bytes = fulfill.BodyBytes;
+        var bodySize = bytes?.Length ?? Encoding.UTF8.GetByteCount(fulfill.Body);
+        var maxEntries = ResponseBodyEntryLimit();
+        var maxBytes = ResponseBodyByteLimit();
+        if (maxEntries > 0 && maxBytes > 0 && bodySize <= maxBytes)
+        {
+            gs.NetworkResponseBodies[requestId] = bytes is { Length: > 0 }
+                ? new StoredNetworkResponseBody(Convert.ToBase64String(bytes), true)
+                : new StoredNetworkResponseBody(fulfill.Body, false);
+            gs.NetworkResponseBodyOrder.Enqueue(requestId);
+            while (gs.NetworkResponseBodyOrder.Count > maxEntries)
+            {
+                gs.NetworkResponseBodies.Remove(gs.NetworkResponseBodyOrder.Dequeue());
+            }
+        }
+
+        gs.JsNetworkEvents.Add(new JsNetworkEvent
+        {
+            RequestId = requestId,
+            Url = url,
+            Method = method,
+            Status = fulfill.Status,
+            ResponseHeaders = fulfill.Headers,
+            BodySize = bodySize,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+            Intercepted = true,
+        });
+        if (gs.JsNetworkEvents.Count > MaxJsNetworkEvents)
+        {
+            gs.JsNetworkEvents.RemoveRange(0, gs.JsNetworkEvents.Count - MaxJsNetworkEvents);
+        }
+    }
+
     public static bool ShouldIntercept(bool enabled, List<string> patterns, string url)
     {
         if (!enabled)
@@ -629,15 +674,32 @@ public static partial class FetchOps
                                 hostConsumesBody);
 
                         case InterceptResolution.Fulfill fulfill:
-                            return InterceptFulfillResponse(
-                                fulfill.Status,
-                                fulfill.Headers,
-                                fulfill.Body,
-                                url,
-                                origin,
-                                mode,
-                                ParseCredentials(credentials),
-                                internalLoad);
+                        {
+                            // upstream 5e58c86: a fulfilled response is visible to CDP like a
+                            // transport one (responseReceived, loadingFinished, its body), under
+                            // the id it paused with. Written on the page's loop, as the transport
+                            // tail is.
+                            var fulfilledId = channel.RequestId;
+                            var fulfilledUrl = url;
+                            var fulfilledMethod = method;
+                            Func<string> record = () =>
+                            {
+                                RecordInterceptedCompletion(gs, fulfilledId, fulfilledUrl, fulfilledMethod, fulfill);
+                                return InterceptFulfillResponse(
+                                    fulfill.Status,
+                                    fulfill.Headers,
+                                    fulfill.Body,
+                                    fulfilledUrl,
+                                    origin,
+                                    mode,
+                                    ParseCredentials(credentials),
+                                    internalLoad,
+                                    fulfilledId);
+                            };
+                            return tailOnPageLoop
+                                ? await gs.IsolateLock.RunOnPageAsync(record).ConfigureAwait(false)
+                                : record();
+                        }
 
                         case InterceptResolution.Fail fail:
                             return Blocked(url, fail.Reason);

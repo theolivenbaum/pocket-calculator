@@ -159,6 +159,15 @@ public static partial class CdpServer
 
                     break;
                 }
+                else if (interceptRx.TryRead(out var request))
+                {
+                    // upstream 5e58c86: a request a parked awaited evaluation is waiting on is
+                    // published before the next pump turn. Below the pump arm it was starved:
+                    // the page is never idle while its fetch waits, so the pump stayed armed
+                    // and the pause never reached the client until the await timed out.
+                    HandleInterceptedRequest(ctx, request, connectionReplyTx, interceptedPaused);
+                    continue;
+                }
                 else if (runtimePumpArmed)
                 {
                     // One wake-driven turn. Unlike the Rust select arm this is
@@ -215,11 +224,6 @@ public static partial class CdpServer
                         runtimePumpArmed = AnyPageHasJs(ctx);
                     }
 
-                    continue;
-                }
-                else if (interceptRx.TryRead(out var request))
-                {
-                    HandleInterceptedRequest(ctx, request, connectionReplyTx, interceptedPaused);
                     continue;
                 }
                 else if (ctx.Screencasts.Count != 0 && Environment.TickCount64 >= screencastDue)
