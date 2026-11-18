@@ -276,13 +276,88 @@ internal static partial class Tools
         };
     }
 
+    /// <summary>
+    /// <c>browser_evaluate</c> (upstream 7500e6d, a3aea0a): a promise the expression returns is
+    /// awaited for up to <c>timeoutMs</c>, through the same host-side await as CDP's
+    /// <c>Runtime.evaluate</c>, which keeps the outcome where page script cannot forge it and
+    /// drives the page's tasks while it waits. A throw or rejection is a tool error.
+    /// </summary>
     internal static async Task<string> EvaluateAsync(JsonNode? args, BrowserState state)
     {
         var expression = RequireString(args, "expression", "Missing expression parameter");
+        var timeoutMs = Math.Max(args.Get("timeoutMs").AsU64() ?? 5_000, 1);
 
-        var result = state.PageMut().Evaluate(expression);
+        var page = state.PageMut();
+        if (page.Js is null)
+        {
+            throw new ToolException("Navigate before evaluating JavaScript");
+        }
+
+        PocketCalculator.Js.Runtime.RemoteObjectInfo info;
+        try
+        {
+            info = await page.EvaluateForCdpWithTimeoutAsync(expression, true, true, timeoutMs).ConfigureAwait(false);
+        }
+        catch (PocketCalculator.Js.Runtime.JsRuntimeException error)
+        {
+            throw new ToolException(error.Message);
+        }
+        finally
+        {
+            // MCP never exposes remote handles. Release results, including exceptions.
+            page.ReleaseObjectGroup();
+        }
+
+        if (info.Thrown)
+        {
+            throw new ToolException(info.Description);
+        }
+
+        var result = info.Value;
         await state.SettleSyntheticNavigationAsync().ConfigureAwait(false);
         return result.AsString() ?? (result.IsNull() ? "null" : McpJson.SerializePretty(result));
+    }
+
+    /// <summary>
+    /// <c>browser_wait_for_function</c> (upstream 7500e6d, b13604b): poll a predicate until it is
+    /// truthy, driving the page's own tasks between polls so a condition that a timer or a
+    /// network callback makes true can come true.
+    /// </summary>
+    internal static async Task<string> WaitForFunctionAsync(JsonNode? args, BrowserState state)
+    {
+        var expression = (args.Get("function").AsString() ?? args.Get("expression").AsString())
+            ?? throw new ToolException("Missing function parameter");
+        var timeoutMs = args.Get("timeout").AsU64() ?? 30_000;
+        var pollMs = Math.Max(args.Get("pollIntervalMs").AsU64() ?? 100, 10);
+
+        var deadline = Environment.TickCount64 + (long)Math.Min(timeoutMs, (ulong)(long.MaxValue / 4));
+        ulong attempts = 0;
+        var probe = "JSON.stringify((function(){ try { return (function(){ return !!(" + expression
+            + "); })(); } catch (e) { return false; } })())";
+        while (true)
+        {
+            attempts++;
+            var value = state.PageMut().Evaluate(probe);
+            var truthy = value.AsString() is { } raw ? raw == "true" : value.AsBool() ?? false;
+            if (truthy)
+            {
+                return $"condition met after {attempts.ToString(CultureInfo.InvariantCulture)} poll(s)";
+            }
+
+            if (Environment.TickCount64 >= deadline)
+            {
+                throw new ToolException(
+                    $"condition not met within {timeoutMs.ToString(CultureInfo.InvariantCulture)} ms after {attempts.ToString(CultureInfo.InvariantCulture)} poll(s): {expression}");
+            }
+
+            var pollDeadline = Math.Min(Environment.TickCount64 + (long)Math.Min(pollMs, (ulong)int.MaxValue), deadline);
+            await state.AdvanceActivePageTasksAsync().ConfigureAwait(false);
+            var rest = pollDeadline - Environment.TickCount64;
+            if (rest > 0)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(rest)).ConfigureAwait(false);
+            }
+        }
     }
 
     internal static async Task<string> WaitForAsync(JsonNode? args, BrowserState state)

@@ -188,11 +188,39 @@ internal static class ToolSchemas
               "properties": {
                 "expression": {
                   "type": "string",
-                  "description": "JavaScript expression to evaluate"
+                  "description": "JavaScript expression to evaluate; a promise it returns is awaited"
+                },
+                "timeoutMs": {
+                  "type": "number",
+                  "description": "How long to wait for a returned promise, in milliseconds (default: 5000)"
                 }
               },
               "required": [
                 "expression"
+              ]
+            }
+          },
+          {
+            "name": "browser_wait_for_function",
+            "description": "Wait until a JavaScript expression returns true, polling the page",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "function": {
+                  "type": "string",
+                  "description": "JavaScript expression that must become truthy"
+                },
+                "timeout": {
+                  "type": "number",
+                  "description": "Timeout in milliseconds (default: 30000)"
+                },
+                "pollIntervalMs": {
+                  "type": "number",
+                  "description": "Poll interval in milliseconds (default: 100)"
+                }
+              },
+              "required": [
+                "function"
               ]
             }
           },

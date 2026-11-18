@@ -260,6 +260,90 @@ public sealed class LibTests
             $"the submitted body must carry the filled field, got {submitted}");
     }
 
+    // upstream a3aea0a: evaluate_failures_are_mcp_tool_errors
+    [Fact]
+    public async Task EvaluateFailuresAreMcpToolErrors()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync("data:text/html,<p>Evaluate</p>");
+        foreach (var expression in new[]
+        {
+            "(function(){throw new Error('agent-fixture');})()",
+            "Promise.reject(new Error('agent-fixture'))",
+            "function (",
+            "new Promise(function(){})",
+        })
+        {
+            var response = await McpServer.DispatchAsync("tools/call", JsonNode.Parse("1"), new JsonObject
+            {
+                ["name"] = "browser_evaluate",
+                ["arguments"] = new JsonObject { ["expression"] = expression, ["timeoutMs"] = 30 },
+            }, state);
+            Assert.True(response.Result?["isError"]?.GetValue<bool>() == true, $"{expression}: {response.Result?.ToJsonString()}");
+        }
+
+        Assert.Equal(42.0, double.Parse(await Tools.EvaluateAsync(JsonNode.Parse("""{"expression":"6 * 7"}"""), state), System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    // upstream a3aea0a: evaluate_runs_scripts_once_and_preserves_null_results
+    [Fact]
+    public async Task EvaluateRunsScriptsOnceAndPreservesNullResults()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync("data:text/html,<p>Evaluate</p>");
+        foreach (var expression in new[] { "null", "undefined", "Promise.resolve(null)" })
+        {
+            Assert.Equal("null", await Tools.EvaluateAsync(new JsonObject { ["expression"] = expression }, state));
+        }
+
+        Assert.Equal(42.0, double.Parse(await Tools.EvaluateAsync(
+            JsonNode.Parse("""{"expression":"var mcpAnswer = 21; mcpAnswer * 2","timeoutMs":30}"""), state),
+            System.Globalization.CultureInfo.InvariantCulture));
+        state.PageMut().Evaluate("globalThis.evaluations = 0");
+        await Tools.EvaluateAsync(
+            JsonNode.Parse("""{"expression":"globalThis.evaluations++; undefined","timeoutMs":30}"""), state);
+        Assert.Equal(1.0, state.PageMut().Evaluate("globalThis.evaluations").AsF64());
+    }
+
+    // upstream 7500e6d: a promise an expression returns is awaited.
+    [Fact]
+    public async Task EvaluateAwaitsAReturnedPromise()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync("data:text/html,<p>Evaluate</p>");
+        Assert.Equal("done", await Tools.EvaluateAsync(
+            JsonNode.Parse("""{"expression":"new Promise(r => setTimeout(() => r('done'), 20))"}"""), state));
+        Assert.Equal("{\n  \"a\": 1\n}", await Tools.EvaluateAsync(
+            JsonNode.Parse("""{"expression":"(async () => ({a: 1}))()"}"""), state));
+    }
+
+    // upstream b13604b: function_wait_preserves_idle_polling_and_caps_the_last_interval
+    [Fact]
+    public async Task FunctionWaitPreservesIdlePollingAndCapsTheLastInterval()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync("data:text/html,<p>idle</p>");
+        state.PageMut().Evaluate("window.waitPolls = 0");
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var error = await Assert.ThrowsAsync<ToolException>(() => Tools.WaitForFunctionAsync(
+            JsonNode.Parse("""{"function":"(++window.waitPolls, false)","timeout":80,"pollIntervalMs":1000}"""), state));
+        Assert.Contains("condition not met", error.Message, StringComparison.Ordinal);
+        Assert.True(started.Elapsed < TimeSpan.FromMilliseconds(800), "the last interval must be bounded by the timeout");
+        Assert.Equal(2.0, state.PageMut().Evaluate("window.waitPolls").AsF64());
+    }
+
+    // upstream b13604b: page tasks run between polls, so a timer can make the condition true.
+    [Fact]
+    public async Task FunctionWaitDrivesPageTimers()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync("data:text/html,<p>timer</p>");
+        state.PageMut().Evaluate("setTimeout(() => { window.ready = true; }, 30)");
+        var result = await Tools.WaitForFunctionAsync(
+            JsonNode.Parse("""{"function":"window.ready === true","timeout":2000,"pollIntervalMs":10}"""), state);
+        Assert.StartsWith("condition met after ", result, StringComparison.Ordinal);
+    }
+
     // upstream a449a80: element_refs_reject_copied_attributes_before_clicking
     [Theory]
     [InlineData("button.replaceWith(copy)")]

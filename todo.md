@@ -398,7 +398,12 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `aea9bca`, `cfce062` + `8ba9e5e` custom element reactions, `24adea2`,
       `414e649` window.event, `7451e39` + `48538d6`, `2f302d9`, `25700b9` + `59276a3` +
       `d8f1467` select and table APIs, `75bd891`, `955524a`, `a695bfc` nomodule
-- [ ] MCP: `7500e6d` + `b13604b` (await, `browser_wait_for_function`; tool JSON),
+- [x] MCP `7500e6d` + `b13604b` + `a3aea0a` (evaluate part): `browser_evaluate` awaits a
+      returned promise through the host-side CDP await (upstream first used a page-visible
+      slot, `__obscura_mcp_expression`, which a page could forge; its final version uses the
+      CDP path too), errors are tool errors; `browser_wait_for_function` pumps page tasks
+      between polls. Still open from `7500e6d`: MCP `--storage-dir` (with `604d30b`)
+- [ ] MCP:
       `604d30b`, `5c27e76`, `c6402a7` console feed, `a3aea0a`, `3c56f59`, `5171717`,
       `cbc2f97`; `9855ef4` web_search stays opt-in
 - [ ] CLI and workers: `11d6ea8` + `afb0d61`, `ec0186b`, `1949e9b`, `f2b9e99`, `4b14a76`,

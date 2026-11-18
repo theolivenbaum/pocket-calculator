@@ -304,6 +304,7 @@ public static class McpServer
             "browser_select_option" => Tools.SelectOption(args, state),
             "browser_evaluate" => await Tools.EvaluateAsync(args, state).ConfigureAwait(false),
             "browser_wait_for" => await Tools.WaitForAsync(args, state).ConfigureAwait(false),
+            "browser_wait_for_function" => await Tools.WaitForFunctionAsync(args, state).ConfigureAwait(false),
             "browser_network_requests" => Tools.NetworkRequests(state),
             "browser_console_messages" => Tools.ConsoleMessages(state),
             "browser_close" => Tools.Close(state),
