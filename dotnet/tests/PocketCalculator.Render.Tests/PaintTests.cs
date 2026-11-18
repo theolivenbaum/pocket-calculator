@@ -3936,6 +3936,56 @@ public class PaintTests
         Assert.Equal("none", Computed("plain")["clear"]);
     }
 
+    /// <summary>
+    /// Upstream c280615: five longhands used by layout were missing from the snapshot. The
+    /// values are Chromium 147's, for the declared and the initial case. The inline keywords,
+    /// the offset and `word-spacing` are the port's additions, measured on the same build.
+    /// </summary>
+    [Fact]
+    public void ComputedStyleExposesTableListAndTextLonghands()
+    {
+        DomTree tree = Parse(
+            """
+            <style>#set{vertical-align:middle;list-style-type:square;
+                 border-collapse:collapse;table-layout:fixed;text-transform:uppercase;word-spacing:3px}</style>
+               <table id="set"><tr><td id="cell">x</td></tr></table>
+               <div id="unset">a</div>
+               <span id="tt" style="vertical-align:text-top">x</span>
+               <span id="off" style="vertical-align:10px;word-spacing:1em">x</span>
+               <span id="sub" style="vertical-align:sub;word-spacing:normal">x</span>
+            """);
+        RenderResourceCache resources = new();
+        PreparedRender prepared = RenderPaint.PrepareDom(tree, (320f, 200f), null, resources)!;
+        Dictionary<string, string> Computed(string id) => prepared.ComputedStyle(ById(tree, id))!;
+
+        Dictionary<string, string> set = Computed("set");
+        Assert.Equal("middle", set["vertical-align"]);
+        Assert.Equal("square", set["list-style-type"]);
+        Assert.Equal("collapse", set["border-collapse"]);
+        Assert.Equal("fixed", set["table-layout"]);
+        Assert.Equal("uppercase", set["text-transform"]);
+        Assert.Equal("3px", set["word-spacing"]);
+
+        Dictionary<string, string> cell = Computed("cell");
+        Assert.Equal("middle", cell["vertical-align"]);
+        Assert.Equal("auto", cell["table-layout"]);
+        Assert.Equal("3px", cell["word-spacing"]);
+
+        Dictionary<string, string> unset = Computed("unset");
+        Assert.Equal("baseline", unset["vertical-align"]);
+        Assert.Equal("disc", unset["list-style-type"]);
+        Assert.Equal("separate", unset["border-collapse"]);
+        Assert.Equal("auto", unset["table-layout"]);
+        Assert.Equal("none", unset["text-transform"]);
+        Assert.Equal("0px", unset["word-spacing"]);
+
+        Assert.Equal("text-top", Computed("tt")["vertical-align"]);
+        Assert.Equal("10px", Computed("off")["vertical-align"]);
+        Assert.Equal("16px", Computed("off")["word-spacing"]);
+        Assert.Equal("sub", Computed("sub")["vertical-align"]);
+        Assert.Equal("0px", Computed("sub")["word-spacing"]);
+    }
+
     [Fact]
     public void PaintsInlineSvgWithFrameworkColonAttribute()
     {

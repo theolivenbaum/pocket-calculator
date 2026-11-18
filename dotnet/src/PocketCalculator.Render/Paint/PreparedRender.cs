@@ -1152,6 +1152,31 @@ public sealed partial class PreparedRender
         output["letter-spacing"] = (style.LetterSpacing ?? 0f) == 0f
             ? "normal"
             : PaintCssValues.CssPx(style.LetterSpacing ?? 0f);
+
+        // DEVIATION from crates/obscura-render, which applies word-spacing (bf10c46) but never
+        // reports it: Chromium 147 answers `0px` for `normal` and the computed length otherwise.
+        output["word-spacing"] = PaintCssValues.CssPx(style.WordSpacing ?? 0f);
+
+        // Upstream c280615: these five are cascaded and used by layout but were missing from the
+        // snapshot, so getComputedStyle() returned ''. `border-collapse` is reported above.
+        output["vertical-align"] = VerticalAlignCss(style);
+        output["text-transform"] = style.TextTransform switch
+        {
+            PocketCalculator.Render.TextTransform.Uppercase => "uppercase",
+            PocketCalculator.Render.TextTransform.Lowercase => "lowercase",
+            PocketCalculator.Render.TextTransform.Capitalize => "capitalize",
+            _ => "none",
+        };
+        output["list-style-type"] = style.ListStyle switch
+        {
+            PocketCalculator.Render.ListStyle.Circle => "circle",
+            PocketCalculator.Render.ListStyle.Square => "square",
+            PocketCalculator.Render.ListStyle.Decimal => "decimal",
+            PocketCalculator.Render.ListStyle.None => "none",
+            // The initial value is `disc`, which an unstyled element reports too.
+            _ => "disc",
+        };
+        output["table-layout"] = style.TableLayoutFixed ? "fixed" : "auto";
         output["white-space"] = (style.WhiteSpace ?? PocketCalculator.Render.WhiteSpace.Normal) switch
         {
             PocketCalculator.Render.WhiteSpace.Normal => "normal",
@@ -2524,6 +2549,41 @@ public sealed partial class PreparedRender
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// The computed <c>vertical-align</c>. The inline reading keeps every keyword and offset
+    /// apart, so it answers first; the table-cell reading covers a cell whose value came from
+    /// the UA sheet (Chromium reports <c>middle</c> on an unstyled <c>&lt;td&gt;</c>).
+    /// Upstream c280615 reports only top/middle/bottom/baseline.
+    /// </summary>
+    private static string VerticalAlignCss(LayoutStyle style)
+    {
+        if (style.InlineVerticalAlign is { } inline)
+        {
+            return inline.Kind switch
+            {
+                InlineVerticalAlignKind.Sub => "sub",
+                InlineVerticalAlignKind.Super => "super",
+                InlineVerticalAlignKind.TextTop => "text-top",
+                InlineVerticalAlignKind.TextBottom => "text-bottom",
+                InlineVerticalAlignKind.Middle => "middle",
+                InlineVerticalAlignKind.Top => "top",
+                InlineVerticalAlignKind.Bottom => "bottom",
+                InlineVerticalAlignKind.Offset => inline.Offset.Kind == DimensionKind.Em
+                    ? PaintCssValues.CssPx(inline.Offset.Value * (style.FontSize ?? 16f))
+                    : PaintCssValues.DimensionCss(inline.Offset, "baseline"),
+                _ => "baseline",
+            };
+        }
+
+        return style.VerticalAlign switch
+        {
+            PocketCalculator.Render.VerticalAlign.Top => "top",
+            PocketCalculator.Render.VerticalAlign.Middle => "middle",
+            PocketCalculator.Render.VerticalAlign.Bottom => "bottom",
+            _ => "baseline",
+        };
     }
 
     private static string TextAlignCss(TextAlignKeyword keyword) => keyword switch

@@ -2422,8 +2422,8 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
 - word-spacing (`bf10c46`): the port also accepts `calc()`, `min()`, `max()` and `clamp()`
   lengths, type-checked (`CssMathTypes`) and resolved against the element's own font, as
   Chromium does; upstream drops every function. Both still drop percentages and lengths that
-  overflow f32 (Chromium accepts `10%` and clamps `1e99px`), and neither reports
-  `word-spacing` in getComputedStyle. Shaping adds the spacing in `TextShaper.ReadShapedGlyphs`
+  overflow f32 (Chromium accepts `10%` and clamps `1e99px`). Upstream does not report
+  `word-spacing` in getComputedStyle; the port does (`0px` for `normal`, as Chromium). Shaping adds the spacing in `TextShaper.ReadShapedGlyphs`
   (HarfBuzz) at the same place upstream's vendored cosmic-text `shape_fallback` does.
 - word-spacing on form controls: input, textarea, select and button reset it to 0 in their UA
   arm (`ComputedStyle`), as Chromium's UA sheet does; upstream lets them inherit it. The same
@@ -2473,6 +2473,11 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   A replacement is verified like a restarted worker before it takes traffic. The RSS test
   uses 400 MB and a 300 MB page where upstream uses 150 and 200, since an idle .NET worker
   is already about 140 MB.
+- getComputedStyle longhands (`c280615`): `vertical-align` reports every inline keyword
+  (`sub`, `text-top`, ...) and offsets (`10px`, `20%`), as Chromium; upstream knows only
+  top/middle/bottom/baseline. `list-style-type` reports the keywords the renderer draws
+  (others read `disc`, as upstream). `el.style.cssFloat` also maps to `float`; upstream fixes
+  only the computed read.
 
 ### Operator font directories load per render pass, not into a cached base database
 

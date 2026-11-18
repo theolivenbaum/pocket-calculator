@@ -2006,7 +2006,9 @@ class MessageChannel {
 globalThis.MessageChannel = MessageChannel;
 globalThis.MessagePort = MessagePort;
 
-const _cssCamelToKebab = (s) => s.replace(/[A-Z]/g, (m) => "-" + m.toLowerCase());
+// upstream c280615 maps `cssFloat` (the CSSOM IDL alias for `float`) only in getComputedStyle.
+// The port maps it here too, so el.style.cssFloat reads and writes `float` as in Chromium.
+const _cssCamelToKebab = (s) => s === "cssFloat" ? "float" : s.replace(/[A-Z]/g, (m) => "-" + m.toLowerCase());
 const _cssKebabToCamel = (s) => s.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 
 // Standard CSS property names (camelCase). Real CSSStyleDeclaration exposes every
@@ -12434,6 +12436,9 @@ globalThis.getComputedStyle = (el, pseudoElt) => {
     // (`-webkit-line-clamp`). Normalize the prefix once for every WebKit
     // property instead of adding per-property aliases to the native snapshot.
     if (kebab.startsWith('webkit-')) kebab = '-' + kebab;
+    // upstream c280615: `cssFloat` is the CSSOM IDL alias for `float`; camelCase splitting
+    // yields `css-float`, which matches no property.
+    if (kebab === 'css-float') kebab = 'float';
     refreshRendered(_computedStyleLayoutNames[kebab] === true);
     if (snapshot.omitted && snapshot.omitted[kebab] === true) refreshRendered(true);
     if (snapshot.rendered && _objectHasOwn(snapshot.rendered, kebab))
