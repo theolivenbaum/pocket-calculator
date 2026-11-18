@@ -369,7 +369,10 @@ Security (exposed today unless noted):
       target before reading, honours `multiple`, and reports failures as CDP errors
 - [x] `d853a73` - wrapKey/unwrapKey check the wrapping key's algorithm and usage; a key's
       algorithm is kept privately and `key.algorithm` is a copy (AES-KW cases wait for `d57489c`)
-- [ ] `2f448c3` - detached-frame timers
+- [ ] `2f448c3` - detached-frame timers. Deferred: upstream retires timers inside its in-realm
+      frame model; here each frame is its own engine, released on every frame pump
+      (`ReleaseDetachedFrames` in `AdvanceFramesAsync`), so at most one pump turn of a removed
+      frame's timers can run. Revisit with the real-realm `contentWindow` decision below
 
 Correctness, by area (order and grouping as in the review's per-area "suggested port order"):
 
