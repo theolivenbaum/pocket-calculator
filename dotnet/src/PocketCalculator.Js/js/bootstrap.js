@@ -26353,6 +26353,9 @@ const _cdpHost = _objectFreeze({
     return (o && typeof o._nid === 'number') ? o._nid : -1;
   },
   wrap: (nid) => _wrap(nid),
+  // upstream f66ac0a: callFunctionOn's JSON `value` arguments are parsed, not pasted as an
+  // object literal, so a "__proto__" key is an own property rather than the prototype.
+  parse: (text) => _JSONparse(text),
   clear: () => { for (const k in _cdpObjects) delete _cdpObjects[k]; },
 });
 

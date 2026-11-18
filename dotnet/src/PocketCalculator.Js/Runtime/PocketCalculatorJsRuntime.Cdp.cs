@@ -755,11 +755,9 @@ public sealed partial class PocketCalculatorJsRuntime
                 builder.Append(", ");
             }
             var arg = arguments[i] as JsonObject;
-            if (arg is not null && arg.TryGetPropertyValue("value", out var value))
-            {
-                builder.Append(value?.ToJsonString() ?? "null");
-            }
-            else if (arg is not null
+            // upstream 48953ef: objectId is read before value, as Chromium does. go-rod sends
+            // every handle as {"value":null,"objectId":...} and got null.
+            if (arg is not null
                 && arg.TryGetPropertyValue("objectId", out var objectIdNode)
                 && objectIdNode?.GetValueKind() == JsonValueKind.String)
             {
@@ -786,6 +784,14 @@ public sealed partial class PocketCalculatorJsRuntime
                     throw new JsRuntimeException("Couldn't parse value object in call argument");
                 }
                 builder.Append(text);
+            }
+            else if (arg is not null && arg.TryGetPropertyValue("value", out var value))
+            {
+                // An object or array goes through JSON.parse (upstream f66ac0a): pasted as a
+                // literal, a "__proto__" key set the argument's prototype.
+                builder.Append(value?.GetValueKind() is JsonValueKind.Object or JsonValueKind.Array
+                    ? "__obscura_cdp.parse(" + JsStringLiteral(value.ToJsonString()) + ")"
+                    : value?.ToJsonString() ?? "null");
             }
             else
             {

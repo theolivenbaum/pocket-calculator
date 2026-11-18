@@ -35,6 +35,56 @@ public sealed class RuntimeDomainTests
         Assert.Contains("9999", error, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// upstream 48953ef (go-rod sends {"value":null,"objectId":...}), f66ac0a (a "__proto__"
+    /// key is an own property) and 28756b4 (DOM.getOuterHTML by objectId).
+    /// </summary>
+    [Fact]
+    public async Task CallArgumentsPreferObjectIdAndParseJsonValues()
+    {
+        var ctx = CdpContext.New();
+        using IDisposable owned = CoreCdp.Owned(ctx);
+        string pageId = ctx.CreatePage();
+        const string sessionId = "call-arguments";
+        ctx.Sessions[sessionId] = pageId;
+        CdpDomainFixtures.Unwrap(await PocketCalculator.Cdp.Domains.Page.HandleAsync(
+            "navigate", CdpDomainFixtures.Json("""{"url":"data:text/html,<p id=t>hi</p>","waitUntil":"load"}"""), ctx, sessionId));
+
+        JsonNode handle = CdpDomainFixtures.Unwrap(await RuntimeDomain.HandleAsync(
+            "evaluate", CdpDomainFixtures.Json("""{"expression":"document.getElementById('t')"}"""), ctx, sessionId));
+        string objectId = handle["result"]!["objectId"]!.GetValue<string>();
+
+        JsonNode tag = CdpDomainFixtures.Unwrap(await RuntimeDomain.HandleAsync(
+            "callFunctionOn",
+            new JsonObject
+            {
+                ["functionDeclaration"] = "function(el) { return el.tagName; }",
+                ["objectId"] = objectId,
+                ["arguments"] = new JsonArray(new JsonObject { ["value"] = null, ["objectId"] = objectId }),
+                ["returnByValue"] = true,
+            },
+            ctx,
+            sessionId));
+        Assert.Equal("P", tag["result"]!["value"]!.GetValue<string>());
+
+        JsonNode proto = CdpDomainFixtures.Unwrap(await RuntimeDomain.HandleAsync(
+            "callFunctionOn",
+            new JsonObject
+            {
+                ["functionDeclaration"] = "function(a) { return [Object.getPrototypeOf(a) === Object.prototype, Object.keys(a).join(','), a.__proto__.x]; }",
+                ["objectId"] = objectId,
+                ["arguments"] = new JsonArray(new JsonObject { ["value"] = JsonNode.Parse("""{"__proto__":{"x":1},"y":2}""") }),
+                ["returnByValue"] = true,
+            },
+            ctx,
+            sessionId));
+        Assert.Equal("""[true,"__proto__,y",1]""", proto["result"]!["value"]!.ToJsonString());
+
+        JsonNode html = CdpDomainFixtures.Unwrap(await PocketCalculator.Cdp.Domains.Dom.HandleAsync(
+            "getOuterHTML", new JsonObject { ["objectId"] = objectId }, ctx, sessionId));
+        Assert.Equal("<p id=\"t\">hi</p>", html["outerHTML"]!.GetValue<string>());
+    }
+
     [Fact]
     public async Task CallFunctionOnRejectsUnknownExecutionContextId()
     {

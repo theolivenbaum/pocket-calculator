@@ -124,11 +124,18 @@ public static class Dom
 
             case "getOuterHTML":
             {
-                BrowserPage page = ctx.GetSessionPage(sessionId) ?? throw new DomainError("No page");
-                ulong nodeId = parameters.Get("nodeId").AsU64()
-                    ?? parameters.Get("backendNodeId").AsU64()
-                    ?? throw new DomainError("nodeId required");
-                string html = page.WithDom(dom => dom.OuterHtml(NodeId.New((uint)nodeId))) ?? string.Empty;
+                // upstream 28756b4 (+ c05cf3b): an objectId is accepted too, as Chromium does
+                // (go-rod's page.HTML() sends only that); a handle from a child frame is
+                // serialized in that frame's document.
+                BrowserPage page = ctx.GetSessionPageMut(sessionId) ?? throw new DomainError("No page");
+                ulong nodeId = ResolveNodeId(page, parameters);
+                uint document = DocumentOf(page, parameters);
+                string html = document == 0
+                    ? page.WithDom(dom => dom.OuterHtml(NodeId.New((uint)nodeId))) ?? string.Empty
+                    : page.EvaluateHostIn(
+                        document,
+                        $"(function() {{ var h = __obscura_host.dom; var el = h.wrap({nodeId.ToString(CultureInfo.InvariantCulture)}); return el ? h.get(el, 'outerHTML') : ''; }})()").AsString()
+                        ?? string.Empty;
                 return DomainResult.Ok(new JsonObject { ["outerHTML"] = html });
             }
 

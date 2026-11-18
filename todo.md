@@ -389,8 +389,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       (stopLoading drops a queued navigation; in-flight render loads are not cancelled),
       `192561c` removeScriptToEvaluateOnNewDocument errors on an unknown id (preload scripts
       are still connection-wide, `7034ad6`)
-- [ ] CDP Playwright/go-rod blockers: `48953ef`, `28756b4` + `c05cf3b`, `361f15d` (beforeunload
-      on Page.close)
+- [x] `48953ef` callFunctionOn reads an argument's objectId before its value; `f66ac0a` (part)
+      a JSON object or array argument is parsed, so `__proto__` is an own property; `28756b4` +
+      `c05cf3b` (part) DOM.getOuterHTML accepts objectId, a child frame's handle read in its
+      own document
+- [ ] `361f15d` beforeunload on Page.close; the rest of `f66ac0a` (native function invocation)
 - [ ] CDP input editing: `aa4b4e7`, `d132880`, `3f7cccd`, `d88df74`, `8fe6d99` + `2e0b63f`,
       `c714042`; with open `ec62004` / `a156914`
 - [ ] CDP lifecycle and sessions: `3f8a8d1` + `de227e9`, `1959c5e`, `a74e050`, `b8586de` +
