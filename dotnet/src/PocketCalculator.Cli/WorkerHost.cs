@@ -120,9 +120,14 @@ public static class WorkerHost
                             .ConfigureAwait(false);
                         continue;
                     }
+                    if (WaitUntilOf(command, out var waitUntil) is { } invalid)
+                    {
+                        await WriteAsync(output, Error($"Invalid command: {invalid}")).ConfigureAwait(false);
+                        continue;
+                    }
                     try
                     {
-                        await page.NavigateAsync(url).ConfigureAwait(false);
+                        await page.NavigateWithWaitAsync(url, waitUntil).ConfigureAwait(false);
                         response = Success(new JsonObject
                         {
                             ["title"] = JsonValue.Create(page.Title),
@@ -201,6 +206,46 @@ public static class WorkerHost
             }
 
             await WriteAsync(output, response).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// The optional <c>waitUntil</c> of a <c>navigate</c> command (upstream ec0186b), or
+    /// serde's message for a value it rejects. Strict on purpose: <see
+    /// cref="WaitUntilExtensions.ParseWaitUntil"/> falls back to <c>load</c>, and the wire
+    /// protocol must not. A missing key is <c>load</c>; a present null is an error, as
+    /// <c>#[serde(default)]</c> only covers absence.
+    /// </summary>
+    internal static string? WaitUntilOf(JsonObject command, out WaitUntil waitUntil)
+    {
+        waitUntil = WaitUntil.Load;
+        if (!command.TryGetPropertyValue("waitUntil", out var node))
+        {
+            return null;
+        }
+        if (node is null)
+        {
+            return "invalid type: null, expected variant identifier";
+        }
+        switch (node.GetValueKind())
+        {
+            case JsonValueKind.String:
+                var value = node.GetValue<string>();
+                switch (value)
+                {
+                    case "load": waitUntil = WaitUntil.Load; return null;
+                    case "domcontentloaded": waitUntil = WaitUntil.DomContentLoaded; return null;
+                    case "networkidle0": waitUntil = WaitUntil.NetworkIdle0; return null;
+                    case "networkidle2": waitUntil = WaitUntil.NetworkIdle2; return null;
+                    default:
+                        return $"unknown variant `{value}`, expected one of `load`, `domcontentloaded`, `networkidle0`, `networkidle2`";
+                }
+            case JsonValueKind.True or JsonValueKind.False:
+                return $"invalid type: boolean `{(node.GetValue<bool>() ? "true" : "false")}`, expected variant identifier";
+            case JsonValueKind.Number:
+                return $"invalid type: number `{node.ToJsonString()}`, expected variant identifier";
+            default:
+                return "invalid type: map or sequence, expected variant identifier";
         }
     }
 

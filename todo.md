@@ -483,7 +483,9 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       ranges get none); the hint names the port's executable and environment variable
 - [x] `11d6ea8` + `afb0d61`: worker `navigate` replies carry `status`, the main document's
       final HTTP status after redirects, null with no HTTP response or a blocked request
-- [ ] CLI and workers: `ec0186b`, `1949e9b`, `f2b9e99`, `4b14a76`,
+- [x] `ec0186b`: worker `navigate` takes a strict `waitUntil` (`load`, `domcontentloaded`,
+      `networkidle0`, `networkidle2`); anything else is an error that does not navigate
+- [ ] CLI and workers: `1949e9b`, `f2b9e99`, `4b14a76`,
       `0f27e69`, `1b259b9` failed-save log
 - [x] `52d8ddd`: network errors from a send or a body read carry the inner exception chain
       (`ErrorChain`, each cause appended once), so a TLS failure names its certificate error

@@ -168,6 +168,42 @@ public sealed class WorkerHostTests
         Assert.Equal("{\"ok\":true,\"result\":{\"title\":\"\",\"url\":\"about:blank\",\"status\":null}}", replies[2]);
     }
 
+    // Upstream ec0186b (worker_navigation_wait.rs): waitUntil is strict, an invalid one is
+    // an error that neither navigates nor ends the loop, and every mode navigates.
+    [Fact]
+    public void Invalid_wait_modes_are_errors_and_do_not_navigate_or_poison_the_worker()
+    {
+        string[] modes = ["\"domContentLoaded\"", "\"networkIdle\"", "\"\"", "null", "1", "true"];
+        List<string> commands = ["{\"cmd\":\"navigate\",\"url\":\"data:text/html,<title>Original</title>\"}"];
+        foreach (var mode in modes)
+        {
+            commands.Add($"{{\"cmd\":\"navigate\",\"url\":\"data:text/html,<title>Changed</title>\",\"waitUntil\":{mode}}}");
+            commands.Add("{\"cmd\":\"title\"}");
+        }
+        foreach (var mode in new[] { "load", "domcontentloaded", "networkidle0", "networkidle2" })
+        {
+            commands.Add($"{{\"cmd\":\"navigate\",\"url\":\"data:text/html,<title>{mode}</title>\",\"waitUntil\":\"{mode}\"}}");
+        }
+
+        var replies = Drive([.. commands]);
+
+        Assert.Equal(1 + 2 * modes.Length + 4, replies.Count);
+        for (var i = 0; i < modes.Length; i++)
+        {
+            var response = Assert.IsType<JsonObject>(JsonNode.Parse(replies[1 + 2 * i]));
+            Assert.False(response["ok"]!.GetValue<bool>(), modes[i]);
+            Assert.StartsWith("Invalid command:", response["error"]!.GetValue<string>(), StringComparison.Ordinal);
+            Assert.Equal("{\"ok\":true,\"result\":\"Original\"}", replies[2 + 2 * i]);
+        }
+        Assert.Contains("unknown variant `domContentLoaded`, expected one of `load`, `domcontentloaded`, `networkidle0`, `networkidle2`", replies[1], StringComparison.Ordinal);
+        string[] good = ["load", "domcontentloaded", "networkidle0", "networkidle2"];
+        for (var i = 0; i < good.Length; i++)
+        {
+            var result = JsonNode.Parse(replies[1 + 2 * modes.Length + i])!["result"]!;
+            Assert.Equal(good[i], result["title"]!.GetValue<string>());
+        }
+    }
+
     [Fact]
     public void A_failed_navigation_replies_not_ok_with_the_page_error()
     {
