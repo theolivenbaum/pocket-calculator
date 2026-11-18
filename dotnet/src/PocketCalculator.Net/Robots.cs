@@ -1,11 +1,20 @@
 namespace PocketCalculator.Net;
 
 /// <summary>
-/// robots.txt fetch/cache/match (port of <c>crates/obscura-net/src/robots.rs</c>).
+/// robots.txt fetch/cache/match (port of <c>crates/obscura-net/src/robots.rs</c>, at upstream
+/// 0e17221, b3475a5, 8dd9d48 and 9e0b8b6: a bounded cache, a 500 KiB body cap, RFC 9309
+/// groups matched by product token, and longest-match precedence).
 /// </summary>
 public sealed class RobotsCache
 {
+    /// <summary>Origins kept per context; past this the oldest is evicted and refetched if visited again.</summary>
+    internal const int MaxRobotsEntries = 4096;
+
+    /// <summary>Bytes of a robots.txt body that are parsed (Google's documented limit).</summary>
+    internal const int MaxRobotsBodyBytes = 500 * 1024;
+
     private readonly Dictionary<string, RobotsRules> _cache = new(StringComparer.Ordinal);
+    private readonly Queue<string> _order = new();
     private readonly System.Threading.Lock _lock = new();
 
     private sealed record RobotsRules(List<string> Disallowed, List<string> Allowed);
@@ -13,10 +22,33 @@ public sealed class RobotsCache
     /// <summary>Parse a robots.txt body for <paramref name="ourAgent"/> and cache it under a domain.</summary>
     public void ParseAndStore(string domain, string body, string ourAgent)
     {
-        var rules = ParseRobotsTxt(body, ourAgent);
+        var rules = ParseRobotsTxt(TruncateBody(body), ourAgent);
         lock (_lock)
         {
-            _cache[domain] = rules;
+            if (_cache.TryAdd(domain, rules))
+            {
+                _order.Enqueue(domain);
+            }
+            else
+            {
+                _cache[domain] = rules;
+            }
+
+            while (_cache.Count > MaxRobotsEntries && _order.TryDequeue(out var oldest))
+            {
+                _cache.Remove(oldest);
+            }
+        }
+    }
+
+    internal int Count
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _cache.Count;
+            }
         }
     }
 
@@ -44,33 +76,80 @@ public sealed class RobotsCache
             }
         }
 
+        // RFC 9309 2.2.2: the most specific (longest) match wins; Allow only wins when both
+        // rules have the same length.
+        int bestLength = -1;
+        bool bestAllow = true;
         foreach (var pattern in rules.Allowed)
         {
-            if (PathMatches(path, pattern))
+            if (PathMatches(path, pattern) && pattern.Length >= bestLength)
             {
-                return true;
+                bestLength = pattern.Length;
+                bestAllow = true;
             }
         }
 
         foreach (var pattern in rules.Disallowed)
         {
-            if (PathMatches(path, pattern))
+            if (PathMatches(path, pattern)
+                && (pattern.Length > bestLength || (pattern.Length == bestLength && !bestAllow)))
             {
-                return false;
+                bestLength = pattern.Length;
+                bestAllow = false;
             }
         }
 
-        return true;
+        return bestLength < 0 || bestAllow;
+    }
+
+    /// <summary>
+    /// The first <see cref="MaxRobotsBodyBytes"/> UTF-8 bytes of <paramref name="body"/>, cut
+    /// back to the last complete line so no rule is parsed from a truncated line.
+    /// </summary>
+    private static string TruncateBody(string body)
+    {
+        if (body.Length <= MaxRobotsBodyBytes / 3 || System.Text.Encoding.UTF8.GetByteCount(body) <= MaxRobotsBodyBytes)
+        {
+            return body;
+        }
+
+        int bytes = 0;
+        int end = 0;
+        foreach (var rune in body.EnumerateRunes())
+        {
+            if (bytes + rune.Utf8SequenceLength > MaxRobotsBodyBytes)
+            {
+                break;
+            }
+
+            bytes += rune.Utf8SequenceLength;
+            end += rune.Utf16SequenceLength;
+        }
+
+        var newline = body.LastIndexOf('\n', end - 1, end);
+        return newline < 0 ? body[..end] : body[..newline];
+    }
+
+    private sealed class Group
+    {
+        public List<string> Agents { get; } = [];
+        public List<string> Disallowed { get; } = [];
+        public List<string> Allowed { get; } = [];
+        public bool RulesStarted { get; set; }
     }
 
     private static RobotsRules ParseRobotsTxt(string body, string ourAgent)
     {
-        var ourAgentLower = ourAgent.ToLowerInvariant();
-        var disallowed = new List<string>();
-        var allowed = new List<string>();
-        var inMatchingSection = false;
-        var foundSpecific = false;
+        // RFC 9309 2.2.1: a group applies when any of its user-agent lines names one of our
+        // product tokens (not a substring of the UA), or when it names "*". Consecutive
+        // user-agent lines belong to the same group; the first rule ends the agent list.
+        var ourTokens = new List<string>();
+        foreach (var token in ourAgent.Split([' ', '\t', '\n', '\r', '/', '(', ')', ';', ','], StringSplitOptions.RemoveEmptyEntries))
+        {
+            ourTokens.Add(token.ToLowerInvariant());
+        }
 
+        var groups = new List<Group>();
         foreach (var raw in Lines(body))
         {
             var line = raw.Trim();
@@ -86,66 +165,52 @@ public sealed class RobotsCache
 
             var key = rawKey.Trim().ToLowerInvariant();
             var value = rawValue.Trim();
-
             switch (key)
             {
                 case "user-agent":
-                    var agent = value.ToLowerInvariant();
-                    inMatchingSection = agent == "*"
-                        || ourAgentLower.Contains(agent, StringComparison.Ordinal)
-                        || agent.Contains(ourAgentLower, StringComparison.Ordinal);
-                    if (agent != "*" && inMatchingSection)
+                    if (groups.Count == 0 || groups[^1].RulesStarted)
                     {
-                        foundSpecific = true;
+                        groups.Add(new Group());
                     }
 
+                    groups[^1].Agents.Add(value.ToLowerInvariant());
                     break;
-                case "disallow" when inMatchingSection && value.Length != 0:
-                    disallowed.Add(value);
-                    break;
-                case "allow" when inMatchingSection && value.Length != 0:
-                    allowed.Add(value);
+                case "allow" or "disallow" when groups.Count != 0:
+                    var group = groups[^1];
+                    group.RulesStarted = true;
+                    if (value.Length != 0)
+                    {
+                        (key == "allow" ? group.Allowed : group.Disallowed).Add(value);
+                    }
+
                     break;
                 default:
                     break;
             }
         }
 
-        if (!foundSpecific)
+        bool Matches(Group group)
         {
-            disallowed.Clear();
-            allowed.Clear();
-            inMatchingSection = false;
-
-            foreach (var raw in Lines(body))
+            foreach (var agent in group.Agents)
             {
-                var line = raw.Trim();
-                if (line.Length == 0 || line.StartsWith('#'))
+                if (agent != "*" && ourTokens.Contains(agent))
                 {
-                    continue;
+                    return true;
                 }
+            }
 
-                if (!TrySplitOnce(line, ':', out var rawKey, out var rawValue))
-                {
-                    continue;
-                }
+            return false;
+        }
 
-                var key = rawKey.Trim().ToLowerInvariant();
-                var value = rawValue.Trim();
-                switch (key)
-                {
-                    case "user-agent":
-                        inMatchingSection = value.Trim() == "*";
-                        break;
-                    case "disallow" when inMatchingSection && value.Length != 0:
-                        disallowed.Add(value);
-                        break;
-                    case "allow" when inMatchingSection && value.Length != 0:
-                        allowed.Add(value);
-                        break;
-                    default:
-                        break;
-                }
+        var specific = groups.Exists(Matches);
+        var disallowed = new List<string>();
+        var allowed = new List<string>();
+        foreach (var group in groups)
+        {
+            if (specific ? Matches(group) : group.Agents.Contains("*"))
+            {
+                disallowed.AddRange(group.Disallowed);
+                allowed.AddRange(group.Allowed);
             }
         }
 

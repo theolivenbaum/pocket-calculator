@@ -350,7 +350,7 @@ Security (exposed today unless noted):
 - [x] `a449a80` - MCP refs must be checked against the recorded node
 - [ ] `74ac75f`, `a3171f3`, `0d11d55`, `5efc4a1` - failed/evicted images refetched on
       every relayout
-- [ ] `0e17221` + robots in `b3475a5`, `8dd9d48`, `9e0b8b6` - bounded robots cache, body
+- [x] `0e17221` + robots in `b3475a5`, `8dd9d48`, `9e0b8b6` - bounded robots cache, body
       cap, agent grouping and matching (rewrite `Robots.cs` once)
 - [ ] `677f6d2` budgets - Web Storage total and per-origin caps
 - [x] `b3475a5`, `7a8c0e3`, `fd5c729` - cookie prefix rules on the import path; a
