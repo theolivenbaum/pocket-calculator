@@ -643,6 +643,46 @@ public class SsrfTests
         Assert.Equal(24, fixture.NetworkRequests);
     }
 
+    // Upstream a134a7e.
+    [Fact]
+    public async Task LastModifiedOnlySubresourceIsReusedOnTheNextLoad()
+    {
+        using var fixture = CacheableResourceFixture.Serve(200, "Last-Modified: Mon, 01 Jan 2018 00:00:00 GMT\r\n");
+        var initiator = new Uri(fixture.Url, "/page.html");
+        using var client = new PocketCalculatorHttpClient(new CookieJar(), null, true);
+        var request = ResourceRequest.Subresource(ResourceType.Script, initiator);
+        for (var i = 0; i < 3; i++)
+        {
+            var response = await client.FetchResourceWithCallbacksAsync(fixture.Url, request.Copy(), null);
+            Assert.Equal(200, response.Status);
+        }
+        Assert.Equal(1, fixture.NetworkRequests);
+    }
+
+    [Fact]
+    public async Task StaleLastModifiedSubresourcesAreNotReused()
+    {
+        string[] cases =
+        [
+            "Last-Modified: Mon, 01 Jan 2018 00:00:00 GMT\r\nAge: 86400\r\n",
+            "Date: Tue, 02 Jan 2018 00:00:00 GMT\r\nLast-Modified: Mon, 01 Jan 2018 00:00:00 GMT\r\n",
+            "Date: Tue Jan  2 00:00:00 2018\r\nLast-Modified: Mon, 01 Jan 2018 00:00:00 GMT\r\n",
+        ];
+        foreach (var headers in cases)
+        {
+            using var fixture = CacheableResourceFixture.Serve(200, headers);
+            var initiator = new Uri(fixture.Url, "/page.html");
+            using var client = new PocketCalculatorHttpClient(new CookieJar(), null, true);
+            var request = ResourceRequest.Subresource(ResourceType.Script, initiator);
+            for (var i = 0; i < 2; i++)
+            {
+                var response = await client.FetchResourceWithCallbacksAsync(fixture.Url, request.Copy(), null);
+                Assert.Equal(200, response.Status);
+            }
+            Assert.Equal(2, fixture.NetworkRequests);
+        }
+    }
+
     [Fact]
     public async Task NoStoreVaryStarAndErrorResponsesAreNotReused()
     {

@@ -630,11 +630,13 @@ public sealed class PocketCalculatorHttpClient : IDisposable
         var finished = false;
         try
         {
+            var requestStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             var response = await FetchWithProfileUncachedAsync(
                     initialMethod, url, initialBody, callbacks, request, cancellationToken)
                 .ConfigureAwait(false);
 
-            var lifetime = ResponseCacheLifetime(response);
+            var lifetime = ResponseCacheLifetime(
+                response, System.Diagnostics.Stopwatch.GetElapsedTime(requestStarted));
             SharedFetchOutcome outcome;
             if (lifetime is { } ttl)
             {
@@ -1641,7 +1643,19 @@ public sealed class PocketCalculatorHttpClient : IDisposable
         string.Equals(url.Scheme, "http", StringComparison.Ordinal)
         || string.Equals(url.Scheme, "https", StringComparison.Ordinal);
 
-    internal static TimeSpan? ResponseCacheLifetime(Response response)
+    internal static TimeSpan? ResponseCacheLifetime(Response response) =>
+        ResponseCacheLifetime(response, TimeSpan.Zero);
+
+    internal static TimeSpan? ResponseCacheLifetime(Response response, TimeSpan responseDelay) =>
+        ResponseCacheLifetime(response, responseDelay, () => DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+    /// <summary>
+    /// How long a response may be reused from the resource cache, or null. Upstream
+    /// a134a7e: <c>max-age</c> is parsed strictly (a repeated, empty, signed, spaced or
+    /// non-numeric value means no reuse, and no heuristic either), and a response with no
+    /// explicit freshness gets RFC 9111 4.2.2's heuristic from <c>Last-Modified</c>.
+    /// </summary>
+    internal static TimeSpan? ResponseCacheLifetime(Response response, TimeSpan responseDelay, Func<long?> now)
     {
         if (response.Status is < 200 or >= 300
             || response.RedirectedFrom.Count != 0
@@ -1652,33 +1666,124 @@ public sealed class PocketCalculatorHttpClient : IDisposable
             return null;
         }
 
-        if (response.Header("cache-control") is not { } cacheControl)
+        if (response.Header("cache-control") is { } cacheControl)
+        {
+            ulong? maxAge = null;
+            foreach (var raw in cacheControl.Split(','))
+            {
+                var directive = raw.Trim();
+                var equals = directive.IndexOf('=', StringComparison.Ordinal);
+                var name = equals < 0 ? directive : directive[..equals].Trim();
+                var value = equals < 0 ? null : directive[(equals + 1)..].Trim();
+                if (name.Equals("no-store", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("no-cache", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Qualified no-cache would require stripping or validating fields.
+                    return null;
+                }
+
+                if (name.Equals("max-age", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (value is null)
+                    {
+                        return null;
+                    }
+                    if (value.StartsWith('"'))
+                    {
+                        if (value.Length < 2 || !value.EndsWith('"'))
+                        {
+                            return null;
+                        }
+                        value = value[1..^1];
+                    }
+                    if (value.Length == 0 || !value.All(char.IsAsciiDigit)
+                        || !ulong.TryParse(value, System.Globalization.NumberStyles.None,
+                            System.Globalization.CultureInfo.InvariantCulture, out var seconds))
+                    {
+                        return null;
+                    }
+                    // Invalid or repeated explicit freshness must not enable heuristics.
+                    if (maxAge is not null)
+                    {
+                        return null;
+                    }
+                    maxAge = seconds;
+                }
+            }
+
+            if (maxAge is { } explicitSeconds)
+            {
+                return explicitSeconds > 0 ? SecondsToSpan(explicitSeconds) : null;
+            }
+        }
+
+        return now() is { } current ? HeuristicCacheLifetime(response, current, responseDelay) : null;
+    }
+
+    /// <summary>
+    /// Upper bound for a heuristic lifetime, so a file last changed years ago is still
+    /// re-checked at least daily.
+    /// </summary>
+    internal static readonly TimeSpan HeuristicFreshnessCap = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// RFC 9111 4.2.2, as browsers apply it: 10% of the time since <c>Last-Modified</c>,
+    /// capped at a day, less the response's current age.
+    /// </summary>
+    private static TimeSpan? HeuristicCacheLifetime(Response response, long now, TimeSpan responseDelay)
+    {
+        // Heuristically cacheable 2xx codes (RFC 9110 15.1).
+        if (response.Status is not (200 or 203 or 204 or 206))
         {
             return null;
         }
-
-        long? maxAge = null;
-        foreach (var raw in cacheControl.Split(','))
+        // An explicit Expires is not evaluated here; stay uncached rather than
+        // second-guess it with a heuristic.
+        if (response.Header("expires") is not null
+            || response.Header("last-modified") is not { } lastModifiedHeader
+            || !CookieJar.TryParseHttpDate(lastModifiedHeader, out var lastModified))
         {
-            var lower = raw.Trim().ToLowerInvariant();
-            if (lower == "no-store" || lower == "no-cache")
-            {
-                return null;
-            }
-
-            if (lower.StartsWith("max-age=", StringComparison.Ordinal)
-                && long.TryParse(
-                    lower["max-age=".Length..].Trim('"'),
-                    System.Globalization.NumberStyles.None,
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    out var parsed))
-            {
-                maxAge = parsed;
-            }
+            return null;
         }
-
-        return maxAge is > 0 ? TimeSpan.FromSeconds(maxAge.Value) : null;
+        long date = now;
+        // An unparsed Date must not make an old response look newly generated.
+        if (response.Header("date") is { } dateHeader && !CookieJar.TryParseHttpDate(dateHeader, out date))
+        {
+            return null;
+        }
+        if (date < lastModified)
+        {
+            return null;
+        }
+        var lifetime = SecondsToSpan((ulong)(date - lastModified) / 10);
+        if (lifetime > HeuristicFreshnessCap)
+        {
+            lifetime = HeuristicFreshnessCap;
+        }
+        // Freshness is measured from origin generation or validation, not cache insertion.
+        ulong age = 0;
+        if (response.Header("age") is { } ageHeader
+            && !ulong.TryParse(ageHeader, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out age))
+        {
+            return null;
+        }
+        var ageSpan = SecondsToSpan(age);
+        if (ageSpan == TimeSpan.MaxValue || TimeSpan.MaxValue - ageSpan < responseDelay)
+        {
+            return null;
+        }
+        var sinceDate = SecondsToSpan(now > date ? (ulong)(now - date) : 0);
+        var currentAge = sinceDate > ageSpan + responseDelay ? sinceDate : ageSpan + responseDelay;
+        if (currentAge >= lifetime)
+        {
+            return null;
+        }
+        return lifetime - currentAge;
     }
+
+    private static TimeSpan SecondsToSpan(ulong seconds) =>
+        seconds >= (ulong)TimeSpan.MaxValue.TotalSeconds ? TimeSpan.MaxValue : TimeSpan.FromSeconds((long)seconds);
 
     /// <summary>
     /// Derive the sec-ch-ua and sec-ch-ua-platform client-hint header values from a

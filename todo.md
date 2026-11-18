@@ -441,8 +441,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `fb23f18`, `0a14a4c`, `721e40f` (with open
       `2b07b76`), `ee74973`, `60107d1`. Keep history helpers on `__obscura_host` and
       gate traversal through the `file://` check
+- [x] `a134a7e`: the resource cache gives a response with only `Last-Modified` a tenth of its
+      age (24 h cap, 200/203/204/206, no `Expires`, less its current age); `max-age` is strict,
+      and a repeated, quoted-empty, signed or spaced value disables reuse and the heuristic
 - [ ] Network fidelity: `359362f`, `3f37d91` + `73358fd` + `8440fe6`, `3aa2f59`, `a1dd711`,
-      `004bcdd`, `a134a7e` (after `8162c0f`)
+      `004bcdd`
 - [x] `0155807` (AbortSignal): fetch() rejects with the signal's reason before and during the
       request (the op is cancelled, Network.loadingFailed net::ERR_ABORTED), an unread body
       errors on abort, Request has its own following signal, private signal state, trusted
