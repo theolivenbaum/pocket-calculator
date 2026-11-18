@@ -343,6 +343,21 @@ public sealed class CookieJar
     /// Deviation from cookies.rs, which does not enforce prefixes (SECURITY.md M5): a
     /// sibling subdomain could plant <c>__Host-session</c> with <c>Domain=parent</c>.
     /// </remarks>
+    /// <summary>
+    /// Rust <c>cookie_prefix_allows</c> for imported cookies, which carry a resolved path:
+    /// <c>__Secure-</c> needs Secure; <c>__Host-</c> also needs host-only scope and Path=/.
+    /// Matched case-insensitively, as Chromium does.
+    /// </summary>
+    private static bool ImportPrefixRulesHold(string name, bool secure, bool hasDomainAttr, string path)
+    {
+        if (name.StartsWith("__Host-", StringComparison.OrdinalIgnoreCase))
+        {
+            return secure && !hasDomainAttr && path == "/";
+        }
+
+        return !name.StartsWith("__Secure-", StringComparison.OrdinalIgnoreCase) || secure;
+    }
+
     private static bool PrefixRulesHold(
         string name,
         string value,
@@ -758,19 +773,35 @@ public sealed class CookieJar
         var now = Now();
         lock (_lock)
         {
-            foreach (var (cookie, hostOnly) in cookies)
+            foreach (var (cookie, importedHostOnly) in cookies)
             {
+                var hostOnly = importedHostOnly;
                 // RFC 6265 4.1.2.3: the leading dot is ignored. The Set-Cookie path
                 // already strips it, but this code did not, which is why one cookie
                 // became two entries.
                 var domain = CanonicalDomain(cookie.Domain);
-                if (domain.Length == 0
-                    || (PublicSuffixList.IsPublicSuffix(domain)
-                        && domain != "localhost"
-                        && !System.Net.IPAddress.TryParse(domain, out _)))
+                if (domain.Length == 0)
                 {
                     continue;
                 }
+
+                // upstream fd5c729: a trusted import naming a public suffix (a session for
+                // httpbin.org) is kept host-only for that host, as Set-Cookie keeps a suffix
+                // equal to the origin, rather than dropped.
+                var suffixHost = PublicSuffixList.IsPublicSuffix(domain)
+                    && domain != "localhost"
+                    && !System.Net.IPAddress.TryParse(domain, out _);
+
+                // upstream b3475a5 / 7a8c0e3: the RFC 6265bis prefix rules apply to imports too
+                // (CDP setCookie(s), cookies.json, MCP storage restore). A trusted suffix import
+                // is host-only, but an explicit dotted Domain still invalidates __Host-.
+                var prefixHostOnly = hostOnly || (suffixHost && !cookie.Domain.AsSpan().Trim().StartsWith('.'));
+                if (!ImportPrefixRulesHold(cookie.Name, cookie.Secure || cookie.PartitionKey is not null, !prefixHostOnly, cookie.Path))
+                {
+                    continue;
+                }
+
+                hostOnly = hostOnly || suffixHost;
 
                 var sameSite = cookie.SameSite.Length == 0
                     ? DefaultSameSite

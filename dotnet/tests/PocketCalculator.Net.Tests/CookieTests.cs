@@ -875,8 +875,9 @@ public class CookieTests
         Assert.Equal("sid=1", jar.GetCookieHeaderSameSite(new Uri("https://api.example.com/")));
     }
 
+    // upstream fd5c729: a public-suffix import is kept host-only rather than dropped.
     [Fact]
-    public void CdpImportSkipsPublicSuffixAndInsecureSameSiteNone()
+    public void CdpImportKeepsPublicSuffixHostOnlyAndSkipsInsecureSameSiteNone()
     {
         var jar = new CookieJar();
         var suffix = Cdp("a", "1", "co.uk", "/");
@@ -884,9 +885,8 @@ public class CookieTests
         none.SameSite = "None";
         var localhost = Cdp("c", "1", "localhost", "/");
         jar.SetCookiesFromCdp([suffix, none, localhost]);
-        var all = jar.GetAllCookies();
-        Assert.Single(all);
-        Assert.Equal("c", all[0].Name);
+        Assert.Equal(["a", "c"], jar.GetAllCookies().Select(static c => c.Name).Order(StringComparer.Ordinal));
+        Assert.Equal(string.Empty, jar.GetCookieHeaderSameSite(new Uri("https://example.co.uk/")));
     }
 
     [Fact]
@@ -1086,5 +1086,98 @@ public class CookieTests
         Assert.False(CookieJar.DomainMatches("10.168.1.100", ".168.1.100"));
         Assert.False(CookieJar.DomainMatches("[::ffff:10.0.0.1]", "0.0.1"));
         Assert.True(CookieJar.DomainMatches("sub.example.com", "example.com"));
+    }
+
+    private static CookieInfo Imported(string name, string domain, string path = "/", bool secure = true) => new()
+    {
+        Name = name, Value = "restored", Domain = domain, Path = path, Secure = secure, HttpOnly = true,
+        SameSite = "Lax", Expires = null,
+    };
+
+    private static CookieJar Reloaded(CookieJar jar, int expected)
+    {
+        var dir = Directory.CreateTempSubdirectory("obscura-cookie-import-");
+        try
+        {
+            var file = Path.Combine(dir.FullName, "cookies.json");
+            jar.SaveToFile(file);
+            var reloaded = new CookieJar();
+            Assert.Equal(expected, reloaded.LoadFromFile(file));
+            return reloaded;
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    // upstream 7a8c0e3: host_prefix_cookie_import_and_reload_preserve_root_path
+    [Fact]
+    public void HostPrefixCookieImportAndReloadPreserveRootPath()
+    {
+        var url = new Uri("https://example.test/page");
+        var source = new CookieJar();
+        source.SetCookie("__Host-sid=kept; Secure; Path=/", url);
+        var imported = new CookieJar();
+        imported.SetCookiesFromCdpWithScope(source.GetAllCookies().Select(static c => (c, true)));
+        var loaded = Reloaded(source, 1);
+        var subdomain = new Uri("https://sub.example.test/page");
+        foreach (var jar in new[] { imported, loaded })
+        {
+            Assert.Equal("__Host-sid=kept", jar.GetCookieHeaderSameSite(url));
+            Assert.Equal(string.Empty, jar.GetCookieHeaderSameSite(subdomain));
+        }
+    }
+
+    // upstream b3475a5: the prefix rules apply to CDP imports too.
+    [Theory]
+    [InlineData("__Host-a", "example.test", "/", true, false, false)]   // domain-scoped
+    [InlineData("__Host-a", "example.test", "/", false, true, false)]   // not Secure
+    [InlineData("__host-a", "example.test", "/app", true, true, false)] // not Path=/
+    [InlineData("__Host-a", "example.test", "/", true, true, true)]
+    [InlineData("__Secure-a", "example.test", "/", false, false, false)]
+    [InlineData("__SECURE-a", "example.test", "/", true, false, true)]
+    public void ImportedCookiesObeyPrefixRules(string name, string domain, string path, bool secure, bool hostOnly, bool accepted)
+    {
+        var jar = new CookieJar();
+        jar.SetCookiesFromCdpWithScope([(Imported(name, domain, path, secure), hostOnly)]);
+        Assert.Equal(accepted, jar.GetAllCookies().Count == 1);
+    }
+
+    // upstream fd5c729: imported_public_suffix_cookies_are_host_only
+    [Theory]
+    [InlineData("httpbin.org")]
+    [InlineData(".httpbin.org")]
+    [InlineData("com")]
+    [InlineData(".co.uk")]
+    public void ImportedPublicSuffixCookiesAreHostOnly(string domain)
+    {
+        var jar = new CookieJar();
+        jar.SetCookiesFromCdp([Imported("session", domain)]);
+        var host = domain.TrimStart('.');
+        var cookies = jar.GetAllCookies();
+        Assert.Single(cookies);
+        Assert.Equal(host, cookies[0].Domain);
+        Assert.Contains("session=restored", jar.GetCookieHeaderSameSite(new Uri($"https://{host}/")));
+        Assert.Equal(string.Empty, jar.GetCookieHeaderSameSite(new Uri($"https://sub.{host}/")));
+        var reloaded = Reloaded(jar, 1);
+        Assert.Contains("session=restored", reloaded.GetCookieHeaderSameSite(new Uri($"https://{host}/")));
+        Assert.Equal(string.Empty, reloaded.GetCookieHeaderSameSite(new Uri($"https://sub.{host}/")));
+    }
+
+    // upstream fd5c729: imported_public_suffix_host_prefixes_preserve_scope_after_reload
+    [Theory]
+    [InlineData("httpbin.org", true, "/", true)]
+    [InlineData(".httpbin.org", true, "/", false)]
+    [InlineData("httpbin.org", false, "/", false)]
+    [InlineData("httpbin.org", true, "/admin", false)]
+    public void ImportedPublicSuffixHostPrefixesPreserveScopeAfterReload(string domain, bool secure, string path, bool accepted)
+    {
+        var jar = new CookieJar();
+        jar.SetCookiesFromCdp([Imported("__Host-session", domain, path, secure)]);
+        Assert.Equal(accepted, jar.GetAllCookies().Count != 0);
+        var reloaded = Reloaded(jar, accepted ? 1 : 0);
+        Assert.Equal(accepted, reloaded.GetCookieHeaderSameSite(new Uri("https://httpbin.org/")).Contains("__Host-session=restored", StringComparison.Ordinal));
+        Assert.Equal(string.Empty, reloaded.GetCookieHeaderSameSite(new Uri("https://sub.httpbin.org/")));
     }
 }
