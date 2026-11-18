@@ -14468,6 +14468,11 @@ function _emptyFileList() { return _makeFileList([]); }
 // The loop uses bootstrap's own atob, Uint8Array and string built-ins, not Array.prototype.map
 // and the page-replaceable globals (SECURITY.md L10).
 function _setInputFiles(el, specs) {
+  // upstream 0d8a200: only a live <input type=file> takes a selection; the host checks the
+  // target and `multiple` first, and a false return is a CDP error.
+  // (No instanceof HTMLInputElement: that global is page-writable; the host checked the local
+  // name and type through __obscura_host.dom.)
+  if (!el || typeof el._nid !== 'number' || _cache.get(el._nid) !== el) return false;
   const list = _isArray(specs) ? specs : [];
   // The selection is node state, so it lives in the host, where every realm over the
   // document reads it (port addition, SECURITY.md M6): an isolated world sees the files
@@ -14494,6 +14499,7 @@ function _setInputFiles(el, specs) {
   // ones, which would silently break the exact case this feature targets.
   try { _dispatch(el, _markTrusted(new Event("input", { bubbles: true }))); } catch (_e) {}
   try { _dispatch(el, _markTrusted(new Event("change", { bubbles: true }))); } catch (_e) {}
+  return true;
 }
 // Real File objects (backed by the bytes) for [{ name, type, b64 }].
 function _filesFromSpecs(list) {

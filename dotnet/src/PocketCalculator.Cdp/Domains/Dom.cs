@@ -333,14 +333,49 @@ public static class Dom
                         "DOM.setFileInputFiles is disabled. Restart with `pocket-calculator serve --allow-file-access` to enable local file uploads.");
                 }
 
-                ulong nodeId = ResolveNodeId(page, parameters);
-                List<string> paths = [];
-                foreach (JsonNode? entry in JsonExt.AsJsonArray(parameters.Get("files")) ?? [])
+                // upstream 0d8a200: validate the request and the target before any file is
+                // read, refuse non-string paths, honour `multiple`, and report failures as CDP
+                // errors instead of answering success.
+                if (JsonExt.AsJsonArray(parameters.Get("files")) is not { } fileEntries)
                 {
-                    if (entry.AsString() is { } path)
-                    {
-                        paths.Add(path);
-                    }
+                    throw new DomainError("DOM.setFileInputFiles requires a files array");
+                }
+
+                List<string> paths = [];
+                foreach (JsonNode? entry in fileEntries)
+                {
+                    paths.Add(entry.AsString() ?? throw new DomainError("DOM.setFileInputFiles requires string file paths"));
+                }
+
+                ulong nodeId = ResolveNodeId(page, parameters);
+                uint document = DocumentOf(page, parameters);
+                string Target(string specsJson, bool validateOnly) =>
+                    $$"""
+                    (function() {
+                        var h = __obscura_host.dom;
+                        var el = h.wrap({{nodeId.ToString(CultureInfo.InvariantCulture)}});
+                        if (!el || h.nodeType(el) !== 1) return 'missing';
+                        if (h.localName(el) !== 'input' || h.lower(h.getAttribute(el, 'type') || '') !== 'file') return 'invalid';
+                        if ({{(validateOnly ? "true" : "false")}}) return h.getAttribute(el, 'multiple') !== null ? 'multiple' : 'single';
+                        return __obscura_host.setInputFiles(el, {{specsJson}}) === true ? 'ok' : 'failed';
+                    })()
+                    """;
+                string outcome = page.EvaluateHostIn(document, Target("[]", validateOnly: true)).AsString() ?? "failed";
+                switch (outcome)
+                {
+                    case "missing":
+                        throw new DomainError("Could not find node with given id");
+                    case "invalid":
+                        throw new DomainError("Node is not a file input element");
+                    case "single" or "multiple":
+                        break;
+                    default:
+                        throw new DomainError("Could not set files on the input element");
+                }
+
+                if (outcome == "single" && paths.Count > 1)
+                {
+                    paths.RemoveRange(1, paths.Count - 1);
                 }
 
                 var specs = new JsonArray();
@@ -367,13 +402,13 @@ public static class Dom
                     });
                 }
 
-                string specsJson = CdpJson.Serialize(specs);
-                string code =
-                    $"(function() {{ var el = __obscura_host.dom.wrap({nodeId}); "
-                    + $"if (el) {{ __obscura_host.setInputFiles(el, {specsJson}); return true; }} return false; }})()";
                 // A host helper; upstream calls the page-visible __obscura_setInputFiles global,
                 // which let page script fill a file input and fire trusted input and change.
-                page.EvaluateHostIn(DocumentOf(page, parameters), code);
+                if (page.EvaluateHostIn(document, Target(CdpJson.Serialize(specs), validateOnly: false)).AsString() != "ok")
+                {
+                    throw new DomainError("Could not set files on the input element");
+                }
+
                 return DomainResult.Empty();
             }
 

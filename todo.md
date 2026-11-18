@@ -363,8 +363,9 @@ Security (exposed today unless noted):
 - [x] `9b05070` - frame-realm script ops resolve the frame's document (the image and canvas
       ops already did)
 - [x] `c8e5b9e` - the linked-stylesheet load script addresses its link by node id
-- [ ] `0d8a200`, `d853a73`, `2f448c3` - upload validation, wrapKey usages, detached-frame
-      timers
+- [x] `0d8a200` - `DOM.setFileInputFiles` validates the request and an `<input type=file>`
+      target before reading, honours `multiple`, and reports failures as CDP errors
+- [ ] `d853a73`, `2f448c3` - wrapKey usages, detached-frame timers
 
 Correctness, by area (order and grouping as in the review's per-area "suggested port order"):
 

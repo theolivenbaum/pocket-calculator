@@ -263,6 +263,67 @@ public sealed class DomDomainTests
     }
 
     /// <summary>
+    /// upstream 0d8a200 (file_upload_integrity.rs): the request and target are validated
+    /// before any file is read; `multiple` is honoured; failures are CDP errors.
+    /// </summary>
+    [Fact]
+    public async Task FileUploadsValidateBeforeReadingAndHonourMultiple()
+    {
+        var ctx = CdpContext.New();
+        using IDisposable owned = CoreCdp.Owned(ctx);
+        string pageId = ctx.CreatePage();
+        string session = $"{pageId}-session";
+        ctx.Sessions[session] = pageId;
+        string path = Path.Combine(Path.GetTempPath(), $"obscura-upload-integrity-{Guid.NewGuid():N}.bin");
+        File.WriteAllBytes(path, [0, 128, 255, 13, 10]);
+        string missing = Path.ChangeExtension(path, ".missing");
+        try
+        {
+            CdpDomainFixtures.Unwrap(await PageDomain.HandleAsync(
+                "navigate",
+                CdpDomainFixtures.Json(
+                    """{"url":"data:text/html,<input id=f type=file multiple><input id=s type=file><input id=t type=text><div id=d></div>","waitUntil":"load"}"""),
+                ctx,
+                session));
+            ctx.GetSessionPageMut(session)!.Context.AllowFileAccess = true;
+            var nodes = new List<ulong>();
+            foreach (string selector in new[] { "#f", "#s", "#t", "#d" })
+            {
+                JsonNode found = CdpDomainFixtures.Unwrap(await DomDomain.HandleAsync(
+                    "querySelector", new JsonObject { ["selector"] = selector }, ctx, session));
+                nodes.Add(found["nodeId"].AsU64()!.Value);
+            }
+
+            Task<DomainResult> Upload(JsonObject parameters) =>
+                DomDomain.HandleAsync("setFileInputFiles", parameters, ctx, session);
+
+            CdpDomainFixtures.Unwrap(await Upload(new JsonObject { ["backendNodeId"] = nodes[0], ["files"] = new JsonArray(path, path) }));
+            foreach ((ulong node, string expected) in new[] { (999_999UL, "Could not find node"), (nodes[2], "not a file input"), (nodes[3], "not a file input") })
+            {
+                string error = CdpDomainFixtures.ErrorOf(await Upload(new JsonObject { ["nodeId"] = node, ["files"] = new JsonArray(missing) }));
+                Assert.Contains(expected, error, StringComparison.Ordinal);
+                Assert.DoesNotContain("cannot read", error, StringComparison.Ordinal);
+            }
+
+            foreach (JsonNode? files in new JsonNode?[] { null, JsonValue.Create("invalid"), new JsonArray(42), new JsonArray((JsonNode?)null) })
+            {
+                CdpDomainFixtures.ErrorOf(await Upload(new JsonObject { ["nodeId"] = nodes[0], ["files"] = files }));
+            }
+
+            CdpDomainFixtures.ErrorOf(await Upload(new JsonObject { ["nodeId"] = nodes[0] }));
+            PocketCalculator.Browser.Page page = ctx.GetSessionPageMut(session)!;
+            Assert.Equal(2.0, page.Evaluate("document.getElementById('f').files.length").AsF64());
+
+            CdpDomainFixtures.Unwrap(await Upload(new JsonObject { ["nodeId"] = nodes[1], ["files"] = new JsonArray(path, path) }));
+            Assert.Equal(1.0, page.Evaluate("document.getElementById('s').files.length").AsF64());
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>
     /// Issue #576: DOM.getBoxModel / getContentQuads build their quad from f64 pixel
     /// values, so the serializer emits integral coordinates as <c>256.0</c>. Strict CDP
     /// clients (Hermes Agent) deserialize the quad as i64 and reject the float.
