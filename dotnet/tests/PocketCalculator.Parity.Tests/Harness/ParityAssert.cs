@@ -52,10 +52,24 @@ public static class ParityAssert
     /// log labels, the worker's name). Compare with the name mapped back, so a
     /// parity difference means behaviour rather than branding.
     /// </summary>
-    internal static string UnbrandPort(string s) =>
-        s.Replace("pocket-calculator-worker", "obscura-worker", StringComparison.Ordinal)
+    internal static string UnbrandPort(string s)
+    {
+        // The checkout's own path can contain the port's name (a clone into
+        // `pocket-calculator/`), and a fixture's file:// URL then appears in both engines'
+        // output; that is not branding, so it is shielded from the rename.
+        const string Shield = "\u0000repo-root\u0000";
+        string? root = Fixtures.RepoRoot;
+        bool shield = root is not null && root.Contains("pocket", StringComparison.Ordinal);
+        if (shield)
+        {
+            s = s.Replace(root!, Shield, StringComparison.Ordinal);
+        }
+
+        s = s.Replace("pocket-calculator-worker", "obscura-worker", StringComparison.Ordinal)
             .Replace("pocket_calculator_cli", "obscura_cli", StringComparison.Ordinal)
             .Replace("pocket-calculator", "obscura", StringComparison.Ordinal);
+        return shield ? s.Replace(Shield, root!, StringComparison.Ordinal) : s;
+    }
 
     private static string Describe(EngineRun rust, EngineRun port, string[] args)
     {

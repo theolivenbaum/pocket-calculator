@@ -250,37 +250,23 @@ public sealed class CliBehaviorParityTests
     [ParityFact]
     public void Scrape_report_matches_across_the_worker_protocol()
     {
+        // data: pages, not file:// ones: upstream 36c0aef made scrape workers refuse file://
+        // (only `fetch` opts in), and the port keeps letting a user scrape their own files,
+        // a recorded deviation ("Upstream ports 1a3169d..4eb1235" in todo.md).
         var pages = new List<string>();
-        try
+        foreach (var name in new[] { "A", "B", "C" })
         {
-            foreach (var name in new[] { "A", "B", "C" })
-            {
-                var path = Path.Combine(Path.GetTempPath(), $"obscura-scrape-{name}-{Guid.NewGuid():N}.html");
-                File.WriteAllText(
-                    path, $"<html><head><title>{name}</title></head><body><p>{name}</p></body></html>");
-                pages.Add($"file://{path}");
-            }
+            pages.Add($"data:text/html,<html><head><title>{name}</title></head><body><p>{name}</p></body></html>");
+        }
 
-            string[] args = ["scrape", pages[0], pages[1], pages[2], "--concurrency", "2", "--quiet"];
-            var rust = ReferenceEngine.Rust(args);
-            var port = ReferenceEngine.Port(args);
-            Assert.Equal(0, rust.ExitCode);
-            Assert.Equal(rust.ExitCode, port.ExitCode);
-            Assert.Equal(MaskTimings(rust.StdOut), MaskTimings(port.StdOut));
-            // The eval-free shape must really be there, not two empty strings.
-            Assert.Contains("\"worker\": 1", MaskTimings(rust.StdOut), StringComparison.Ordinal);
-        }
-        finally
-        {
-            foreach (var page in pages)
-            {
-                var path = page["file://".Length..];
-                if (File.Exists(path))
-                {
-                    File.Delete(path);
-                }
-            }
-        }
+        string[] args = ["scrape", pages[0], pages[1], pages[2], "--concurrency", "2", "--quiet"];
+        var rust = ReferenceEngine.Rust(args);
+        var port = ReferenceEngine.Port(args);
+        Assert.Equal(0, rust.ExitCode);
+        Assert.Equal(rust.ExitCode, port.ExitCode);
+        Assert.Equal(MaskTimings(rust.StdOut), MaskTimings(port.StdOut));
+        // The eval-free shape must really be there, not two empty strings.
+        Assert.Contains("\"worker\": 1", MaskTimings(rust.StdOut), StringComparison.Ordinal);
     }
 
     /// <summary>Replace the wall-clock fields so the rest can be compared exactly.</summary>

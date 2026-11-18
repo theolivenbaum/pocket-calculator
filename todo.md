@@ -443,6 +443,13 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `35b9448`, `a2bfd32`,
       `3a4a0b5`, `8bb46be`, `3a9eb06`, `8310ebf`, `acff100`, `503a66d`, `786fde5` + `7d9ed8a`
 
+Parity against a reference built at `4eb1235` (2026-11-18): 377 of 385 cases identical. The
+eight that differ are all queued above: `legacy-table-apis` html/text/markdown (`25700b9`,
+`59276a3`, `d8f1467`, merge `4c12826`), `cssom-rule-ownership` and `retained-cssom-raster`
+html (CSSOM source preservation and rule ownership), `computed-insets` and
+`modern-hydration-contracts` html (script-appended nodes land on the other side of trailing
+whitespace; with `721e40f`, `ee74973`, `2b07b76`).
+
 Decisions:
 
 - [x] `05d7c13` (MCP keeps every tab's runtime) - declined (2026-11-18, maintainer decision):
@@ -2292,6 +2299,12 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   per-document resource fetcher does. Upstream retries those every 2 s. HTML `<img>` failures
   keep upstream's per-attempt rules. Still open: a successful image evicted from the
   512-entry / 64 MiB cache is fetched again when paint needs it, since its bytes are gone.
+
+- `scrape` keeps loading user-supplied `file://` URLs. Upstream `36c0aef` refuses them in scrape
+  workers (only `fetch` opts in to file access); the URLs come from the local user's own
+  command line, and web-to-file navigation stays gated (SECURITY.md H3).
+- Parity harness: `ParityAssert.UnbrandPort` no longer renames the checkout path when it
+  contains `pocket-calculator`, which made fixtures that print their own `file://` URL differ.
 
 ### Operator font directories load per render pass, not into a cached base database
 

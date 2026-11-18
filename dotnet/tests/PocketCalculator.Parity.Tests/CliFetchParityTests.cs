@@ -46,8 +46,16 @@ public sealed class CliFetchParityTests
 
     [ParityTheory]
     [MemberData(nameof(SampledFixtures))]
-    public void Dump_markdown_matches(string fixture) =>
+    public void Dump_markdown_matches(string fixture)
+    {
+        // Deviation (SECURITY.md M10): the port's markdown keeps only http, https and mailto
+        // URLs, so an image whose only source is a data: URL keeps its alt text, where Rust
+        // prints the data URL. Asserted in Js.Tests MarkdownEscapingTests instead.
+        Assert.SkipWhen(
+            fixture.EndsWith("/max-height-replaced.html", StringComparison.Ordinal),
+            "markdown drops data: image URLs by design (SECURITY.md M10)");
         ParityAssert.SameStdOut("fetch", fixture, "--dump", "markdown", "--quiet");
+    }
 
     [ParityTheory]
     [MemberData(nameof(SampledFixtures))]
