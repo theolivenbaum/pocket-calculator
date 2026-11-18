@@ -429,9 +429,25 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `1fff1f7` native control text clip and centring; `9a3d12e` em scale; merge `8a4d745`
       real bold faces and `kern` pairs in `DomTextMeasure` / `PaintText.DrawText`, bold input
       text (list markers are the port's own path and unaffected)
-- [ ] Render layout: tables `2b61abf` + `7bf782b`; floats `9f64ce9`, `6a7bbf3`, `423e58a`;
-      inline `0e99b3a`, `a41696e`, `df5ee65`, `62e8e7f`; flex merges `fded066`/`322f46c`
-      then `3155d6a`, `a04e024`, `b223a2c`, `6234ed3`; `contain: size` from `542df14`
+- [x] Render layout (2026-11-18): tables `2b61abf` + `7bf782b` (hidden rows and groups leave
+      the native table model, rows and groups by used display, first thead/tfoot hoisted,
+      `display:none;display:table-row` restores); floats `9f64ce9` (fit tolerance), `6a7bbf3`
+      (+ `97f8f81`); inline `0e99b3a` (% heights across anonymous inline wrappers), `df5ee65`
+      (no transform on non-replaced inlines), `a41696e` partial (see Known deviations); flex
+      merge `fded066` (flex grammar, invalid keeps the cascade, auto-only main-size fallback),
+      merge `322f46c` + `b223a2c` (fixed tables, replaced boxes and button controls keep the
+      zero cyclic basis; text controls publish an intrinsic size for a % calc width),
+      `3155d6a` (content basis, ratio transfer, clamping); `contain: size / inline-size /
+      strict` from `542df14` (render part only). Already in C#, tests ported: `423e58a`
+      (+ `ab19571`), `62e8e7f`, `a04e024`, `6234ed3`, `3085f5a`; `b60536d` skip (Rust test
+      wiring). Still open from `542df14`: empty grid tracks in scrollable overflow, overflow
+      across `display:contents` wrappers (unverified)
+- [ ] Open, found while porting `322f46c` (predates it, seen at `fe46223`): a percentage
+      `calc()` width on an inline-level atomic box (input, button, textarea, inline-block)
+      lays out at its edges only, with or without a flex ancestor; Chromium resolves
+      `calc(100% - 32px)` against the block (1557 in `CyclicFunctionalWidthOutsideFlex...`,
+      skipped). The taffy style resolves (1528 at a 1560 basis) but the IFC atomic's
+      `PerformChildLayout` returns 0; a plain `%` works because the style pass flattens it
 - [x] Computed style and visibility: `c280615`, `d40f503`/`1b6f423`, `7b632d9`, `f019ebe`
       `checkVisibility()`, `f32db47` (viewport keying; not the cross-realm delegation),
       `2c81268` closed dialogs (already in the port; tests added)
@@ -526,9 +542,10 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       ported (`ServeWorkerRecoveryTests`, `ServeShutdownTests`, `ServeWorkerRecycleTests`)
 - [x] `52d8ddd`: network errors from a send or a body read carry the inner exception chain
       (`ErrorChain`, each cause appended once), so a TLS failure names its certificate error
-- [ ] From merges: `61aa8fb` CDP URL pattern matcher (done, see CDP Fetch), `fded066` (`flex: 200px` sets grow 1, an
-      invalid `flex` keeps the cascade), `8a4d745` real bold faces and kerning (done, see
-      Render text), `322f46c`, `d04b661`, `ab19571`, `97f8f81`, `4c12826`, `716826c`
+- [ ] From merges: `61aa8fb` CDP URL pattern matcher (done, see CDP Fetch), `fded066` (done,
+      see Render layout), `8a4d745` real bold faces and kerning (done, see Render text),
+      `322f46c` (done, see Render layout), `ab19571` (already, tests ported), `97f8f81`
+      (done), `d04b661` (done, see Computed style), `4c12826`, `716826c`
 - [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `35b9448`, `a2bfd32`,
       `3a4a0b5`, `8bb46be`, `3a9eb06`, `8310ebf`, `acff100`, `503a66d`, `786fde5` + `7d9ed8a`
 
@@ -2515,6 +2532,35 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   Change events are dispatched as trusted events at a zero-delay task. Still open:
   `<picture><source media>` and `sizes` evaluate against plain screen, and a fetch-time
   `@import` media filter is not re-run on a preference change (as upstream).
+
+- Tables (`7bf782b`): `@supports (display: ...)` accepts all eight internal table values,
+  `table-cell`, the columns and `table-caption` included, since the port lays them all out and
+  Chromium supports them; upstream adds only the four row and group keywords. CSS tables keep
+  the port's own `CollectCssTableStructure`; only native table row collection takes upstream's
+  `table_row_display` rule (`DomTableSupport.NativeRowRole`).
+- Absolute static positions (`a41696e`, partial): a block-level out-of-flow box, and an
+  inline-level one that leads its line, is built in its source position, so block layout
+  gives it the static position Chromium does. Upstream also keeps an inline-level one after
+  inline content in place, through a zero-size placeholder in the run's atom wrapper; that
+  refuses the folded inline formatting context for every run holding such a box (each
+  `.sr-only` span inside a link), so the port keeps such a box after the run, below its last
+  line (Chromium: at the end of the line, 32,0 in the upstream test, two rows skipped).
+- Inline transforms (`df5ee65`): upstream drops the transform from geometry only; the port
+  also leaves a non-replaced inline out of transform paint, stacking and hit testing
+  (`PaintDomPainter.HasAuthoredTransform`), since Chromium does not transform it at all.
+- Flex basis (`fded066`): upstream keeps every math function as a handle and resolves a
+  percentage-free one to a length when it builds the taffy style; the port still flattens a
+  percentage-free math basis to a length while parsing when it can, so the zero-basis and
+  definite-column-basis rules keep seeing a length, and keeps a handle otherwise. `flex:
+  inherit` touches only the basis, as upstream's own arm does.
+- Cyclic widths (`322f46c`): the port has no `definite_row_flex_intrinsic_width`, so that
+  exception does not exist here; a plain-percentage control keeps publishing its intrinsic
+  size whatever its type (the port's earlier deviation), and only the `calc()` form is gated by
+  upstream's input-type list.
+- Containment (`542df14`): explicit `contain` drives size containment only; `@supports
+  (contain: size)` still answers false, as upstream (Chromium: true), and `contain` does not
+  appear in getComputedStyle.
+
 
 ### Operator font directories load per render pass, not into a cached base database
 
