@@ -514,7 +514,10 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] `f2b9e99`: `serve --workers` supervises each worker: an exited one leaves the
       rotation, is restarted on its port (100 ms retry, 5 s readiness wait) and rejoins;
       with none ready the balancer answers upstream's 503. Worker stderr is inherited
-- [ ] CLI and workers (serve worker pool): `4b14a76`, `0f27e69`
+- [x] `4b14a76`: SIGTERM/SIGINT to the `serve --workers` balancer stops it accepting,
+      SIGTERMs every worker (kill after 3 s, 5 s overall) and exits 0, instead of
+      orphaning the workers. `--max-connections` already reached the workers (I5)
+- [ ] CLI and workers (serve worker pool): `0f27e69`
 - [x] `52d8ddd`: network errors from a send or a body read carry the inner exception chain
       (`ErrorChain`, each cause appended once), so a TLS failure names its certificate error
 - [ ] From merges: `61aa8fb` CDP URL pattern matcher (done, see CDP Fetch), `fded066` (`flex: 200px` sets grow 1, an
@@ -2452,6 +2455,10 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   server (`VerifyWorkersAsync`, SECURITY.md M1) before it rejoins the rotation, as every
   worker is at startup; upstream only waits for its port to accept. On a TLS balancer the
   no-worker 503 is sent over TLS, like the max-connections refusal (I1).
+- Serve shutdown (`4b14a76`): SIGTERM is sent with libc `kill(2)` (`Process.Kill` is
+  SIGKILL); on Windows a worker is killed outright. The `--max-connections` help says the
+  limit is per worker and server-wide, since the balancer also caps it (L3), where
+  upstream's says the server-wide maximum is N times the value.
 
 ### Operator font directories load per render pass, not into a cached base database
 

@@ -135,7 +135,10 @@ public static class CliDefinition
         };
         public static readonly Option<int> MaxConnections = new("--max-connections")
         {
-            Description = "Maximum live CDP connections. Connections beyond the limit are refused with 503 rather than queued.",
+            // Upstream 4b14a76 adds that with --workers N the limit applies to each
+            // worker, so the server-wide maximum is N times it. Here the balancer also
+            // applies it server-wide (SECURITY.md L3), so the help says that instead.
+            Description = "Maximum live CDP connections. Connections beyond the limit are refused with 503 rather than queued. With --workers N the limit applies to each worker process and to the load balancer as a whole.",
             DefaultValueFactory = _ => DefaultMaxConnections,
             CustomParser = ClapNumbers.USize("--max-connections", "MAX_CONNECTIONS"),
         };

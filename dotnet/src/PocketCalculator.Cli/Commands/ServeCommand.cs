@@ -1,8 +1,10 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using PocketCalculator.Cdp;
@@ -151,6 +153,12 @@ public static class ServeCommand
         var launcher = ResolveWorkerLauncher(
             Environment.ProcessPath, System.Reflection.Assembly.GetEntryAssembly()?.Location);
 
+        // Upstream 4b14a76: without a handler, SIGTERM ended the balancer and
+        // orphaned its workers. Registered before any worker is spawned, so an
+        // early signal is not fatal to the balancer alone.
+        using var shutdown = new CancellationTokenSource();
+        using var signals = RegisterShutdownSignals(shutdown);
+
         // Claim the public port before starting children so another process
         // cannot take it during worker startup.
         var listener = Bind(host, port);
@@ -170,6 +178,7 @@ public static class ServeCommand
         var reservations = new List<Socket>(workers);
         var workerPorts = new List<int>(workers);
         var children = new List<Process>(workers);
+        var factory = new WorkerFactory(launcher, settings, forwardedHost, forwardedPort, token);
         try
         {
             for (var i = 0; i < workers; i++)
@@ -184,7 +193,7 @@ public static class ServeCommand
             {
                 var workerPort = workerPorts[i];
                 reservations[i].Dispose();
-                var child = SpawnWorker(launcher, settings, workerPort, forwardedHost, forwardedPort);
+                var child = factory.Spawn(workerPort);
                 Log.Info(string.Create(CultureInfo.InvariantCulture, $"Worker {i + 1} on port {workerPort}"));
                 children.Add(child);
             }
@@ -211,12 +220,13 @@ public static class ServeCommand
 
         // Upstream f2b9e99: a supervisor per worker reaps it when it exits, takes it
         // out of the rotation and starts a replacement on the same port.
-        var respawn = new WorkerRespawn(launcher, settings, forwardedHost, forwardedPort, token);
+        using var stopWorkers = new CancellationTokenSource();
         var slots = new WorkerSlot[workers];
+        var supervisors = new Task[workers];
         for (var i = 0; i < workers; i++)
         {
             slots[i] = new WorkerSlot(workerPorts[i]);
-            _ = SuperviseWorkerAsync(slots[i], children[i], respawn);
+            supervisors[i] = SuperviseWorkerAsync(slots[i], children[i], factory, stopWorkers.Token);
         }
 
         Log.Info(string.Create(
@@ -258,7 +268,15 @@ public static class ServeCommand
 
         while (true)
         {
-            var client = await listener.AcceptTcpClientAsync().ConfigureAwait(false);
+            TcpClient client;
+            try
+            {
+                client = await listener.AcceptTcpClientAsync(shutdown.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
             if (Interlocked.Increment(ref live) > maxConnections)
             {
                 Interlocked.Decrement(ref live);
@@ -314,6 +332,57 @@ public static class ServeCommand
                 }
             });
         }
+
+        Log.Info("Shutting down, stopping workers");
+        listener.Dispose();
+        // The supervisors stop their workers in parallel; whatever is still running
+        // after five seconds is killed, as dropping the supervisors does upstream
+        // (kill_on_drop).
+        await stopWorkers.CancelAsync().ConfigureAwait(false);
+        await Task.WhenAny(Task.WhenAll(supervisors), Task.Delay(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+        factory.KillAll();
+    }
+
+    /// <summary>
+    /// Trip <paramref name="shutdown"/> on SIGTERM or SIGINT (upstream
+    /// <c>shutdown_signal</c>), instead of letting the runtime end the process.
+    /// </summary>
+    private static IDisposable RegisterShutdownSignals(CancellationTokenSource shutdown)
+    {
+        List<PosixSignalRegistration> registrations = [];
+        try
+        {
+            foreach (var signal in new[] { PosixSignal.SIGTERM, PosixSignal.SIGINT })
+            {
+                registrations.Add(PosixSignalRegistration.Create(signal, context =>
+                {
+                    context.Cancel = true;
+                    try
+                    {
+                        shutdown.Cancel();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // Already shut down.
+                    }
+                }));
+            }
+        }
+        catch (PlatformNotSupportedException)
+        {
+        }
+        return new Registrations(registrations);
+    }
+
+    private sealed class Registrations(List<PosixSignalRegistration> items) : IDisposable
+    {
+        public void Dispose()
+        {
+            foreach (var item in items)
+            {
+                item.Dispose();
+            }
+        }
     }
 
     /// <summary>The balancer's own 503 when it is at <c>--max-connections</c> (SECURITY.md L3).</summary>
@@ -338,34 +407,88 @@ public static class ServeCommand
         }
     }
 
-    /// <summary>What a supervisor needs to start and check a replacement worker.</summary>
-    private sealed record WorkerRespawn(
-        WorkerLauncher Launcher,
-        WorkerSettings Settings,
-        string ForwardedHost,
-        string ForwardedPort,
-        string? Token);
+    /// <summary>
+    /// Starts workers with the balancer's settings and keeps every worker process
+    /// it started until it is reaped, so shutdown can kill whatever is left.
+    /// </summary>
+    private sealed class WorkerFactory(
+        WorkerLauncher launcher,
+        WorkerSettings settings,
+        string forwardedHost,
+        string forwardedPort,
+        string? token)
+    {
+        private readonly ConcurrentDictionary<Process, byte> running = new();
+
+        public string? Token => token;
+
+        public X509Certificate2? Certificate => settings.Certificate;
+
+        /// <summary>
+        /// Start a worker process. Its stdout is discarded, as the reference redirects
+        /// it to null; its stderr is this process's, so worker errors stay visible
+        /// (upstream f2b9e99, which stopped discarding it).
+        /// </summary>
+        public Process Spawn(int workerPort)
+        {
+            var psi = WorkerStartInfo(launcher, settings, workerPort, forwardedHost, forwardedPort);
+            var child = Process.Start(psi)
+                ?? throw new CliException($"failed to spawn worker on port {workerPort}");
+            _ = child.StandardOutput.ReadToEndAsync();
+            running.TryAdd(child, 0);
+            return child;
+        }
+
+        /// <summary>Drop a worker that has exited.</summary>
+        public void Forget(Process child)
+        {
+            running.TryRemove(child, out _);
+            child.Dispose();
+        }
+
+        /// <summary>Kill every worker still running.</summary>
+        public void KillAll()
+        {
+            foreach (var child in running.Keys)
+            {
+                KillQuietly(child);
+            }
+        }
+    }
 
     /// <summary>
     /// Wait for a worker to exit, then restart it on the same port until a
     /// replacement is up (upstream f2b9e99). The worker is out of the rotation
-    /// from its exit until the replacement answers.
+    /// from its exit until the replacement answers. On shutdown the worker is
+    /// stopped (upstream 4b14a76).
     /// </summary>
-    private static async Task SuperviseWorkerAsync(WorkerSlot slot, Process child, WorkerRespawn respawn)
+    private static async Task SuperviseWorkerAsync(
+        WorkerSlot slot, Process child, WorkerFactory factory, CancellationToken stop)
     {
+        var stopping = WhenCancelled(stop);
         while (true)
         {
-            await child.WaitForExitAsync().ConfigureAwait(false);
+            var exited = child.WaitForExitAsync();
+            if (await Task.WhenAny(exited, stopping).ConfigureAwait(false) == stopping)
+            {
+                await StopWorkerAsync(child).ConfigureAwait(false);
+                factory.Forget(child);
+                return;
+            }
             slot.Ready = false;
             Log.Warn(string.Create(
                 CultureInfo.InvariantCulture,
                 $"worker on port {slot.Port} exited: exit status: {child.ExitCode}"));
-            child.Dispose();
+            factory.Forget(child);
             while (true)
             {
                 // Upstream: a fixed retry interval bounds a crash loop; there is no backoff.
                 await Task.Delay(100).ConfigureAwait(false);
-                if (await StartWorkerAsync(respawn, slot.Port, TimeSpan.FromSeconds(5)).ConfigureAwait(false)
+                if (stop.IsCancellationRequested)
+                {
+                    return;
+                }
+                if (await StartWorkerAsync(factory, slot.Port, TimeSpan.FromSeconds(5)).ConfigureAwait(false)
                     is { } replacement)
                 {
                     child = replacement;
@@ -375,6 +498,71 @@ public static class ServeCommand
             }
         }
     }
+
+    /// <summary>A task that completes, rather than faults, once <paramref name="token"/> is cancelled.</summary>
+    private static Task WhenCancelled(CancellationToken token)
+    {
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        token.Register(() => cancelled.TrySetResult());
+        return cancelled.Task;
+    }
+
+    /// <summary>
+    /// Ask a worker to exit with SIGTERM, which lets it save its cookies, and kill
+    /// it if it is still running three seconds later (upstream 4b14a76
+    /// <c>stop_worker</c>).
+    /// </summary>
+    private static async Task StopWorkerAsync(Process child)
+    {
+        try
+        {
+            if (!OperatingSystem.IsWindows() && !child.HasExited && SysKill(child.Id, SigTerm) == 0)
+            {
+                using var grace = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                try
+                {
+                    await child.WaitForExitAsync(grace.Token).ConfigureAwait(false);
+                    return;
+                }
+                catch (OperationCanceledException)
+                {
+                    // Still running; kill it.
+                }
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // Not started or already gone.
+            return;
+        }
+        await KillAsync(child).ConfigureAwait(false);
+    }
+
+    /// <summary>Kill a worker and give it a moment to be reaped, so it is not left a zombie.</summary>
+    private static async Task KillAsync(Process child)
+    {
+        KillQuietly(child);
+        using var reap = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        try
+        {
+            await child.WaitForExitAsync(reap.Token).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is OperationCanceledException or InvalidOperationException)
+        {
+        }
+    }
+
+    private const int SigTerm = 15;
+
+    /// <summary>
+    /// kill(2), for the SIGTERM <see cref="Process"/> cannot send (its <c>Kill</c> is
+    /// SIGKILL). libc is the platform, not a package, as for <c>ProcessExit</c>'s
+    /// <c>_exit</c>, so this adds no native dependency. Unix only; SIGTERM is 15 on
+    /// Linux and macOS. The pid is a child this process has not reaped yet, or the
+    /// <c>HasExited</c> check just before it would have seen the exit.
+    /// </summary>
+    [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
+    private static extern int SysKill(int pid, int signal);
 
     /// <summary>
     /// Start one worker on <paramref name="workerPort"/> and wait up to
@@ -388,13 +576,12 @@ public static class ServeCommand
     /// SECURITY.md M1) before it gets a client, since it is put behind the public
     /// port just as the first one was.
     /// </remarks>
-    private static async Task<Process?> StartWorkerAsync(WorkerRespawn respawn, int workerPort, TimeSpan within)
+    private static async Task<Process?> StartWorkerAsync(WorkerFactory factory, int workerPort, TimeSpan within)
     {
         Process child;
         try
         {
-            child = SpawnWorker(
-                respawn.Launcher, respawn.Settings, workerPort, respawn.ForwardedHost, respawn.ForwardedPort);
+            child = factory.Spawn(workerPort);
         }
         catch (Exception error) when (error is CliException or System.ComponentModel.Win32Exception
             or InvalidOperationException)
@@ -407,32 +594,17 @@ public static class ServeCommand
         {
             var deadline = Stopwatch.GetTimestamp() + (long)(within.TotalSeconds * Stopwatch.Frequency);
             await WaitForWorkerAsync(child, workerPort, deadline).ConfigureAwait(false);
-            await VerifyWorkersAsync([workerPort], respawn.Token, respawn.Settings.Certificate).ConfigureAwait(false);
+            await VerifyWorkersAsync([workerPort], factory.Token, factory.Certificate).ConfigureAwait(false);
             return child;
         }
         catch (CliException error)
         {
             Log.Warn(string.Create(
                 CultureInfo.InvariantCulture, $"worker {workerPort} restart failed: {error.Message}"));
-            KillQuietly(child);
-            child.Dispose();
+            await KillAsync(child).ConfigureAwait(false);
+            factory.Forget(child);
             return null;
         }
-    }
-
-    /// <summary>
-    /// Start a worker process. Its stdout is discarded, as the reference redirects
-    /// it to null; its stderr is this process's, so worker errors stay visible
-    /// (upstream f2b9e99, which stopped discarding it).
-    /// </summary>
-    private static Process SpawnWorker(
-        WorkerLauncher launcher, WorkerSettings settings, int workerPort, string forwardedHost, string forwardedPort)
-    {
-        var psi = WorkerStartInfo(launcher, settings, workerPort, forwardedHost, forwardedPort);
-        var child = Process.Start(psi)
-            ?? throw new CliException($"failed to spawn worker on port {workerPort}");
-        _ = child.StandardOutput.ReadToEndAsync();
-        return child;
     }
 
     private static void KillQuietly(Process child)
