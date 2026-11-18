@@ -111,6 +111,27 @@ public sealed class FunctionalFlexBasisTests
         }
     }
 
+    /// <remarks>upstream a04e024.</remarks>
+    [Theory]
+    [InlineData("300px")]
+    [InlineData("calc(300px)")]
+    [InlineData("calc(200px + 100px)")]
+    [InlineData("min(300px, 400px)")]
+    public void FunctionalFlexBasisPreservesFixedIntrinsicRows(string basis)
+    {
+        DomTree tree = HtmlParsing.ParseHtml(
+            "<!doctype html><style>html,body{margin:0}#outer{display:flex;width:768px}"
+            + "#parent{flex:0 0 auto;width:auto}#item{display:flex;width:100%}"
+            + $"#cell{{flex:0 0 {basis};height:20px}}</style>"
+            + "<div id=outer><div id=parent><div><div id=item><div id=cell></div></div></div></div></div>");
+        DomLayout layout = RenderDom.LayoutDom(tree, (800f, 600f));
+        foreach (string id in new[] { "parent", "item", "cell" })
+        {
+            Rect rect = layout.Rects[tree.GetElementById(id)!.Value];
+            Assert.True(rect.Width == 300f && rect.Height == 20f, $"{basis};{id}: {rect}");
+        }
+    }
+
     /// <remarks>upstream 3155d6a.</remarks>
     [Theory]
     [InlineData("50%")]
