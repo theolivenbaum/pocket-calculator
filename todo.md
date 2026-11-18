@@ -294,8 +294,9 @@ Correctness:
 
 Decisions:
 
-- [ ] `d792bae` - keep every CDP page's isolate live; conflicts with "Page suspension
-      stays". Measure memory, then decide (recommended: port, Chromium never suspends)
+- [x] `d792bae` - declined (2026-11-18, maintainer decision): page suspension stays, so a
+      connection keeps one live isolate. Recorded under "Page suspension stays" in Known
+      deviations
 - [x] `343fdc7` `--font-dir` - ported as an opt-in: `serve --font-dir DIR` (repeatable,
       forwarded to workers) and `BrowserConfig.FontDirectories` / `FontDirectory(...)`.
       Unset, no file is read and layout is unchanged; set, it gives up identical output
@@ -417,8 +418,12 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 
 Decisions:
 
-- [ ] `05d7c13` (MCP keeps every tab's runtime) - decide with the open `d792bae`
-- [ ] `8a2f957` - declined: any loopback Origin could drive CDP; `1faf17f` is the port
+- [x] `05d7c13` (MCP keeps every tab's runtime) - declined (2026-11-18, maintainer decision):
+      tab suspension is preferred, as for CDP (`d792bae`)
+- [x] `8a2f957` - declined (2026-11-18): any loopback Origin could drive CDP; `1faf17f` is the
+      port
+- [ ] `9a3d12e` - accepted (2026-11-18): drop the "DomTextMeasure reproduces ab_glyph's
+      height-based scale" deviation and measure by the em square, as upstream and Chromium do
 
 ## Open issues
 
@@ -3268,7 +3273,8 @@ that with "V8 allows one entered isolate per OS thread", which is a rusty_v8 pro
 true here; the comment is corrected. The behaviour has an independent reason and keeps it: it
 bounds a connection to one live isolate and the document behind it, and a document is hundreds of
 megabytes on a large page. Relaxing it is a memory trade needing its own measurement, not a
-comment fix.
+comment fix. Upstream `d792bae` (CDP) and `05d7c13` (MCP) keep every page's runtime live; both
+were declined on 2026-11-18 by the maintainers, who prefer suspension.
 
 **The two `[ThreadStatic]` caches are genuinely caches.** `SelectorParser._cache` is a bounded
 256-entry selector cache, and `HtmlParsing._parser` / `_contextDocument` are an AngleSharp parser
