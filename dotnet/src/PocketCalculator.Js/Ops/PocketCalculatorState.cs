@@ -681,6 +681,21 @@ public sealed class JsNetworkEvent
 
     public required IReadOnlyDictionary<string, string> ResponseHeaders { get; init; }
 
+    /// <summary>
+    /// The headers the request went out with on its last hop: the ones the page set
+    /// (after the forbidden-header filter) and any an interception rewrite added.
+    /// </summary>
+    /// <remarks>
+    /// Port addition. Rust records none, so its <c>Network.requestWillBeSent</c> for a
+    /// script-initiated request carries an empty <c>request.headers</c>; Chromium reports
+    /// what the page sent there (an <c>Authorization</c> header, a custom one), which is
+    /// what a CDP client watching a page's API calls reads. The transport's own
+    /// <c>Cookie</c> and <c>User-Agent</c> are left out, as Chromium leaves them to
+    /// <c>requestWillBeSentExtraInfo</c>.
+    /// </remarks>
+    public IReadOnlyDictionary<string, string> RequestHeaders { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
     public required int BodySize { get; init; }
 
     public required double Timestamp { get; init; }

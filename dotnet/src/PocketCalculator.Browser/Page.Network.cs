@@ -273,7 +273,9 @@ public sealed partial class Page
                 Method = ev.Method,
                 ResourceType = "Fetch",
                 Status = ev.Status,
-                Headers = NoHeaders,
+                // Rust reports no request headers for a script-initiated request; Chromium
+                // reports what the page sent (see JsNetworkEvent.RequestHeaders).
+                Headers = ev.RequestHeaders,
                 ResponseHeaders = ev.ResponseHeaders,
                 BodySize = ev.BodySize,
                 Timestamp = ev.Timestamp,
