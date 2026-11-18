@@ -844,7 +844,7 @@ public sealed class PocketCalculatorHttpClient : IDisposable
             catch (HttpRequestException error)
             {
                 Interlocked.Decrement(ref _inFlight);
-                throw PocketCalculatorNetException.Network($"{currentUrl}: {error.Message}", error);
+                throw PocketCalculatorNetException.Network($"{currentUrl}: {PocketCalculatorNetException.ErrorChain(error)}", error);
             }
             catch
             {
@@ -935,11 +935,11 @@ public sealed class PocketCalculatorHttpClient : IDisposable
                 }
                 catch (HttpRequestException error)
                 {
-                    throw PocketCalculatorNetException.Network($"Failed to read body: {error.Message}", error);
+                    throw PocketCalculatorNetException.Network($"Failed to read body: {PocketCalculatorNetException.ErrorChain(error)}", error);
                 }
                 catch (IOException error)
                 {
-                    throw PocketCalculatorNetException.Network($"Failed to read body: {error.Message}", error);
+                    throw PocketCalculatorNetException.Network($"Failed to read body: {PocketCalculatorNetException.ErrorChain(error)}", error);
                 }
 
                 Interlocked.Decrement(ref _inFlight);

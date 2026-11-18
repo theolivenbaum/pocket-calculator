@@ -37,6 +37,24 @@ public class PocketCalculatorNetException : Exception
     public static PocketCalculatorNetException Network(string message, Exception? inner = null) =>
         new(PocketCalculatorNetErrorKind.Network, $"Network error: {message}", inner);
 
+    /// <summary>
+    /// Port of upstream <c>error_chain</c> (52d8ddd): the error's message followed by each
+    /// inner exception's message, skipping one the text already quotes, so a TLS or DNS
+    /// failure says why instead of only "The SSL connection could not be established, see
+    /// inner exception."
+    /// </summary>
+    public static string ErrorChain(Exception error)
+    {
+        var text = error.Message;
+        for (var cause = error.InnerException; cause is not null; cause = cause.InnerException)
+        {
+            var causeText = cause.Message;
+            if (!text.Contains(causeText, StringComparison.Ordinal))
+                text = $"{text}: {causeText}";
+        }
+        return text;
+    }
+
     /// <summary><c>PocketCalculatorNetError::TooManyRedirects</c>.</summary>
     public static PocketCalculatorNetException TooManyRedirects(string url) =>
         new(PocketCalculatorNetErrorKind.TooManyRedirects, $"Too many redirects: {url}");
