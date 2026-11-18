@@ -2,7 +2,8 @@
 
 Target: `net10.0`. Reference implementation: the Rust workspace in
 `.reference/obscura/crates/`, synced to the upstream commit named in
-`.reference/obscura/UPSTREAM.md`. Paths below written `crates/...` or `vendor/...`
+`.reference/obscura/UPSTREAM.md`. The port lags that commit by the open items under
+"Upstream sync 1a3169d..4eb1235". Paths below written `crates/...` or `vendor/...`
 are relative to `.reference/obscura/`. Rules and conventions: see `CLAUDE.md`.
 
 Legend: `[ ]` not started, `[~]` in progress, `[x]` ported + tests green,
@@ -314,6 +315,96 @@ Found during the review, not from upstream:
       `ConcurrentConnectionsHeavyPageDoNotAbortV8`; both pass alone and fail on the
       unmodified base under the same load. `ForwardWaapiSampleUpdatesRetainedStyleAndPaint`
       was reported failing on the base at low load once; it passes in full runs here
+
+## Upstream sync 1a3169d..4eb1235
+
+Reviewed 2026-11-18; detail per commit in `dotnet/docs/upstream-review-2026-11.md`.
+`.reference/obscura/` is at `4eb1235` already (advanced with this review), so the
+reference is ahead of the port until these are ported or declined. 319 commits: 116
+port, 56 partial, 70 already, 2 conflict, 75 skip. One upstream fix per commit, citing
+the upstream sha. The open `727cc46..1a3169d` items above still stand; several below
+pair with them.
+
+Security (exposed today unless noted):
+
+- [ ] `8162c0f` - cookie `Expires` year loop is unbounded (`CookieJar.TryParseHttpDate`),
+      day 0 underflows; validate RFC 6265 ranges first. Also `Max-Age` overflow and the
+      400-day cap; IP literals must not suffix-match in `DomainMatches`
+- [ ] `281470c` - grid `DistributeSpaceUpToLimits` can loop forever and has no
+      `WorkCancellation` check; with `025088c` (`span 0` grid placements)
+- [ ] `e83d803` - CDP watchdog is not armed for a command that resumes a suspended page
+- [ ] `8dbf7e1`, `cf5067e`, `f2bf4c3`, `d45bee5`, `f152fcf`, `efb57d8` - serializer:
+      escape `<` `>` U+00A0 in attributes (mXSS), missing void elements, fixed xml/xlink/
+      xmlns prefixes
+- [ ] `5bfac24` - fetch SSRF gate fails open when `UrlRecord.Parse` rejects the URL
+      (`FetchOps.cs`, initial URL and intercept rewrite)
+- [ ] `1ee3ac1` - markdown extraction is 2^depth on nested tables, unbounded recursion
+- [ ] `daac810` (+ merge `4724f4b`) - `setProperty`/`removeProperty` of an unchanged
+      value must not rewrite `style`
+- [ ] `a449a80` - MCP refs must be checked against the recorded node
+- [ ] `74ac75f`, `a3171f3`, `0d11d55`, `5efc4a1` - failed/evicted images refetched on
+      every relayout
+- [ ] `0e17221` + robots in `b3475a5`, `8dd9d48`, `9e0b8b6` - bounded robots cache, body
+      cap, agent grouping and matching (rewrite `Robots.cs` once)
+- [ ] `677f6d2` budgets - Web Storage total and per-origin caps
+- [ ] `b3475a5`, `7a8c0e3`, `fd5c729` - cookie prefix rules on the import path; `1922f4a`
+      loopback counts as a secure cookie context
+- [ ] `33aeb3f` - `confirm()` returns true; measure Chromium headless first
+- [ ] `9b05070`, `0d8a200`, `c8e5b9e`, `d853a73`, `2f448c3` - frame-realm script ops,
+      upload validation, link by node id, wrapKey usages, detached-frame timers
+
+Correctness, by area (order and grouping as in the review's per-area "suggested port order"):
+
+- [ ] CDP Fetch: `b1b3abe` + `3f9acc2` (byte bodies, strict base64), `b76d966`
+      (main-document interception), `2d323dd` (patterns), `5e58c86`; with open `dfc546d`
+- [ ] CDP Playwright/go-rod blockers: `939086a`/`e70183d` setBypassCSP, `e5bcd75`
+      Page.close/stopLoading, `48953ef`, `28756b4` + `c05cf3b`, `192561c`, `361f15d`
+- [ ] CDP input editing: `aa4b4e7`, `d132880`, `3f7cccd`, `d88df74`, `8fe6d99` + `2e0b63f`,
+      `c714042`; with open `ec62004` / `a156914`
+- [ ] CDP lifecycle and sessions: `3f8a8d1` + `de227e9`, `1959c5e`, `a74e050`, `b8586de` +
+      `34346af`, `875c531`, `7034ad6`
+- [ ] CDP DOM domain and evaluation: `eb2b515`, `717dd92` + `229d1ed`, `579e1cb` (`let`
+      persists), `f66ac0a` (`__proto__` in JSON args), `7a2b9ae`
+- [ ] CDP control plane: `1faf17f` (origin = endpoint authority, env allowlist),
+      `e1acbe5` + `31e1dfe`. Do not port `8a2f957`
+- [ ] Media emulation: `c9978c3` + `c7ec60a` + `6ba3613` (setEmulatedMedia, reduced
+      motion, color scheme, MediaQueryList change events)
+- [ ] Render text: `bf10c46` word-spacing, `f8a36a4` font size keywords, `1fff1f7`,
+      `9a3d12e` em-based `DomTextMeasure` (retires the deviation "DomTextMeasure
+      reproduces ab_glyph's height-based scale")
+- [ ] Render layout: tables `2b61abf` + `7bf782b`; floats `9f64ce9`, `6a7bbf3`, `423e58a`;
+      inline `0e99b3a`, `a41696e`, `df5ee65`, `62e8e7f`; flex merges `fded066`/`322f46c`
+      then `3155d6a`, `a04e024`, `b223a2c`, `6234ed3`; `contain: size` from `542df14`
+- [ ] Computed style and visibility: `c280615`, `d40f503`/`1b6f423`, `7b632d9`, `f019ebe`
+      `checkVisibility()`, `f32db47`, `2c81268` closed dialogs
+- [ ] History and navigation: `1a0773d` (+ `ba807f4`, `d01bc8d`), `0ecc417`, `8a7aa8c`,
+      `fb23f18`, `36e7987`, `0a14a4c`, `22eb6b4` + `335f929`, `721e40f` (with open
+      `2b07b76`), `ee74973`, `60107d1`. Keep history helpers on `__obscura_host` and
+      gate traversal through the `file://` check
+- [ ] Network fidelity: `359362f`, `3f37d91` + `73358fd` + `8440fe6`, `0155807`
+      (AbortSignal), `3aa2f59`, `a1dd711`, `004bcdd`, `a134a7e` (after `8162c0f`)
+- [ ] Storage: `f661c2e` persistence, `677f6d2`, `9a5d9c6`, `3dea548` IndexedDB,
+      `1e4238e`
+- [ ] Frames (within the separate-engine design): `20299be`, `12b40f6` + `bcf6d03`,
+      `8dddc6f`, `47a3431`, `6d25c43`, `667eb59`, `e4f11db`; a real-realm
+      `contentWindow` (`24d8742`, `911c45c`) needs a design decision first
+- [ ] DOM and web APIs: `19fa7a3`, `4dfc90f`, `831cb29`/`ccdaf10` interface brands,
+      `790a77d`, `cbcafc1` Response validation, `d57489c` AES-KW, `e4b6138` User Timing,
+      `aea9bca`, `cfce062` + `8ba9e5e` custom element reactions, `24adea2`,
+      `414e649` window.event, `7451e39` + `48538d6`, `2f302d9`, `25700b9` + `59276a3` +
+      `d8f1467` select and table APIs, `75bd891`, `955524a`, `a695bfc` nomodule
+- [ ] MCP: `7500e6d` + `b13604b` (await, `browser_wait_for_function`; tool JSON),
+      `604d30b`, `5c27e76`, `c6402a7` console feed, `a3aea0a`, `3c56f59`, `5171717`,
+      `cbc2f97`; `9855ef4` web_search stays opt-in
+- [ ] CLI and workers: `11d6ea8` + `afb0d61`, `ec0186b`, `1949e9b`, `f2b9e99`, `4b14a76`,
+      `0f27e69`, `9a6dd86`, `52d8ddd`, `1b259b9` failed-save log
+- [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `35b9448`, `a2bfd32`,
+      `3a4a0b5`, `8bb46be`, `3a9eb06`, `8310ebf`, `acff100`, `503a66d`, `786fde5` + `7d9ed8a`
+
+Decisions:
+
+- [ ] `05d7c13` (MCP keeps every tab's runtime) - decide with the open `d792bae`
+- [ ] `8a2f957` - declined: any loopback Origin could drive CDP; `1faf17f` is the port
 
 ## Open issues
 

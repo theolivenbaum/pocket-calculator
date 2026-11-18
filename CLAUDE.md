@@ -454,8 +454,9 @@ the root, and a merge would put it back there.
    an upstream change the port has not taken yet shows up there as a parity
    difference, which is expected and should match the open items.
 
-The last review (upstream `727cc46..1a3169d`, 57 commits) is recorded in
-`dotnet/docs/upstream-review-2026-09.md`.
+The last review (upstream `1a3169d..4eb1235`, 319 commits, with the reference tree
+advanced to `4eb1235`) is recorded in `dotnet/docs/upstream-review-2026-11.md`; the
+one before it (`727cc46..1a3169d`) in `dotnet/docs/upstream-review-2026-09.md`.
 
 ## Packaging, publishing and licensing
 
