@@ -684,7 +684,7 @@ internal static partial class DomBuild
         List<(NodeId Row, int GroupEnd)> rows = [];
         if (nativeHtmlTable)
         {
-            DomTableSupport.CollectTableRows(tree, id, rows);
+            DomTableSupport.CollectTableRows(tree, id, styles, rows);
             if (rows.Count == 0)
             {
                 return null;
@@ -725,7 +725,7 @@ internal static partial class DomBuild
             if (nativeHtmlTable)
             {
                 rowChildren = [];
-                foreach (NodeId cid in tree.Children(tr))
+                foreach (NodeId cid in DomTraversal.RenderedChildren(tree, tr))
                 {
                     rowChildren.Add(new CssTableCell { Element = cid, Owner = tr });
                 }

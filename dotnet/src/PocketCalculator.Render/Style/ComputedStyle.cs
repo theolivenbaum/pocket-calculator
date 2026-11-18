@@ -3491,6 +3491,16 @@ public static partial class ComputedStyle
         {
             style.DisplayAuthored = true;
             style.AuthoredTableDisplay = internalTable;
+
+            // upstream 7bf782b: the keyword replaces an earlier `display: none`, so
+            // `<tr style="display:none;display:table-row">` is a row again. Chromium agrees; the
+            // early return used to leave the box hidden. A native hidden input stays hidden
+            // through the control pass in `LayoutDomControls`, as in Chromium.
+            if (style.Display == Display.None)
+            {
+                style.Display = Display.Block;
+            }
+
             return;
         }
 

@@ -62,7 +62,13 @@ public static partial class ComputedStyle
             case "display":
                 return lower is "none" or "flex" or "inline-flex" or "inline" or "inline-block" or "grid"
                     or "inline-grid" or "block" or "flow-root" or "table" or "inline-table"
-                    or "-webkit-box" or "-webkit-inline-box" or "contents" or "list-item";
+                    or "-webkit-box" or "-webkit-inline-box" or "contents" or "list-item"
+                    // upstream 7bf782b adds the four row and group keywords. The port lays out
+                    // all eight internal-table values, and Chromium supports every one, so
+                    // `table-cell`, the columns and `table-caption` are supported too.
+                    or "table-cell" or "table-row" or "table-row-group" or "table-header-group"
+                    or "table-footer-group" or "table-column" or "table-column-group"
+                    or "table-caption";
             case "direction":
                 return lower is "ltr" or "rtl";
             case "position":

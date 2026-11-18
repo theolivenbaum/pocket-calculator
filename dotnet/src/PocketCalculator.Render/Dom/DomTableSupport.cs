@@ -891,21 +891,78 @@ internal static class DomTableSupport
     /// <summary>
     /// Collect rows together with the exclusive end of their originating row group.
     /// </summary>
-    internal static void CollectTableRows(DomTree tree, NodeId id, List<(NodeId Row, int GroupEnd)> rows)
+    /// <remarks>
+    /// upstream 2b61abf / 7bf782b: a <c>display: none</c> row or group generates no box, so it
+    /// creates no track, rowspan slot or column width; rows and groups are recognised by their
+    /// used display (<see cref="NativeRowRole"/>), and the first header group is laid out first
+    /// and the first footer group last, whatever their source order.
+    /// </remarks>
+    internal static void CollectTableRows(
+        DomTree tree,
+        NodeId id,
+        IReadOnlyDictionary<NodeId, LayoutStyle> styles,
+        List<(NodeId Row, int GroupEnd)> rows)
     {
-        int? directStart = null;
-        foreach (NodeId cid in tree.Children(id))
+        List<NodeId> children = DomTraversal.RenderedChildren(tree, id);
+        NodeId? header = null;
+        NodeId? footer = null;
+        foreach (NodeId child in children)
         {
-            string? local = DomTraversal.ElementLocalName(tree, cid);
-            switch (local)
+            if (IsHiddenBox(child, styles))
             {
-                case "tr":
+                continue;
+            }
+
+            TableInternalRole role = NativeRowRole(tree, child, styles);
+            if (role == TableInternalRole.HeaderGroup)
+            {
+                header ??= child;
+            }
+            else if (role == TableInternalRole.FooterGroup)
+            {
+                footer ??= child;
+            }
+        }
+
+        int? directStart = null;
+        if (header is { } first)
+        {
+            Visit(first);
+        }
+
+        foreach (NodeId cid in children)
+        {
+            if (cid != header && cid != footer && !IsHiddenBox(cid, styles))
+            {
+                Visit(cid);
+            }
+        }
+
+        if (footer is { } last)
+        {
+            Visit(last);
+        }
+
+        if (directStart is { } trailing)
+        {
+            int end = rows.Count;
+            for (int index = trailing; index < end; index++)
+            {
+                rows[index] = (rows[index].Row, end);
+            }
+        }
+
+        void Visit(NodeId cid)
+        {
+            switch (NativeRowRole(tree, cid, styles))
+            {
+                case TableInternalRole.Row:
                     directStart ??= rows.Count;
                     rows.Add((cid, 0));
                     break;
-                case "thead":
-                case "tbody":
-                case "tfoot":
+                case TableInternalRole.RowGroup:
+                case TableInternalRole.HeaderGroup:
+                case TableInternalRole.FooterGroup:
                 {
                     if (directStart is { } start)
                     {
@@ -919,9 +976,10 @@ internal static class DomTableSupport
                     }
 
                     int sectionStart = rows.Count;
-                    foreach (NodeId row in tree.Children(cid))
+                    foreach (NodeId row in DomTraversal.RenderedChildren(tree, cid))
                     {
-                        if (DomTraversal.IsLocal(tree, row, "tr"))
+                        if (!IsHiddenBox(row, styles)
+                            && NativeRowRole(tree, row, styles) == TableInternalRole.Row)
                         {
                             rows.Add((row, 0));
                         }
@@ -937,15 +995,45 @@ internal static class DomTableSupport
                 }
             }
         }
+    }
 
-        if (directStart is { } trailing)
+    private static bool IsHiddenBox(NodeId id, IReadOnlyDictionary<NodeId, LayoutStyle> styles) =>
+        styles.TryGetValue(id, out LayoutStyle? style) && style.Display == Display.None;
+
+    /// <summary>
+    /// The row or row-group role of a native table's row or group: the authored internal-table
+    /// <c>display</c> when there is one, otherwise the element name (upstream's
+    /// <c>table_row_display</c>, which keeps the HTML fixup for a <c>tr</c>, <c>tbody</c>,
+    /// <c>thead</c> or <c>tfoot</c> that carries another display).
+    /// </summary>
+    internal static TableInternalRole NativeRowRole(
+        DomTree tree,
+        NodeId id,
+        IReadOnlyDictionary<NodeId, LayoutStyle> styles)
+    {
+        if (styles.TryGetValue(id, out LayoutStyle? style))
         {
-            int end = rows.Count;
-            for (int index = trailing; index < end; index++)
+            switch (style.AuthoredTableDisplay)
             {
-                rows[index] = (rows[index].Row, end);
+                case TableInternalDisplay.Row:
+                    return TableInternalRole.Row;
+                case TableInternalDisplay.RowGroup:
+                    return TableInternalRole.RowGroup;
+                case TableInternalDisplay.HeaderGroup:
+                    return TableInternalRole.HeaderGroup;
+                case TableInternalDisplay.FooterGroup:
+                    return TableInternalRole.FooterGroup;
             }
         }
+
+        return DomTraversal.ElementLocalName(tree, id) switch
+        {
+            "tr" => TableInternalRole.Row,
+            "tbody" => TableInternalRole.RowGroup,
+            "thead" => TableInternalRole.HeaderGroup,
+            "tfoot" => TableInternalRole.FooterGroup,
+            _ => TableInternalRole.None,
+        };
     }
 
     /// <summary>Minimum track width implied by percentage columns in an auto-width table.</summary>
