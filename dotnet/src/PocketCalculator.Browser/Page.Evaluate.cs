@@ -372,6 +372,39 @@ public sealed partial class Page
     public PendingNavigation? TakePendingNavigation() => Js?.TakePendingNavigation();
 
     /// <summary>
+    /// Discard a queued document navigation and cancel the document's pending resource
+    /// loads (upstream 361f15d, <c>Page.stopLoading</c>). The CDP processor separately
+    /// cancels a navigation it is running.
+    /// </summary>
+    public void StopLoading()
+    {
+        _ = TakePendingNavigation();
+        Js?.StopRenderResourceLoading();
+    }
+
+    /// <summary>
+    /// Settle a navigation <c>Page.stopLoading</c> or a close cancelled (upstream 361f15d).
+    /// A document that committed stays, as far as it got, with a failed lifecycle; one that
+    /// did not leaves the page at the URL, lifecycle and readiness it had before. Returns
+    /// whether the document committed.
+    /// </summary>
+    public bool SettleStoppedNavigation(PocketCalculator.Js.Url.UrlRecord? previousUrl, LifecycleState previousLifecycle, DocumentReadiness previousReadiness)
+    {
+        StopLoading();
+        if (Readiness >= DocumentReadiness.Committed)
+        {
+            Lifecycle = LifecycleState.Failed;
+            PushHistory(UrlString());
+            return true;
+        }
+
+        Url = previousUrl;
+        Lifecycle = previousLifecycle;
+        Readiness = previousReadiness;
+        return false;
+    }
+
+    /// <summary>
     /// Give the page transient user activation, as a real mouse press or key press does.
     /// The host input paths (CDP <c>Input</c>, MCP click and type) call this before they
     /// dispatch, so a navigation the input causes reports <c>Sec-Fetch-User: ?1</c>.

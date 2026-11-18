@@ -455,11 +455,11 @@ public sealed class PocketCalculatorState
     public RenderResourceCache RenderResources { get; set; } = RenderResourceCache.Default();
 
     /// <summary>
-    /// Waiters sharing an asynchronous HTMLImageElement request. The key keeps
-    /// navigation identity and request credentials separate so neither stale pages
-    /// nor incompatible CORS profiles share a completion.
+    /// Cancellation handle and waiters sharing an asynchronous HTMLImageElement request.
+    /// The key keeps navigation identity and request credentials separate so neither stale
+    /// pages nor incompatible CORS profiles share a completion.
     /// </summary>
-    public Dictionary<(ulong Generation, string Url, ImageRequestProfile Profile, ulong? Attempt), List<TaskCompletionSource>>
+    public Dictionary<(ulong Generation, string Url, ImageRequestProfile Profile, ulong? Attempt), RenderImageRequest>
         RenderImageInFlight { get; } = [];
 
     /// <summary>
@@ -912,4 +912,15 @@ public sealed record PendingNavigation(string Url, string Method, string Body)
 
     /// <summary>Whether the initiating realm had transient user activation.</summary>
     public bool UserActivated { get; init; }
+}
+
+/// <summary>
+/// One asynchronous HTMLImageElement request: the leader's cancellation, which
+/// <c>Page.stopLoading</c> fires (upstream 361f15d), and the followers waiting on it.
+/// </summary>
+public sealed class RenderImageRequest
+{
+    public CancellationTokenSource Cancellation { get; } = new();
+
+    public List<TaskCompletionSource> Waiters { get; } = [];
 }

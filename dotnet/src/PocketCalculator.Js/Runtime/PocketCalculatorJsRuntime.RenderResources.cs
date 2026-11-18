@@ -169,6 +169,60 @@ public sealed partial class PocketCalculatorJsRuntime
     }
 
     /// <summary>
+    /// Cancel this document's current resource loads without letting the next render turn
+    /// rediscover and restart them (upstream 361f15d, <c>Page.stopLoading</c>): background
+    /// image and font loads, misses not started yet, and HTMLImageElement requests, whose
+    /// <c>decode()</c> waiters then reject. Bytes already loaded are kept, and URLs the
+    /// document has not asked for yet still load. Returns the number of requests stopped.
+    /// </summary>
+    public int StopRenderResourceLoading()
+    {
+        PocketCalculatorState state = State;
+        return state.IsolateLock.Run(() =>
+        {
+            ApplyRenderResourceResults();
+            List<RenderResourceMiss> stopped = [.. state.RenderResourceLoads.InFlight];
+            stopped.AddRange(state.RenderResources.TakeSyncMisses());
+            List<(string Url, ImageRequestProfile Profile, RenderImageRequest Request)> images = [];
+            lock (state.AsyncResourceGate)
+            {
+                foreach (var (key, request) in state.RenderImageInFlight)
+                {
+                    images.Add((key.Url, key.Profile, request));
+                }
+
+                state.RenderImageInFlight.Clear();
+            }
+
+            AbandonRenderResources();
+            foreach (RenderResourceMiss miss in stopped)
+            {
+                state.RenderResources.StopResource(miss.Url, miss.Profile);
+            }
+
+            foreach (var (url, profile, request) in images)
+            {
+                state.RenderResources.StopResource(url, profile);
+                try
+                {
+                    request.Cancellation.Cancel();
+                }
+                catch (AggregateException)
+                {
+                    // A cancellation callback threw; the request is cancelled either way.
+                }
+
+                foreach (TaskCompletionSource waiter in request.Waiters)
+                {
+                    waiter.TrySetResult();
+                }
+            }
+
+            return stopped.Count + images.Count;
+        });
+    }
+
+    /// <summary>
     /// Start page-transport loads for <paramref name="requests"/> (already marked in
     /// flight). They keep the transport's cookies, proxy, SSRF policy, tracker blocklist,
     /// callbacks, CORS and response limits, share the page-wide concurrency limit, and

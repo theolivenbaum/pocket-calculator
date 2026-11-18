@@ -110,6 +110,12 @@ public sealed class CdpContext
 
     public List<CdpEvent> PendingEvents { get; } = [];
 
+    /// <summary>
+    /// Targets whose <c>Page.close</c> is waiting on a beforeunload confirmation, with the
+    /// session that asked, which <c>Page.javascriptDialogClosed</c> goes to (upstream 361f15d).
+    /// </summary>
+    internal Dictionary<string, string?> PendingBeforeunloadClose { get; } = new(StringComparer.Ordinal);
+
     public Dictionary<string, ScreencastState> Screencasts { get; } = new(StringComparer.Ordinal);
 
     public BrowserContext DefaultContext { get; }
@@ -592,6 +598,7 @@ public sealed class CdpContext
 
     public void RemovePage(string id)
     {
+        PendingBeforeunloadClose.Remove(id);
         List<string> removedSessions = [];
         foreach (var (sessionId, pageId) in Sessions)
         {

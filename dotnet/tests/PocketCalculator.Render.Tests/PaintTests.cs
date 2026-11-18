@@ -741,6 +741,44 @@ public class PaintTests
         Assert.Single(cache.TakeSyncMisses());
     }
 
+    // upstream 361f15d
+    [Fact]
+    public void StoppedResourcesSurviveCacheEvictionAndPreserveRequestProfiles()
+    {
+        int calls = 0;
+        RenderResourceCache cache = RenderResourceCache.WithLoaderAndLimits(_ =>
+        {
+            calls++;
+            return null;
+        }, 1, 4096);
+        const string Url = "https://example.test/image.png";
+        cache.StopResource(Url, ImageRequestProfile.CorsInclude);
+        Assert.True(cache.HasLiveImageOutcome(Url, ImageRequestProfile.CorsInclude));
+        Assert.False(cache.HasLiveImageOutcome(Url, ImageRequestProfile.NoCorsInclude));
+        cache.Seed(Url, RetrySvg);
+        Assert.NotNull(cache.GetOrLoadImage(Url, ImageRequestProfile.NoCorsInclude));
+        Assert.Null(cache.GetOrLoadImage(Url, ImageRequestProfile.CorsInclude));
+        cache.StopResource(Url, null);
+        Assert.NotNull(cache.GetOrLoadImage(Url, ImageRequestProfile.NoCorsInclude));
+        cache.Seed("https://example.test/other.png", RetrySvg);
+        cache.StopResource(Url, null);
+        Assert.True(cache.HasLiveOutcome(Url));
+        Assert.Equal(new CachedImageOutcome(null), cache.CachedImageMetadata(Url, null));
+        Assert.Null(cache.GetOrLoad(Url, isFont: true));
+        Assert.Null(cache.GetOrLoadImage(Url, ImageRequestProfile.CorsInclude));
+        cache.SetSyncLoadingEnabled(false);
+        Assert.Null(cache.GetOrLoadImage(Url, ImageRequestProfile.NoCorsInclude));
+        Assert.Empty(cache.TakeSyncMisses());
+        Assert.Equal(0, calls);
+        const string NewUrl = "https://example.test/new.png";
+        Assert.Null(cache.GetOrLoad(NewUrl, isFont: false));
+        Assert.Equal([new RenderResourceMiss(NewUrl, null, false)], cache.TakeSyncMisses());
+        cache.Seed(Url, RetrySvg);
+        Assert.NotNull(cache.GetOrLoadImage(Url, ImageRequestProfile.NoCorsInclude));
+        Assert.Equal(1, cache.RetainedEntryCount());
+        Assert.False(RenderResourceCache.Default().HasLiveOutcome(Url));
+    }
+
     private static readonly byte[] RetrySvg =
         """<svg xmlns="http://www.w3.org/2000/svg" width="23" height="17"/>"""u8.ToArray();
 

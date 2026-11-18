@@ -223,7 +223,8 @@ public static partial class Page
         IReadOnlyList<NetworkEvent> networkEvents,
         WaitUntil waitUntil,
         bool reachedNetworkIdle,
-        DocumentReadiness readiness = DocumentReadiness.Loaded)
+        DocumentReadiness readiness = DocumentReadiness.Loaded,
+        bool stopped = false)
     {
         ArgumentNullException.ThrowIfNull(ctx);
         ArgumentNullException.ThrowIfNull(networkEvents);
@@ -413,6 +414,22 @@ public static partial class Page
         if (readiness < DocumentReadiness.Loaded)
         {
             ctx.PendingEvents.AddRange(phase3);
+            if (stopped)
+            {
+                // Page.stopLoading or a close cancelled the load (upstream 361f15d): the
+                // frame stopped loading without its load event.
+                //
+                // Deviation from crates/obscura-cdp/src/domains/page.rs, which drops
+                // DOMContentLoaded as well for every stopped document; Chromium reports a
+                // DOMContentLoaded that already happened, and so does this.
+                ctx.PendingEvents.Add(new CdpEvent
+                {
+                    Method = "Page.frameStoppedLoading",
+                    Params = new JsonObject { ["frameId"] = frameId },
+                    SessionId = es,
+                });
+            }
+
             ctx.PendingEvents.Add(TargetInfoChanged(ctx, pageId, pageUrl));
             return;
         }
@@ -449,6 +466,63 @@ public static partial class Page
         ctx.PendingEvents.AddRange(phase3);
 
         ctx.PendingEvents.Add(TargetInfoChanged(ctx, pageId, pageUrl));
+    }
+
+    /// <summary>
+    /// Announce a navigation cancelled before its document committed (upstream 361f15d):
+    /// its document request, failed as aborted, and the frame stopping.
+    /// </summary>
+    public static void EmitAbortedNavigation(
+        CdpContext ctx,
+        string? sessionId,
+        string frameId,
+        string loaderId,
+        string url,
+        string method)
+    {
+        ArgumentNullException.ThrowIfNull(ctx);
+        double ts = Timestamp();
+        ctx.PendingEvents.Add(new CdpEvent
+        {
+            Method = "Network.requestWillBeSent",
+            Params = new JsonObject
+            {
+                ["requestId"] = loaderId,
+                ["loaderId"] = loaderId,
+                ["documentURL"] = url,
+                ["request"] = new JsonObject
+                {
+                    ["url"] = url,
+                    ["method"] = method,
+                    ["headers"] = new JsonObject(),
+                },
+                ["timestamp"] = ts,
+                ["wallTime"] = ts,
+                ["initiator"] = new JsonObject { ["type"] = "other" },
+                ["type"] = "Document",
+                ["frameId"] = frameId,
+            },
+            SessionId = sessionId,
+        });
+        ctx.PendingEvents.Add(new CdpEvent
+        {
+            Method = "Network.loadingFailed",
+            Params = new JsonObject
+            {
+                ["requestId"] = loaderId,
+                ["timestamp"] = ts,
+                ["type"] = "Document",
+                ["errorText"] = "net::ERR_ABORTED",
+                ["canceled"] = true,
+            },
+            SessionId = sessionId,
+        });
+        ctx.PendingEvents.Add(new CdpEvent
+        {
+            Method = "Page.frameStoppedLoading",
+            Params = new JsonObject { ["frameId"] = frameId },
+            SessionId = sessionId,
+        });
     }
 
     /// <summary>
@@ -1294,23 +1368,87 @@ public static partial class Page
                     ? DomainResult.Err("enabled must be a boolean")
                     : DomainResult.Empty();
 
-            // upstream e5bcd75: go-rod calls these. stopLoading drops a navigation the page has
-            // queued but not started; close closes the session's target. Not yet ported: the
-            // beforeunload confirmation of upstream 361f15d, and cancelling in-flight render
-            // resource loads.
+            // upstream e5bcd75 / 361f15d: go-rod calls these. stopLoading drops a navigation
+            // the page has queued but not started and cancels the document's pending resource
+            // loads (a navigation in flight is cancelled by the connection processor, which
+            // answers stopLoading itself then: CdpServer.ProcessWithInterceptionAsync).
             case "stopLoading":
             {
                 BrowserPage page = ctx.GetSessionPageMut(sessionId) ?? throw new DomainError("No page for session");
-                _ = page.TakePendingNavigation();
+                page.StopLoading();
                 return DomainResult.Empty();
             }
 
+            // close runs the document's beforeunload handlers first. A page with sticky
+            // activation that asks for a confirmation keeps its target and reports a
+            // beforeunload dialog; Page.handleJavaScriptDialog then closes it or not.
+            // Target.closeTarget stays the force-close path.
             case "close":
             {
                 BrowserPage page = ctx.GetSessionPage(sessionId) ?? throw new DomainError("No page for session");
+                string targetId = page.Id;
+                if (ctx.PendingBeforeunloadClose.ContainsKey(targetId))
+                {
+                    return DomainResult.Empty();
+                }
+
+                bool confirmation = false;
+                if (page.HasJs)
+                {
+                    BrowserPage live = ctx.GetSessionPageMut(sessionId) ?? throw new DomainError("No page for session");
+                    confirmation = live.EvaluateHost("__obscura_host.fireBeforeUnload()").AsBool()
+                        ?? throw new DomainError("Could not run beforeunload handlers");
+                }
+
+                if (confirmation)
+                {
+                    string url = (ctx.GetPage(targetId) ?? throw new DomainError("No page")).UrlString();
+                    ctx.PendingBeforeunloadClose[targetId] = sessionId;
+                    ctx.PendingEvents.Add(new CdpEvent
+                    {
+                        Method = "Page.javascriptDialogOpening",
+                        Params = new JsonObject
+                        {
+                            ["url"] = url,
+                            ["type"] = "beforeunload",
+                            ["message"] = string.Empty,
+                            ["hasBrowserHandler"] = true,
+                            ["defaultPrompt"] = string.Empty,
+                        },
+                        SessionId = sessionId,
+                    });
+                    return DomainResult.Empty();
+                }
+
                 DomainResult closed = await Target.HandleAsync(
-                    "closeTarget", new JsonObject { ["targetId"] = page.Id }, ctx, sessionId).ConfigureAwait(false);
+                    "closeTarget", new JsonObject { ["targetId"] = targetId }, ctx, sessionId).ConfigureAwait(false);
                 return closed.IsOk ? DomainResult.Empty() : closed;
+            }
+
+            // Only the beforeunload confirmation of Page.close is a dialog here: alert,
+            // confirm and prompt answer at once and report nothing (upstream 33aeb3f).
+            case "handleJavaScriptDialog":
+            {
+                string targetId = (ctx.GetSessionPage(sessionId) ?? throw new DomainError("No page for session")).Id;
+                bool accept = parameters.Get("accept").AsBool() ?? throw new DomainError("accept required");
+                if (!ctx.PendingBeforeunloadClose.Remove(targetId, out string? owner))
+                {
+                    return DomainResult.Err("No dialog is showing");
+                }
+
+                ctx.PendingEvents.Add(new CdpEvent
+                {
+                    Method = "Page.javascriptDialogClosed",
+                    Params = new JsonObject { ["result"] = accept, ["userInput"] = string.Empty },
+                    SessionId = owner,
+                });
+                if (accept)
+                {
+                    _ = await Target.HandleAsync(
+                        "closeTarget", new JsonObject { ["targetId"] = targetId }, ctx, sessionId).ConfigureAwait(false);
+                }
+
+                return DomainResult.Empty();
             }
 
             // Obscura does not download files to disk, so there is no behavior to

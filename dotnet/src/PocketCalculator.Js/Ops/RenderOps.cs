@@ -1456,16 +1456,18 @@ public static class RenderOps
         var imageRequestGeneration = shared.RenderResources.BeginHtmlImageRequest(selectedUrl, profile);
         var requestKey = (documentGeneration, selectedUrl, profile, imageRequestGeneration);
         TaskCompletionSource? follower = null;
+        RenderImageRequest? leader = null;
         lock (shared.AsyncResourceGate)
         {
-            if (shared.RenderImageInFlight.TryGetValue(requestKey, out var waiters))
+            if (shared.RenderImageInFlight.TryGetValue(requestKey, out var inFlight))
             {
                 follower = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                waiters.Add(follower);
+                inFlight.Waiters.Add(follower);
             }
             else
             {
-                shared.RenderImageInFlight[requestKey] = [];
+                leader = new RenderImageRequest();
+                shared.RenderImageInFlight[requestKey] = leader;
             }
         }
 
@@ -1490,12 +1492,14 @@ public static class RenderOps
                 {
                     try
                     {
+                        // Page.stopLoading cancels the request (upstream 361f15d).
+                        CancellationToken stop = leader!.Cancellation.Token;
                         Response? response = stealthClient is { IsAvailable: true }
                             ? await stealthClient
-                                .FetchResourceWithCallbacksAsync(parsedUrl, resourceRequest, shared.Callbacks)
+                                .FetchResourceWithCallbacksAsync(parsedUrl, resourceRequest, shared.Callbacks, stop)
                                 .ConfigureAwait(false)
                             : await httpClient!
-                                .FetchResourceWithCallbacksAsync(parsedUrl, resourceRequest, shared.Callbacks)
+                                .FetchResourceWithCallbacksAsync(parsedUrl, resourceRequest, shared.Callbacks, stop)
                                 .ConfigureAwait(false);
                         bytes = response is { Status: >= 200 and < 300 } ok ? ok.Body : null;
                     }
@@ -1524,7 +1528,11 @@ public static class RenderOps
                 string result;
                 lock (shared.AsyncResourceGate)
                 {
-                    if (shared.DocumentGeneration == documentGeneration)
+                    // A request Page.stopLoading took out of the map is stopped in the cache
+                    // already; its late outcome must not seed over that (upstream 361f15d).
+                    if (shared.DocumentGeneration == documentGeneration
+                        && shared.RenderImageInFlight.TryGetValue(requestKey, out var current)
+                        && ReferenceEquals(current, leader))
                     {
                         if (bytes is not null && RenderPaint.ImageIntrinsicDimensions(bytes) is not null)
                         {
@@ -1540,9 +1548,11 @@ public static class RenderOps
                         }
                     }
 
-                    if (shared.RenderImageInFlight.Remove(requestKey, out var registered))
+                    if (shared.RenderImageInFlight.TryGetValue(requestKey, out var registered)
+                        && ReferenceEquals(registered, leader))
                     {
-                        pending = registered;
+                        shared.RenderImageInFlight.Remove(requestKey);
+                        pending = registered.Waiters;
                     }
 
                     settled = true;
@@ -1572,9 +1582,11 @@ public static class RenderOps
                 List<TaskCompletionSource> abandoned = [];
                 lock (shared.AsyncResourceGate)
                 {
-                    if (shared.RenderImageInFlight.Remove(requestKey, out var registered))
+                    if (shared.RenderImageInFlight.TryGetValue(requestKey, out var registered)
+                        && ReferenceEquals(registered, leader))
                     {
-                        abandoned = registered;
+                        shared.RenderImageInFlight.Remove(requestKey);
+                        abandoned = registered.Waiters;
                     }
                 }
 

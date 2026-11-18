@@ -389,14 +389,16 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [ ] CDP Fetch: `b76d966`
       (main-document interception), `5e58c86`; with open `dfc546d`
 - [x] `939086a`/`e70183d` setBypassCSP (validated ack), `e5bcd75` Page.close and stopLoading
-      (stopLoading drops a queued navigation; in-flight render loads are not cancelled),
+      (stopLoading drops a queued navigation; cancelling loads is `361f15d`),
       `192561c` removeScriptToEvaluateOnNewDocument errors on an unknown id (preload scripts
       are still connection-wide, `7034ad6`)
 - [x] `48953ef` callFunctionOn reads an argument's objectId before its value; `f66ac0a` (part)
       a JSON object or array argument is parsed, so `__proto__` is an own property; `28756b4` +
       `c05cf3b` (part) DOM.getOuterHTML accepts objectId, a child frame's handle read in its
       own document
-- [ ] `361f15d` beforeunload on Page.close; the rest of `f66ac0a` (native function invocation)
+- [x] `361f15d` beforeunload on Page.close (Page.javascriptDialogOpening, handleJavaScriptDialog),
+      stopLoading and close cancel an in-flight navigation and the document's image/font loads
+- [ ] the rest of `f66ac0a` (native function invocation)
 - [x] `aa4b4e7` canceled keydown suppresses editing defaults; `d132880` beforeinput (cancelable,
       disabled/readonly guards, InputEvent input, IME caret on Input.insertText); `3f7cccd`
       readonly Backspace and textarea Enter. (Delete-key editing is not in the port at all.)
@@ -2317,8 +2319,22 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   (`DomTree::node_allocation_generation`) so a reused slot does not inherit a failed
   attempt. A port `NodeId` already carries its slot generation, so `HtmlImageRequests`
   keys on the id alone and the DOM tree is unchanged; a record whose node was freed is
-  dropped when next looked up. Rust's `stop_resource` completion has no counterpart
-  because the port has no stopped-resource set.
+  dropped when next looked up. `RenderResourceCache.StopResource` completes a pending
+  attempt as failed, as Rust's `stop_resource` does (`361f15d`).
+- Stop and close (`361f15d`): the beforeunload helper is host-only
+  (`__obscura_host.fireBeforeUnload`), not the page-visible `__obscura_fireBeforeUnload`, and
+  the event is the port's own `BeforeUnloadEvent` interface object; any handler returning a
+  non-null value on a `BeforeUnloadEvent` (also one `createEvent` made) cancels it, as HTML
+  says, where upstream applies that only to its own fired event. Sticky activation is set in
+  `_markTrusted`, so only user-agent events activate. A navigation stopped after its document
+  committed still reports a `DOMContentLoaded` that already ran (Chromium); upstream drops it.
+  "Committed" is the page's `Readiness`, not upstream's Document network event or document-URL
+  test. A stop that lands after the navigation finished cancels only the document's resource
+  loads. Not ported: fan-out of the aborted request to other network observers (the port has
+  no fan-out yet), the `document_request_started` skip of the replayed `requestWillBeSent`
+  (the port has no main-document interception, `b76d966`), and dropping paused interceptions
+  of the cancelled navigation. The dialog payload is upstream's (`hasBrowserHandler: true`, no
+  `frameId`); Chromium (measured 2026-11-18) sends `frameId` and `hasBrowserHandler: false`.
 
 - Render resources (beyond upstream `74ac75f`/`a3171f3`): in a document-scoped cache a failed
   CSS image, font or other request with no HTML image attempt stays failed for the document,

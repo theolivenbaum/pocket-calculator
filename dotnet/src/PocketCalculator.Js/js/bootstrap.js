@@ -2728,8 +2728,23 @@ function _runHandler(record, item, event) {
     return;
   }
   const ret = _callAtBoot(fn, item, event);
+  // A BeforeUnloadEvent: any non-null return value cancels, and becomes returnValue when
+  // that is still empty (HTML; upstream 361f15d). Every other event: `return false`.
+  // DEVIATION from crates/obscura-js/js/bootstrap.js, which applies this only to the event
+  // its own beforeunload helper fires; HTML applies it to any BeforeUnloadEvent.
+  if (event.type === 'beforeunload' && _beforeUnloadEventClass !== null
+      && _ifaceHas(event, _beforeUnloadEventClass)) {
+    if (ret != null) {
+      event.preventDefault();
+      const inner = _ifaceInner(event, _beforeUnloadEventClass);
+      if (inner.returnValue === '') inner.returnValue = _String(ret);
+    }
+    return;
+  }
   if (ret === false) event.preventDefault();
 }
+// BeforeUnloadEvent, once the interface is defined (see _ifaceIllegal('BeforeUnloadEvent')).
+let _beforeUnloadEventClass = null;
 // DOM "inner invoke" for one listener.
 function _callListener(entry, item, event) {
   const previous = _passiveEvent;
@@ -14471,9 +14486,21 @@ const _trustedPending = _private(new WeakSet());
 const _trustedPendingAdd = Function.prototype.call.bind(WeakSet.prototype.add);
 const _trustedPendingTake = Function.prototype.call.bind(WeakSet.prototype.delete);
 const _trustedDelete = Function.prototype.call.bind(WeakSet.prototype.delete);
+// HTML sticky activation: set by the first activation-triggering input event (upstream
+// 361f15d). Only the user agent's own events reach here, so page script cannot set it.
+// It gates the beforeunload confirmation (__obscura_host.fireBeforeUnload).
+let _hasStickyActivation = false;
 function _markTrusted(ev) {
   try {
-    if (ev) { _trustedAdd(_trustedEvents, ev); _trustedPendingAdd(_trustedPending, ev); }
+    if (ev) {
+      _trustedAdd(_trustedEvents, ev); _trustedPendingAdd(_trustedPending, ev);
+      const type = ev.type;
+      if ((type === 'keydown' && ev.key !== 'Escape') || type === 'mousedown'
+          || (type === 'pointerdown' && ev.pointerType === 'mouse')
+          || (type === 'pointerup' && ev.pointerType !== 'mouse') || type === 'touchend') {
+        _hasStickyActivation = true;
+      }
+    }
   } catch (_e) {}
   return ev;
 }
@@ -25713,6 +25740,20 @@ _ifaceEventClass('SecurityPolicyViolationEvent', Event, 1, [
 // BeforeUnloadEvent and TextEvent: no constructor in Chromium; createEvent makes them.
 _ifaceIllegal('BeforeUnloadEvent', Event);
 _ifaceGetter(_ifaces.BeforeUnloadEvent, 'returnValue', (inner) => inner.returnValue, (inner, v) => { inner.returnValue = _String(v); });
+_beforeUnloadEventClass = _ifaces.BeforeUnloadEvent;
+// The beforeunload a Page.close runs (upstream 361f15d): a trusted, cancelable
+// BeforeUnloadEvent at the window. True when the page asks for a confirmation, which it
+// may only do once it has sticky activation: a listener cancelled it, or a handler or
+// listener set a returnValue. DEVIATION from crates/obscura-js/js/bootstrap.js, which
+// publishes this as globalThis.__obscura_fireBeforeUnload; here it is host-only
+// (__obscura_host.fireBeforeUnload, SECURITY.md L10).
+function _fireBeforeUnload() {
+  const event = Reflect.construct(Event, ['beforeunload', { cancelable: true }], _beforeUnloadEventClass);
+  const inner = _ifaceData({ returnValue: '' });
+  _weakMapSet(_ifaceState, event, { C: _beforeUnloadEventClass, inner, self: false });
+  const allowed = _dispatch(globalThis, _markTrusted(event));
+  return _hasStickyActivation && (!allowed || inner.returnValue !== '');
+}
 _ifaceIllegal('TextEvent', UIEvent);
 _ifaceAttr(_ifaces.TextEvent, 'data');
 _ifaceOp(_ifaces.TextEvent, 'initTextEvent', 1, function (inner, args) {
@@ -26754,6 +26795,7 @@ globalThis.__obscura_host_handoff = Object.freeze({
     }
   },
   markTrusted: _markTrusted,
+  fireBeforeUnload: _fireBeforeUnload,
   setFieldValue: _setFieldValue,
   setInputFiles: _setInputFiles,
   deliverMessage: _deliverMessage,

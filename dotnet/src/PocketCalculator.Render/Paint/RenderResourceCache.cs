@@ -159,6 +159,14 @@ public sealed class RenderResourceCache
     private bool _documentScoped;
     private readonly HtmlImageRequests _htmlImageRequests = new();
 
+    /// <summary>
+    /// Requests <c>Page.stopLoading</c> cancelled (upstream 361f15d). Cancellation belongs to
+    /// the document, not the retryable byte cache: a stopped key reads as a settled failure
+    /// and is never loaded or recorded as a miss again until bytes are seeded for it or the
+    /// document's cache is replaced. Kept outside the FIFO so eviction cannot restart it.
+    /// </summary>
+    private readonly HashSet<string> _stopped = new(StringComparer.Ordinal);
+
     private RenderResourceCache(IRenderResourceLoader loader, int maxEntries, int maxBytes)
     {
         _loader = loader;
@@ -441,9 +449,10 @@ public sealed class RenderResourceCache
 
             byte[]? bytes = PaintResources.FetchProfiledImageBytes(url, null, this, profile);
             ReplacedIntrinsic? intrinsic = bytes is null ? null : PaintResources.ImageIntrinsicMetadata(bytes);
+            string outcomeKey = key ?? ImageResourceKey(url, profile);
             bool? outcome = intrinsic is not null
                 ? true
-                : _entries.ContainsKey(key ?? ImageResourceKey(url, profile)) ? false : null;
+                : _entries.ContainsKey(outcomeKey) || _stopped.Contains(outcomeKey) ? false : null;
             ObserveHtmlImageLocked(tree, node, url, profile, outcome);
             return intrinsic;
         }
@@ -515,6 +524,11 @@ public sealed class RenderResourceCache
     {
         lock (_gate)
         {
+            if (_stopped.Contains(NetworkResourceUrl(url)))
+            {
+                return true;
+            }
+
             return _entries.TryGetValue(NetworkResourceUrl(url), out CachedResource? entry)
                 && entry switch
                 {
@@ -632,6 +646,28 @@ public sealed class RenderResourceCache
         }
     }
 
+    /// <summary>
+    /// Keep a cancelled request stopped until this document's cache is replaced (upstream
+    /// 361f15d). Bytes already loaded for the key are kept; a pending HTML image attempt
+    /// on it settles as failed.
+    /// </summary>
+    public void StopResource(string url, ImageRequestProfile? profile)
+    {
+        ArgumentNullException.ThrowIfNull(url);
+        string key = profile is { } imageProfile ? ImageResourceKey(url, imageProfile) : NetworkResourceUrl(url);
+        lock (_gate)
+        {
+            if (_entries.TryGetValue(key, out CachedResource? entry) && entry is CachedResource.Bytes)
+            {
+                return;
+            }
+
+            Remove(key);
+            _htmlImageRequests.Complete(key, _htmlImageRequests.Generation(key), true);
+            _stopped.Add(key);
+        }
+    }
+
     /// <summary>Retain a page-transport failure so capture does not repeat the request.</summary>
     public void SeedMissing(string url)
     {
@@ -685,6 +721,11 @@ public sealed class RenderResourceCache
         CachedResource? entry;
         lock (_gate)
         {
+            if (_stopped.Contains(NetworkResourceUrl(resolved)))
+            {
+                return new CachedImageOutcome(null);
+            }
+
             if (!_entries.TryGetValue(NetworkResourceUrl(resolved), out entry))
             {
                 return IsSettledFailure(NetworkResourceUrl(resolved)) ? new CachedImageOutcome(null) : null;
@@ -726,6 +767,11 @@ public sealed class RenderResourceCache
         CachedResource? entry;
         lock (_gate)
         {
+            if (_stopped.Contains(key))
+            {
+                return new CachedImageOutcome(null);
+            }
+
             if (!_entries.TryGetValue(key, out entry))
             {
                 return IsSettledFailure(key) ? new CachedImageOutcome(null) : null;
@@ -864,6 +910,11 @@ public sealed class RenderResourceCache
         string key = NetworkResourceUrl(url);
         lock (_gate)
         {
+            if (_stopped.Contains(key))
+            {
+                return null;
+            }
+
             if (_entries.TryGetValue(key, out CachedResource? entry))
             {
                 switch (entry)
@@ -905,6 +956,11 @@ public sealed class RenderResourceCache
         string key = ImageResourceKey(url, profile);
         lock (_gate)
         {
+            if (_stopped.Contains(key))
+            {
+                return null;
+            }
+
             if (_entries.TryGetValue(key, out CachedResource? entry))
             {
                 switch (entry)
@@ -961,6 +1017,8 @@ public sealed class RenderResourceCache
 
     private void InsertBytes(string url, byte[] bytes)
     {
+        // Bytes seeded for a stopped request make it an ordinary cached resource again.
+        _stopped.Remove(url);
         if (_maxEntries == 0 || bytes.Length > _maxBytes)
         {
             return;

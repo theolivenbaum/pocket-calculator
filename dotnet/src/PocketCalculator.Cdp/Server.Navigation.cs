@@ -215,8 +215,14 @@ public static partial class CdpServer
             }
         }
 
+        // Page.stopLoading, Page.close or Target.closeTarget for this page while it loads
+        // cancels the navigation (upstream 361f15d).
+        var previousUrl = page.Url;
+        var previousLifecycle = page.Lifecycle;
+        var previousReadiness = page.Readiness;
+        using var stop = new CancellationTokenSource();
         var navigation = NavigateTaskAsync(
-            ctx, page, url, waitUntil, navMethod, navBody, navInitiator, preloadScripts);
+            ctx, page, url, waitUntil, navMethod, navBody, navInitiator, preloadScripts, stop.Token);
 
         while (true)
         {
@@ -263,6 +269,22 @@ public static partial class CdpServer
                 }
 
                 case ServerMessage.Cdp cdp:
+                    if (StopsNavigation(cdp.Text, ctx, pageId) is { } stopping)
+                    {
+                        if (!stop.IsCancellationRequested)
+                        {
+                            await stop.CancelAsync().ConfigureAwait(false);
+                        }
+
+                        if (stopping.Method == "Page.stopLoading")
+                        {
+                            // Answered here: the stop is the cancellation itself.
+                            cdp.ReplyTx.TryWrite(CdpResponse.Success(
+                                stopping.Id, new JsonObject(), stopping.SessionId).ToJson());
+                            break;
+                        }
+                    }
+
                     if (cdp.Text.Contains("Fetch.continueRequest", StringComparison.Ordinal) ||
                         cdp.Text.Contains("Fetch.fulfillRequest", StringComparison.Ordinal) ||
                         cdp.Text.Contains("Fetch.failRequest", StringComparison.Ordinal))
@@ -301,6 +323,15 @@ public static partial class CdpServer
         // Deferred messages are handled by the outer processor loop, which drains
         // them before pulling the next message off the wire.
         var navigateError = await navigation.ConfigureAwait(false);
+        // A navigation that finished before it saw the stop is an ordinary one; the stop
+        // still cancels its document's pending loads.
+        var cancelled = stop.IsCancellationRequested && navigateError is not null;
+        var committed = cancelled
+            && page.SettleStoppedNavigation(previousUrl, previousLifecycle, previousReadiness);
+        if (stop.IsCancellationRequested && !cancelled)
+        {
+            page.StopLoading();
+        }
 
         // Fold in network events for script-initiated requests (fetch/XHR/dynamic
         // resource) so they emit as Network.requestWillBeSent / responseReceived
@@ -321,7 +352,16 @@ public static partial class CdpServer
                 $"navigation deadline passed after the document committed; reporting it as far as it got ({page.Readiness})");
         }
 
-        var response = navigationSucceeded
+        // A stopped navigation answers as Chromium's does: the document it committed, or,
+        // when none did, net::ERR_ABORTED as errorText of a successful reply.
+        var response = cancelled
+            ? CdpResponse.Success(
+                req.Id,
+                committed
+                    ? new JsonObject { ["frameId"] = frameId, ["loaderId"] = loaderId }
+                    : new JsonObject { ["frameId"] = frameId, ["loaderId"] = loaderId, ["errorText"] = "net::ERR_ABORTED" },
+                req.SessionId)
+            : navigationSucceeded
             ? CdpResponse.Success(
                 req.Id,
                 new JsonObject { ["frameId"] = frameId, ["loaderId"] = loaderId },
@@ -338,18 +378,28 @@ public static partial class CdpServer
         // makes page.goto() resolve to a Response, and the #192 per-isolated-world
         // fresh context ids. Pushes to ctx.PendingEvents; we then drain to the
         // WebSocket reply channel.
-        Domains.Page.EmitNavigationEvents(
-            ctx,
-            sessionForEvents,
-            frameId,
-            loaderId,
-            pageUrl,
-            pageIdForEvents,
-            networkEvents,
-            waitUntil,
-            reachedNetworkIdle,
-            // A failed navigation keeps announcing the whole sequence, as it always has.
-            navigationSucceeded ? page.Readiness : DocumentReadiness.Loaded);
+        if (cancelled && !committed)
+        {
+            Domains.Page.EmitAbortedNavigation(
+                ctx, sessionForEvents, frameId, loaderId, url, navMethod);
+        }
+        else
+        {
+            Domains.Page.EmitNavigationEvents(
+                ctx,
+                sessionForEvents,
+                frameId,
+                loaderId,
+                pageUrl,
+                pageIdForEvents,
+                networkEvents,
+                waitUntil,
+                reachedNetworkIdle,
+                // A failed navigation keeps announcing the whole sequence, as it always has.
+                // A stopped one is announced as far as it got, and as stopped.
+                cancelled ? page.Readiness : navigationSucceeded ? page.Readiness : DocumentReadiness.Loaded,
+                stopped: cancelled);
+        }
 
         if (navigationSucceeded &&
             Domains.Page.QueueScreencastFrame(ctx, sessionForEvents, false) is { } screencastError)
@@ -378,7 +428,8 @@ public static partial class CdpServer
         string navMethod,
         string navBody,
         PendingNavigation? navInitiator,
-        List<string> preloadScripts)
+        List<string> preloadScripts,
+        CancellationToken stop)
     {
         // The navigation's deadline starts once it holds the lock, so waiting for the lock
         // is bounded by one deadline of its own: a holder that never lets go must not leave
@@ -400,20 +451,25 @@ public static partial class CdpServer
             page.SetPreloadScripts(preloadScripts);
             if (string.Equals(navMethod, "POST", StringComparison.Ordinal) && navBody.Length != 0)
             {
-                await page.NavigateWithWaitPostAsync(url, waitUntil, navMethod, navBody, navInitiator)
+                await page.NavigateWithWaitPostAsync(url, waitUntil, navMethod, navBody, navInitiator, stop)
                     .ConfigureAwait(false);
             }
             else
             {
-                await page.NavigateWithWaitPostAsync(url, waitUntil, "GET", string.Empty, navInitiator)
+                await page.NavigateWithWaitPostAsync(url, waitUntil, "GET", string.Empty, navInitiator, stop)
                     .ConfigureAwait(false);
             }
 
             return null;
         }
+        catch (Exception) when (stop.IsCancellationRequested)
+        {
+            // Page.stopLoading or a close (upstream 361f15d); the caller settles the page.
+            return "net::ERR_ABORTED";
+        }
         catch (OperationCanceledException)
         {
-            // Nothing cancels this task from outside, so a cancellation is the page's own
+            // Only a stop cancels this task from outside, so any other cancellation is the page's own
             // (a script interrupt surfacing as ClearScript's ScriptInterruptedException).
             // It is a failed navigation. Letting it escape reached the connection
             // processor's shutdown handler, which stopped serving the connection: this
@@ -428,6 +484,38 @@ public static partial class CdpServer
         {
             ctx.V8Lock.Release();
         }
+    }
+
+    /// <summary>
+    /// The command, when <paramref name="text"/> stops the navigation of page
+    /// <paramref name="pageId"/> (upstream 361f15d): <c>Page.stopLoading</c> or
+    /// <c>Page.close</c> on one of its sessions, or <c>Target.closeTarget</c> naming it.
+    /// A close is still handled after the navigation; the stop only cancels it first.
+    /// </summary>
+    private static CdpRequest? StopsNavigation(string text, CdpContext ctx, string pageId)
+    {
+        if (!text.Contains("Page.stopLoading", StringComparison.Ordinal)
+            && !text.Contains("Page.close", StringComparison.Ordinal)
+            && !text.Contains("Target.closeTarget", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        if (CdpRequest.TryParse(text) is not { } command)
+        {
+            return null;
+        }
+
+        var samePage = command.SessionId is { } session
+            && ctx.Sessions.TryGetValue(session, out var sessionPage)
+            && string.Equals(sessionPage, pageId, StringComparison.Ordinal);
+        return command.Method switch
+        {
+            "Page.stopLoading" or "Page.close" when samePage => command,
+            "Target.closeTarget" when string.Equals(
+                command.Params.Get("targetId").AsString(), pageId, StringComparison.Ordinal) => command,
+            _ => null,
+        };
     }
 
     private static string NavigationDeadlineMessage(Page page) =>
