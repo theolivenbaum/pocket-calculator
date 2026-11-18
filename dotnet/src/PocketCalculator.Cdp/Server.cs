@@ -956,21 +956,43 @@ public static partial class CdpServer
     }
 
     /// <summary>Which <c>/json</c> endpoint a request head names, or null for a WebSocket upgrade.</summary>
-    private static string? JsonEndpoint(string head)
+    /// <remarks>
+    /// upstream e1acbe5 + 31e1dfe (#1570): matched on the request target's path alone, not on
+    /// any substring of the head, so a header (<c>X-Route: /json/list</c>) or a query
+    /// (<c>?next=/json/version</c>) cannot turn a WebSocket upgrade into an HTTP endpoint.
+    /// An absolute-form target is reduced to its path; a trailing slash is accepted
+    /// (Playwright requests <c>/json/version/</c>).
+    /// </remarks>
+    internal static string? JsonEndpoint(string head)
     {
-        if (head.Contains("/json/version", StringComparison.Ordinal))
+        int lineEnd = head.IndexOf('\n');
+        string requestLine = (lineEnd < 0 ? head : head[..lineEnd]).TrimEnd('\r');
+        string[] parts = requestLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
         {
-            return "version";
+            return null;
         }
 
-        if (head.Contains("/json/list", StringComparison.Ordinal) ||
-            head.Contains("/json\r\n", StringComparison.Ordinal) ||
-            head.Contains("/json HTTP", StringComparison.Ordinal))
+        string target = parts[1];
+        if (!target.StartsWith('/'))
         {
-            return "list";
+            if (!Uri.TryCreate(target, UriKind.Absolute, out Uri? absolute))
+            {
+                return null;
+            }
+
+            target = absolute.AbsolutePath;
         }
 
-        return head.Contains("/json/protocol", StringComparison.Ordinal) ? "protocol" : null;
+        int query = target.IndexOf('?');
+        string path = query < 0 ? target : target[..query];
+        return path switch
+        {
+            "/json/version" or "/json/version/" => "version",
+            "/json" or "/json/" or "/json/list" or "/json/list/" => "list",
+            "/json/protocol" or "/json/protocol/" => "protocol",
+            _ => null,
+        };
     }
 
     /// <summary>Serve an HTTP <c>/json/*</c> endpoint with blocking I/O on the accept thread.</summary>

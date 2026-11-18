@@ -33,6 +33,46 @@ public sealed class ControlPlaneGuardsTests
         Assert.Equal(WebSocketState.Open, ws.State);
     }
 
+    /// <summary>
+    /// upstream 1faf17f, allowlist part: POCKETCALCULATOR_CDP_ALLOWED_ORIGINS admits listed
+    /// browser origins (Chromium's --remote-allow-origins). Without it every Origin is refused,
+    /// the endpoint's own included, as Chromium 1243 does (upstream accepts that one by default).
+    /// </summary>
+    // upstream e1acbe5 + 31e1dfe: control_endpoints_only_match_the_request_target
+    [Theory]
+    [InlineData("/json/version", "", "version")]
+    [InlineData("/json/version?client=test", "", "version")]
+    [InlineData("/json/version/", "", "version")]
+    [InlineData("/json/version/?client=test", "", "version")]
+    [InlineData("/json/list", "", "list")]
+    [InlineData("/json", "", "list")]
+    [InlineData("/json/", "", "list")]
+    [InlineData("/json/list/", "", "list")]
+    [InlineData("/json/protocol", "", "protocol")]
+    [InlineData("/json/protocol/", "", "protocol")]
+    [InlineData("/devtools/browser", "X-Route: /json/list\r\n", null)]
+    [InlineData("/devtools/browser?next=/json/version", "", null)]
+    [InlineData("/json/versionify", "", null)]
+    [InlineData("/json/list-extra", "", null)]
+    [InlineData("/json/version/extra", "", null)]
+    [InlineData("/json/list/extra", "", null)]
+    [InlineData("http://127.0.0.1:9222/json/version", "", "version")]
+    [InlineData("http://127.0.0.1:9222/json/list?client=test", "", "list")]
+    [InlineData("http://127.0.0.1:9222/devtools/browser?next=/json/version", "", null)]
+    public void ControlEndpointsOnlyMatchTheRequestTarget(string target, string extra, string? endpoint) =>
+        Assert.Equal(endpoint, CdpServer.JsonEndpoint($"GET {target} HTTP/1.1\r\nHost: 127.0.0.1:9222\r\n{extra}\r\n"));
+
+    [Fact]
+    public void AllowedOriginsAdmitOnlyListedOrigins()
+    {
+        string head = "GET /devtools/browser HTTP/1.1\r\nHost: 127.0.0.1:9222\r\nOrigin: http://127.0.0.1:9222\r\n\r\n";
+        Assert.Equal(CdpServer.ControlRefusal.BrowserOrigin, CdpServer.GetControlRefusal(head, System.Net.IPAddress.Loopback, null));
+        Assert.True(CdpServer.OriginAllowlisted("http://127.0.0.1:9222", "https://app.test, HTTP://127.0.0.1:9222"));
+        Assert.True(CdpServer.OriginAllowlisted("https://anything.test", "*"));
+        Assert.False(CdpServer.OriginAllowlisted("https://evil.test", "https://app.test"));
+        Assert.False(CdpServer.OriginAllowlisted("http://127.0.0.1:9222", null));
+    }
+
     [Fact]
     public async Task BrowserOriginIsRefusedOnDiscoveryAndUpgrade()
     {
