@@ -341,7 +341,7 @@ Security (exposed today unless noted):
       escape `<` `>` U+00A0 in attributes (mXSS), missing void elements, fixed xml/xlink/
       xmlns prefixes. `d45bee5` and `f152fcf` were already in the port (SECURITY.md M9; the
       tree builder's foreign-attribute table); `efb57d8` is a Rust-side perf change, skipped
-- [ ] `5bfac24` - fetch SSRF gate fails open when `UrlRecord.Parse` rejects the URL
+- [x] `5bfac24` - fetch SSRF gate fails open when `UrlRecord.Parse` rejects the URL
       (`FetchOps.cs`, initial URL and intercept rewrite)
 - [ ] `1ee3ac1` - markdown extraction is 2^depth on nested tables, unbounded recursion
 - [ ] `daac810` (+ merge `4724f4b`) - `setProperty`/`removeProperty` of an unchanged

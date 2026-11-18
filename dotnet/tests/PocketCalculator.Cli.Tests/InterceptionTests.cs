@@ -71,7 +71,10 @@ public sealed class InterceptionTests
                             ? ("application/json", "{\"hello\":\"world\"}")
                             : path.StartsWith("/modified", StringComparison.Ordinal)
                                 ? ("text/plain", "REWRITTEN")
-                                : ("text/html", "<script>fetch('/api');</script>");
+                                // Reports how the page's own fetch('/api') settled (upstream 5bfac24).
+                                : path.StartsWith("/probe", StringComparison.Ordinal)
+                                    ? ("text/html", "<script>fetch('/api').then(r => { document.title = 'resolved:' + r.status; }, e => { document.title = 'rejected:' + e.name; });</script>")
+                                    : ("text/html", "<script>fetch('/api');</script>");
                     var response =
                         $"HTTP/1.1 200 OK\r\nContent-Type: {contentType}\r\n" +
                         $"Content-Length: {Encoding.UTF8.GetByteCount(body)}\r\n" +
@@ -211,6 +214,31 @@ public sealed class InterceptionTests
             page, () => Volatile.Read(ref captured).Contains("REWRITTEN", StringComparison.Ordinal), 20, 500);
 
         Assert.Contains("REWRITTEN", Volatile.Read(ref captured), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// upstream 5bfac24: a Continue rewrite that is not a URL must be refused like a forbidden
+    /// one, not handed to the transport as a raw string.
+    /// </summary>
+    [Fact]
+    public async Task Unparsable_continue_rewrite_is_blocked()
+    {
+        using var server = new EchoServer();
+        var browser = ApiBrowser.New();
+        var page = await browser.NewPageAsync();
+        ResolveAll(
+            page.EnableInterception(),
+            request => request.Url.Contains("/api", StringComparison.Ordinal) ? "not a url at all" : null);
+
+        await page.GotoAsync($"{server.Base}/probe");
+        var outcome = string.Empty;
+        for (var i = 0; i < 20 && outcome.Length == 0; i++)
+        {
+            await page.SettleAsync(500);
+            outcome = page.Evaluate("document.title")?.GetValue<string>() ?? string.Empty;
+        }
+
+        Assert.Equal("rejected:AbortError", outcome);
     }
 
     /// <summary>

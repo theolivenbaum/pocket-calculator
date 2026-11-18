@@ -481,8 +481,12 @@ public static partial class FetchOps
         // configured HTTP client; scripted fetch/XHR must use the same policy for its
         // initial URL and every URL it can reach below.
         var allowPrivateNetwork = httpClient?.AllowPrivateNetwork ?? false;
-        if (UrlRecord.Parse(url) is { } parsedInitial
-            && ValidateFetchUrl(parsedInitial, allowPrivateNetwork) is { } initialError)
+        // upstream 5bfac24: a URL the gate cannot parse is one it cannot check, so it never
+        // reaches the transport (whose System.Uri parser disagrees with the WHATWG one).
+        var initialError = UrlRecord.Parse(url, out var initialParseError) is { } parsedInitial
+            ? ValidateFetchUrl(parsedInitial, allowPrivateNetwork)
+            : "Unparsable URL blocked: " + initialParseError.Message();
+        if (initialError is not null)
         {
             return Blocked(url, initialError);
         }
@@ -559,14 +563,20 @@ public static partial class FetchOps
             // would bypass the gate entirely.
             if (overrideUrl is { } rewritten)
             {
-                if (UrlRecord.Parse(rewritten) is { } parsedRewrite
-                    && ValidateFetchUrl(parsedRewrite, allowPrivateNetwork) is { } rewriteError)
+                // upstream 5bfac24: a rewrite the gate cannot parse is a rewrite it cannot
+                // check; refuse it rather than hand the raw string to the transport.
+                var rewriteError = UrlRecord.Parse(rewritten, out var rewriteParseError) is { } parsedRewrite
+                    ? ValidateFetchUrl(parsedRewrite, allowPrivateNetwork) is { } reason
+                        ? "Intercept rewrite to forbidden URL blocked: " + reason
+                        : null
+                    : "Intercept rewrite to unparsable URL blocked: " + rewriteParseError.Message();
+                if (rewriteError is not null)
                 {
                     var sb = new StringBuilder(256);
                     sb.Append("{\"status\":0,\"body\":\"\",\"url\":");
                     SerdeJson.AppendString(sb, rewritten);
                     sb.Append(",\"blocked\":true,\"error\":");
-                    SerdeJson.AppendString(sb, "Intercept rewrite to forbidden URL blocked: " + rewriteError);
+                    SerdeJson.AppendString(sb, rewriteError);
                     sb.Append('}');
                     return sb.ToString();
                 }
