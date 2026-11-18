@@ -362,8 +362,9 @@ Security (exposed today unless noted):
 - [ ] `33aeb3f` - `confirm()` returns true; measure Chromium headless first
 - [x] `9b05070` - frame-realm script ops resolve the frame's document (the image and canvas
       ops already did)
-- [ ] `0d8a200`, `c8e5b9e`, `d853a73`, `2f448c3` - upload validation, link by node id,
-      wrapKey usages, detached-frame timers
+- [x] `c8e5b9e` - the linked-stylesheet load script addresses its link by node id
+- [ ] `0d8a200`, `d853a73`, `2f448c3` - upload validation, wrapKey usages, detached-frame
+      timers
 
 Correctness, by area (order and grouping as in the review's per-area "suggested port order"):
 

@@ -1189,16 +1189,11 @@ public sealed partial class Page
 
         // An @import needs no script: it owns no CSSOM sheet and fires no event. A <link>
         // does both, and its load handler may still change what applies. The load script
-        // addresses the link by its index among the document's stylesheet links now.
-        List<NodeId> links = js.WithDom(dom =>
-            dom.TryQuerySelectorAll("link[rel~=\"stylesheet\"]", out List<NodeId> found, out _) ? found : []) ?? [];
+        // addresses the link by node id (upstream c8e5b9e), so a handler that changes the
+        // link list cannot redirect a later registration to another link.
         foreach ((NodeId node, string responseUrl) in linked)
         {
-            int index = links.IndexOf(node);
-            if (index >= 0)
-            {
-                TryExecuteHost(js, "<fetch_stylesheets>", PageHelpers.LinkedStylesheetLoadScript(index, responseUrl));
-            }
+            TryExecuteHost(js, "<fetch_stylesheets>", PageHelpers.LinkedStylesheetLoadScript(node.Raw, responseUrl));
         }
     }
 }

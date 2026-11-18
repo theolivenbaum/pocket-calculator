@@ -1081,15 +1081,17 @@ internal static partial class PageHelpers
     /// reflects <c>HTMLLinkElement.media</c>, and on repro/ord/o5.html reports
     /// <c>getAttribute('media') === 'all'</c> afterwards, where Obscura reported <c>print</c>.
     /// </remarks>
-    internal static string LinkedStylesheetLoadScript(int linkIndex, string? responseUrl = null)
+    internal static string LinkedStylesheetLoadScript(uint linkNodeId, string? responseUrl = null)
     {
         string response = responseUrl is null ? "undefined" : JsonSerializer.Serialize(responseUrl);
+        // upstream c8e5b9e: the link is addressed by its node id. Its index among the document's
+        // stylesheet links could shift when an earlier link's load handler changed the list,
+        // binding this response URL to another link's sheet.
         return $$"""
             (function() {
                         var h = __obscura_host.dom;
-                        var links = h.querySelectorAll(h.document(), 'link[rel~="stylesheet"]');
-                        var link = links[{{linkIndex.ToString(CultureInfo.InvariantCulture)}}];
-                        if (!link) return;
+                        var link = h.wrap({{linkNodeId.ToString(CultureInfo.InvariantCulture)}});
+                        if (!link || h.nodeType(link) !== 1 || h.localName(link) !== 'link') return;
                         function syncSheet() {
                             if (h.hasOwn(link, 'media')) {
                                 var wanted = h.trim(link.media || '');

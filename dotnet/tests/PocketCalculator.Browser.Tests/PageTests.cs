@@ -2304,6 +2304,36 @@ public sealed class PageTests
             [.. PageHelpers.LinkedStylesheetRequests(dom).Select(link => (link.LinkIndex, link.Href))]);
     }
 
+    /// <summary>The node id of the document's <paramref name="index"/>th stylesheet link.</summary>
+    private static uint StylesheetLinkId(PocketCalculatorJsRuntime runtime, int index) =>
+        runtime.WithDom(dom => dom.QuerySelectorAll("""link[rel~="stylesheet"]""")[index].Raw);
+
+    /// <summary>
+    /// upstream c8e5b9e: a load handler that changes the stylesheet link list must not move a
+    /// later registration onto another link. Before, the load script addressed the link by its
+    /// index among the document's stylesheet links.
+    /// </summary>
+    [Fact]
+    public void LinkedStylesheetLoadAddressesItsOwnLinkAfterTheListChanges()
+    {
+        using var runtime = new PocketCalculatorJsRuntime();
+        runtime.SetDom(HtmlParsing.ParseHtml(
+            """
+            <html><head>
+                <link id="first" rel="stylesheet" href="first.css"
+                      onload="var l=document.createElement('link');l.rel='stylesheet';l.id='late';document.head.insertBefore(l, document.head.firstChild)">
+                <link id="second" rel="stylesheet" href="second.css" onload="this.setAttribute('data-loaded','yes')">
+            </head><body></body></html>
+            """));
+        runtime.RunPageInit();
+        uint second = runtime.WithDom(dom => dom.QuerySelector("#second")!.Value.Raw);
+        runtime.ExecuteHostScript("<first-sheet>", PageHelpers.LinkedStylesheetLoadScript(StylesheetLinkId(runtime, 0)));
+        runtime.ExecuteHostScript("<second-sheet>", PageHelpers.LinkedStylesheetLoadScript(second));
+        PageFixtures.AssertJson(
+            """["yes",null]""",
+            runtime.Evaluate("[document.getElementById('second').getAttribute('data-loaded'), document.getElementById('late').getAttribute('data-loaded')]"));
+    }
+
     [Fact]
     public void PrintMediaOnloadCanActivateAFetchedStylesheet()
     {
@@ -2323,7 +2353,7 @@ public sealed class PageTests
             dom.SetExternalStylesheet(dom.QuerySelector("#async")!.Value, ".target{color:red}", originClean: true);
             return 0;
         });
-        runtime.ExecuteHostScript("<async-sheet>", PageHelpers.LinkedStylesheetLoadScript(0));
+        runtime.ExecuteHostScript("<async-sheet>", PageHelpers.LinkedStylesheetLoadScript(StylesheetLinkId(runtime, 0)));
 
         var state = runtime.WithDom(dom =>
         {
@@ -2361,7 +2391,7 @@ public sealed class PageTests
             dom.SetExternalStylesheet(dom.QuerySelector("#print")!.Value, "body{display:none}", originClean: true);
             return 0;
         });
-        runtime.ExecuteHostScript("<print-sheet>", PageHelpers.LinkedStylesheetLoadScript(0));
+        runtime.ExecuteHostScript("<print-sheet>", PageHelpers.LinkedStylesheetLoadScript(StylesheetLinkId(runtime, 0)));
 
         var state = runtime.WithDom(dom =>
         {
@@ -2411,10 +2441,10 @@ public sealed class PageTests
         });
         runtime.ExecuteHostScript(
             "<same-origin-sheet>",
-            PageHelpers.LinkedStylesheetLoadScript(0, "https://example.test/assets/app.css"));
+            PageHelpers.LinkedStylesheetLoadScript(StylesheetLinkId(runtime, 0), "https://example.test/assets/app.css"));
         runtime.ExecuteHostScript(
             "<cross-origin-sheet>",
-            PageHelpers.LinkedStylesheetLoadScript(1, "https://cdn.example.test/theme.css"));
+            PageHelpers.LinkedStylesheetLoadScript(StylesheetLinkId(runtime, 1), "https://cdn.example.test/theme.css"));
 
         JsonNode? result = runtime.Evaluate(
             """
@@ -2520,8 +2550,8 @@ public sealed class PageTests
             dom.SetExternalStylesheet(links[1], ".target{height:30px}", originClean: true);
             return 0;
         });
-        runtime.ExecuteHostScript("<first-sheet>", PageHelpers.LinkedStylesheetLoadScript(0));
-        runtime.ExecuteHostScript("<second-sheet>", PageHelpers.LinkedStylesheetLoadScript(1));
+        runtime.ExecuteHostScript("<first-sheet>", PageHelpers.LinkedStylesheetLoadScript(StylesheetLinkId(runtime, 0)));
+        runtime.ExecuteHostScript("<second-sheet>", PageHelpers.LinkedStylesheetLoadScript(StylesheetLinkId(runtime, 1)));
 
         // The author sheets in the order the renderer collects them: the bytes held beside an
         // element, then that element's own text if it is a <style>, at each element's document
