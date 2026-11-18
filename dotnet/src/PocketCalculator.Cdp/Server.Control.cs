@@ -221,7 +221,7 @@ public static partial class CdpServer
     internal static ControlRefusal? GetControlRefusal(
         string head, IPAddress bindIp, ForwardedAuthority? forwarded, string? authToken)
     {
-        if (HeaderValue(head, "origin") is not null)
+        if (HeaderValue(head, "origin") is { } origin && !OriginAllowlisted(origin, AllowedOriginsEnv()))
         {
             return ControlRefusal.BrowserOrigin;
         }
@@ -237,6 +237,44 @@ public static partial class CdpServer
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// <c>POCKETCALCULATOR_CDP_ALLOWED_ORIGINS</c> (upstream 1faf17f's
+    /// <c>OBSCURA_CDP_ALLOWED_ORIGINS</c>; Chromium's <c>--remote-allow-origins</c>):
+    /// comma-separated origins, matched exactly and case-insensitively, <c>*</c> for any.
+    /// </summary>
+    internal static string? AllowedOriginsEnv() =>
+        Environment.GetEnvironmentVariable("POCKETCALCULATOR_CDP_ALLOWED_ORIGINS") is { } value
+            && !string.IsNullOrWhiteSpace(value)
+            ? value
+            : null;
+
+    /// <summary>
+    /// Whether a control request's <c>Origin</c> is allowlisted. DEVIATION from upstream
+    /// 1faf17f, which also accepts by default an Origin equal to <c>http://&lt;request Host&gt;/</c>:
+    /// Chromium 1243 refuses that one too (measured 2026-11-18, 403 for every Origin, the
+    /// endpoint's own included, without <c>--remote-allow-origins</c>), so only the allowlist
+    /// admits a browser origin here.
+    /// </summary>
+    internal static bool OriginAllowlisted(string origin, string? allowed)
+    {
+        if (allowed is null)
+        {
+            return false;
+        }
+
+        string wanted = origin.Trim();
+        foreach (string entry in allowed.Split(','))
+        {
+            string candidate = entry.Trim();
+            if (candidate == "*" || string.Equals(candidate, wanted, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>The refusal response, byte for byte what <c>refuse_control_connection</c> writes.</summary>

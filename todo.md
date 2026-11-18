@@ -418,8 +418,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `34346af`, `875c531`, `7034ad6`
 - [ ] CDP DOM domain and evaluation: `eb2b515`, `717dd92` + `229d1ed`, `579e1cb` (`let`
       persists), `f66ac0a` (`__proto__` in JSON args), `7a2b9ae`
-- [ ] CDP control plane: `1faf17f` (origin = endpoint authority, env allowlist),
-      `e1acbe5` + `31e1dfe`. Do not port `8a2f957`
+- [x] CDP control plane: `1faf17f` allowlist part (`POCKETCALCULATOR_CDP_ALLOWED_ORIGINS`, like
+      Chromium's --remote-allow-origins); its default acceptance of the endpoint's own Origin is
+      declined: Chromium 1243 refuses every Origin without the flag (measured 2026-11-18).
+      `e1acbe5` + `31e1dfe` routing by the request target's path, trailing slashes accepted (the
+      private-profile part of `e1acbe5` waits for `f661c2e`). `8a2f957` not ported
 - [ ] Media emulation: `c9978c3` + `c7ec60a` + `6ba3613` (setEmulatedMedia, reduced
       motion, color scheme, MediaQueryList change events)
 - [x] Render text: `bf10c46` word-spacing; `f8a36a4` font size keywords and `<font size>`;
