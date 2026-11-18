@@ -350,8 +350,11 @@ Security (exposed today unless noted):
 - [x] `daac810` (+ merge `4724f4b`) - `setProperty`/`removeProperty` of an unchanged
       value must not rewrite `style`
 - [x] `a449a80` - MCP refs must be checked against the recorded node
-- [ ] `74ac75f`, `a3171f3`, `0d11d55`, `5efc4a1` - failed/evicted images refetched on
-      every relayout
+- [x] `74ac75f`, `a3171f3`, `0d11d55`, `5efc4a1` - failed/evicted images refetched on
+      every relayout. Failed `<img>` attempts are kept per element
+      (`HtmlImageRequests`). Still open, as upstream: CSS images and fonts retry after
+      the 2 s window, and bytes evicted from the 512-entry cache are fetched again on
+      relayout (74ac75f's evicted-outcome memory was dropped by a3171f3)
 - [x] `0e17221` + robots in `b3475a5`, `8dd9d48`, `9e0b8b6` - bounded robots cache, body
       cap, agent grouping and matching (rewrite `Robots.cs` once)
 - [x] `677f6d2` budgets - Web Storage total and per-origin caps (persistence and retry parts
@@ -2276,6 +2279,12 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
 - AXNode key order: Rust's `serde_json` map sorts keys; the port keeps its own insertion order
   (nodeId, ignored, role, parentId, name, value, properties, childIds, backendDOMNodeId), as
   before. The values are the same.
+- Image attempts (`a3171f3`): Rust records each element's arena allocation generation
+  (`DomTree::node_allocation_generation`) so a reused slot does not inherit a failed
+  attempt. A port `NodeId` already carries its slot generation, so `HtmlImageRequests`
+  keys on the id alone and the DOM tree is unchanged; a record whose node was freed is
+  dropped when next looked up. Rust's `stop_resource` completion has no counterpart
+  because the port has no stopped-resource set.
 
 ### Operator font directories load per render pass, not into a cached base database
 

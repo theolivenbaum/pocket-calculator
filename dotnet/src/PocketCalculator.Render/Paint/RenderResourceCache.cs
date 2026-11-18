@@ -373,8 +373,16 @@ public sealed class RenderResourceCache
     /// </summary>
     private void ObserveHtmlImageLocked(DomTree tree, NodeId node, string url, ImageRequestProfile profile, bool? outcome)
     {
-        if (!_documentScoped || url.StartsWith("data:", StringComparison.Ordinal))
+        if (!_documentScoped)
         {
+            return;
+        }
+
+        // Selecting an inline data: candidate ends the element's network attempt
+        // (upstream 0d11d55).
+        if (url.StartsWith("data:", StringComparison.Ordinal))
+        {
+            _htmlImageRequests.Forget(node);
             return;
         }
 

@@ -836,6 +836,32 @@ public class PaintTests
     }
 
     [Fact]
+    public void ResponsiveDataImageSelectionDiscardsThePreviousNetworkAttempt()
+    {
+        // Upstream 0d11d55.
+        DomTree tree = Parse("""
+            <picture><source media="(max-width:500px)"
+            srcset="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='23'%20height='17'/%3E">
+            <img id="image" src="retry.svg"></picture>
+            """);
+        NodeId node = ById(tree, "image");
+        int calls = 0;
+        RenderResourceCache cache = RenderResourceCache.WithLoader(_ =>
+            Interlocked.Increment(ref calls) != 1 ? RetrySvg : null);
+        cache.SetDocumentScoped(true);
+        Assert.Null(cache.ImageElementMetadata(tree, node, (800f, 600f), "https://assets.test/")!.Value.Dimensions);
+        Assert.Equal(
+            (23f, 17f),
+            cache.ImageElementMetadata(tree, node, (400f, 600f), "https://assets.test/")!.Value.Dimensions);
+        // Inline image selection must release the previous network attempt.
+        Assert.Empty(cache.HtmlImageRequestsForTest.Nodes);
+        Assert.Equal(
+            (23f, 17f),
+            cache.ImageElementMetadata(tree, node, (800f, 600f), "https://assets.test/")!.Value.Dimensions);
+        Assert.Equal(2, Volatile.Read(ref calls));
+    }
+
+    [Fact]
     public void HtmlImageCohortsKeepProfileAndSourceChangesSeparate()
     {
         // Upstream a3171f3.
