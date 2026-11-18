@@ -511,7 +511,10 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] `1b259b9`: a failed cookie save is reported on stderr (and returned by
       `SaveCookies`) instead of swallowed; every storage directory level the save creates
       is now 0700, where only the leaf was (the file was already 0600)
-- [ ] CLI and workers (serve worker pool): `f2b9e99`, `4b14a76`, `0f27e69`
+- [x] `f2b9e99`: `serve --workers` supervises each worker: an exited one leaves the
+      rotation, is restarted on its port (100 ms retry, 5 s readiness wait) and rejoins;
+      with none ready the balancer answers upstream's 503. Worker stderr is inherited
+- [ ] CLI and workers (serve worker pool): `4b14a76`, `0f27e69`
 - [x] `52d8ddd`: network errors from a send or a body read carry the inner exception chain
       (`ErrorChain`, each cause appended once), so a TLS failure names its certificate error
 - [ ] From merges: `61aa8fb` CDP URL pattern matcher (done, see CDP Fetch), `fded066` (`flex: 200px` sets grow 1, an
@@ -2445,6 +2448,10 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   Chromium; upstream marks it used. A failed request's network event takes a fresh
   `fetch-{N}` id when it fails (upstream allocates it up front). AbortSignal getters throw
   "Illegal invocation" on a non-signal, as Chromium's do.
+- Serve worker restart (`f2b9e99`): a restarted worker is verified as an authenticated CDP
+  server (`VerifyWorkersAsync`, SECURITY.md M1) before it rejoins the rotation, as every
+  worker is at startup; upstream only waits for its port to accept. On a TLS balancer the
+  no-worker 503 is sent over TLS, like the max-connections refusal (I1).
 
 ### Operator font directories load per render pass, not into a cached base database
 

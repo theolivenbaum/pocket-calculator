@@ -156,6 +156,14 @@ public static class ServeCommand
         var listener = Bind(host, port);
         var bound = (IPEndPoint)listener.LocalEndpoint;
 
+        // Deviation: upstream forwards the --host string and --port as given.
+        // A worker parses the host as an IP literal, so `--host localhost` made
+        // every upstream worker exit at startup, and `--port 0` forwarded port
+        // 0. The port forwards the address and port the balancer actually
+        // bound, which are the same values for an IP literal and a fixed port.
+        var forwardedHost = bound.Address.ToString();
+        var forwardedPort = bound.Port.ToString(CultureInfo.InvariantCulture);
+
         // Internal worker ports are implementation details. Asking the OS for free
         // ports avoids assuming that every port adjacent to the public one is
         // available, or that `port + workers` cannot overflow.
@@ -172,24 +180,11 @@ public static class ServeCommand
                 workerPorts.Add(((IPEndPoint)reservation.LocalEndPoint!).Port);
             }
 
-            // Deviation: upstream forwards the --host string and --port as given.
-            // A worker parses the host as an IP literal, so `--host localhost` made
-            // every upstream worker exit at startup, and `--port 0` forwarded port
-            // 0. The port forwards the address and port the balancer actually
-            // bound, which are the same values for an IP literal and a fixed port.
-            var forwardedHost = bound.Address.ToString();
-            var forwardedPort = bound.Port.ToString(CultureInfo.InvariantCulture);
-
             for (var i = 0; i < workers; i++)
             {
                 var workerPort = workerPorts[i];
                 reservations[i].Dispose();
-                var psi = WorkerStartInfo(launcher, settings, workerPort, forwardedHost, forwardedPort);
-                var child = Process.Start(psi)
-                    ?? throw new CliException($"failed to spawn worker on port {workerPort}");
-                // Discard the child's output, as the reference redirects both to null.
-                _ = child.StandardOutput.ReadToEndAsync();
-                _ = child.StandardError.ReadToEndAsync();
+                var child = SpawnWorker(launcher, settings, workerPort, forwardedHost, forwardedPort);
                 Log.Info(string.Create(CultureInfo.InvariantCulture, $"Worker {i + 1} on port {workerPort}"));
                 children.Add(child);
             }
@@ -208,18 +203,20 @@ public static class ServeCommand
             }
             foreach (var child in children)
             {
-                try
-                {
-                    child.Kill(entireProcessTree: true);
-                }
-                catch (Exception error) when (error is InvalidOperationException
-                    or System.ComponentModel.Win32Exception)
-                {
-                    // Already gone.
-                }
+                KillQuietly(child);
             }
             listener.Dispose();
             throw;
+        }
+
+        // Upstream f2b9e99: a supervisor per worker reaps it when it exits, takes it
+        // out of the rotation and starts a replacement on the same port.
+        var respawn = new WorkerRespawn(launcher, settings, forwardedHost, forwardedPort, token);
+        var slots = new WorkerSlot[workers];
+        for (var i = 0; i < workers; i++)
+        {
+            slots[i] = new WorkerSlot(workerPorts[i]);
+            _ = SuperviseWorkerAsync(slots[i], children[i], respawn);
         }
 
         Log.Info(string.Create(
@@ -238,6 +235,27 @@ public static class ServeCommand
         // Refusals in flight. On a TLS listener each one costs a handshake, so
         // past this many a refused client is closed with no reply at all.
         var refusing = 0;
+        void Refuse(TcpClient client, string response)
+        {
+            if (Interlocked.Increment(ref refusing) > maxConnections)
+            {
+                Interlocked.Decrement(ref refusing);
+                client.Dispose();
+                return;
+            }
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await RefuseAsync(client, settings.Certificate, response).ConfigureAwait(false);
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref refusing);
+                }
+            });
+        }
+
         while (true)
         {
             var client = await listener.AcceptTcpClientAsync().ConfigureAwait(false);
@@ -247,23 +265,7 @@ public static class ServeCommand
                 Log.Warn(string.Create(
                     CultureInfo.InvariantCulture,
                     $"refusing connection: at --max-connections ({maxConnections})"));
-                if (Interlocked.Increment(ref refusing) > maxConnections)
-                {
-                    Interlocked.Decrement(ref refusing);
-                    client.Dispose();
-                    continue;
-                }
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await RefuseAsync(client, settings.Certificate).ConfigureAwait(false);
-                    }
-                    finally
-                    {
-                        Interlocked.Decrement(ref refusing);
-                    }
-                });
+                Refuse(client, MaxConnectionsRefusal);
                 continue;
             }
             try
@@ -274,8 +276,23 @@ public static class ServeCommand
             {
                 Log.Warn($"client {client.Client.RemoteEndPoint} TCP_NODELAY failed: {error.Message}");
             }
-            var workerPort = workerPorts[(int)(nextWorker % (ulong)workerPorts.Count)];
-            nextWorker = unchecked(nextWorker + 1);
+            // Round robin over the workers that are up, skipping any being restarted.
+            int? picked = null;
+            for (var i = 0; i < slots.Length && picked is null; i++)
+            {
+                var slot = slots[(int)(nextWorker % (ulong)slots.Length)];
+                nextWorker = unchecked(nextWorker + 1);
+                if (slot.Ready)
+                {
+                    picked = slot.Port;
+                }
+            }
+            if (picked is not { } workerPort)
+            {
+                Interlocked.Decrement(ref live);
+                Refuse(client, NoWorkerRefusal);
+                continue;
+            }
             Log.Debug(string.Create(
                 CultureInfo.InvariantCulture,
                 $"Routing {client.Client.RemoteEndPoint} to worker port {workerPort}"));
@@ -296,6 +313,138 @@ public static class ServeCommand
                     Interlocked.Decrement(ref live);
                 }
             });
+        }
+    }
+
+    /// <summary>The balancer's own 503 when it is at <c>--max-connections</c> (SECURITY.md L3).</summary>
+    private const string MaxConnectionsRefusal =
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n"
+        + "X-Obscura-Reason: max-connections\r\n\r\n";
+
+    /// <summary>Upstream f2b9e99's reply when no worker is ready, byte for byte.</summary>
+    private const string NoWorkerRefusal = "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n";
+
+    /// <summary>One worker position in the rotation: its port and whether it is up.</summary>
+    private sealed class WorkerSlot(int port)
+    {
+        private volatile bool ready = true;
+
+        public int Port { get; } = port;
+
+        public bool Ready
+        {
+            get => ready;
+            set => ready = value;
+        }
+    }
+
+    /// <summary>What a supervisor needs to start and check a replacement worker.</summary>
+    private sealed record WorkerRespawn(
+        WorkerLauncher Launcher,
+        WorkerSettings Settings,
+        string ForwardedHost,
+        string ForwardedPort,
+        string? Token);
+
+    /// <summary>
+    /// Wait for a worker to exit, then restart it on the same port until a
+    /// replacement is up (upstream f2b9e99). The worker is out of the rotation
+    /// from its exit until the replacement answers.
+    /// </summary>
+    private static async Task SuperviseWorkerAsync(WorkerSlot slot, Process child, WorkerRespawn respawn)
+    {
+        while (true)
+        {
+            await child.WaitForExitAsync().ConfigureAwait(false);
+            slot.Ready = false;
+            Log.Warn(string.Create(
+                CultureInfo.InvariantCulture,
+                $"worker on port {slot.Port} exited: exit status: {child.ExitCode}"));
+            child.Dispose();
+            while (true)
+            {
+                // Upstream: a fixed retry interval bounds a crash loop; there is no backoff.
+                await Task.Delay(100).ConfigureAwait(false);
+                if (await StartWorkerAsync(respawn, slot.Port, TimeSpan.FromSeconds(5)).ConfigureAwait(false)
+                    is { } replacement)
+                {
+                    child = replacement;
+                    slot.Ready = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Start one worker on <paramref name="workerPort"/> and wait up to
+    /// <paramref name="within"/> for it to listen. Null, with a warning logged and
+    /// the process killed, when it does not come up.
+    /// </summary>
+    /// <remarks>
+    /// Deviation: upstream only waits for the port to accept a connection. The
+    /// port also checks a replacement the way startup checks every worker
+    /// (<see cref="VerifyWorkersAsync(IReadOnlyList{int}, string?, X509Certificate2?)"/>,
+    /// SECURITY.md M1) before it gets a client, since it is put behind the public
+    /// port just as the first one was.
+    /// </remarks>
+    private static async Task<Process?> StartWorkerAsync(WorkerRespawn respawn, int workerPort, TimeSpan within)
+    {
+        Process child;
+        try
+        {
+            child = SpawnWorker(
+                respawn.Launcher, respawn.Settings, workerPort, respawn.ForwardedHost, respawn.ForwardedPort);
+        }
+        catch (Exception error) when (error is CliException or System.ComponentModel.Win32Exception
+            or InvalidOperationException)
+        {
+            Log.Warn(string.Create(
+                CultureInfo.InvariantCulture, $"worker {workerPort} spawn failed: {error.Message}"));
+            return null;
+        }
+        try
+        {
+            var deadline = Stopwatch.GetTimestamp() + (long)(within.TotalSeconds * Stopwatch.Frequency);
+            await WaitForWorkerAsync(child, workerPort, deadline).ConfigureAwait(false);
+            await VerifyWorkersAsync([workerPort], respawn.Token, respawn.Settings.Certificate).ConfigureAwait(false);
+            return child;
+        }
+        catch (CliException error)
+        {
+            Log.Warn(string.Create(
+                CultureInfo.InvariantCulture, $"worker {workerPort} restart failed: {error.Message}"));
+            KillQuietly(child);
+            child.Dispose();
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Start a worker process. Its stdout is discarded, as the reference redirects
+    /// it to null; its stderr is this process's, so worker errors stay visible
+    /// (upstream f2b9e99, which stopped discarding it).
+    /// </summary>
+    private static Process SpawnWorker(
+        WorkerLauncher launcher, WorkerSettings settings, int workerPort, string forwardedHost, string forwardedPort)
+    {
+        var psi = WorkerStartInfo(launcher, settings, workerPort, forwardedHost, forwardedPort);
+        var child = Process.Start(psi)
+            ?? throw new CliException($"failed to spawn worker on port {workerPort}");
+        _ = child.StandardOutput.ReadToEndAsync();
+        return child;
+    }
+
+    private static void KillQuietly(Process child)
+    {
+        try
+        {
+            child.Kill(entireProcessTree: true);
+        }
+        catch (Exception error) when (error is InvalidOperationException
+            or System.ComponentModel.Win32Exception)
+        {
+            // Already gone.
         }
     }
 
@@ -397,7 +546,8 @@ public static class ServeCommand
         {
             UseShellExecute = false,
             RedirectStandardOutput = true,
-            RedirectStandardError = true,
+            // Inherited, so worker errors reach the balancer's stderr (upstream f2b9e99).
+            RedirectStandardError = false,
         };
         foreach (var argument in launcher.LeadingArguments)
         {
@@ -569,7 +719,11 @@ public static class ServeCommand
     /// single TLS worker does, so nothing plaintext is ever written on a TLS port;
     /// a client that fails the handshake is simply closed.
     /// </remarks>
-    public static async Task RefuseAsync(TcpClient client, X509Certificate2? certificate)
+    public static Task RefuseAsync(TcpClient client, X509Certificate2? certificate) =>
+        RefuseAsync(client, certificate, MaxConnectionsRefusal);
+
+    /// <summary>Turn away a client with <paramref name="response"/>, over TLS when the balancer serves it.</summary>
+    private static async Task RefuseAsync(TcpClient client, X509Certificate2? certificate, string response)
     {
         using (client)
         {
@@ -584,9 +738,7 @@ public static class ServeCommand
                 }
                 using (var write = new CancellationTokenSource(TimeSpan.FromSeconds(1)))
                 {
-                    await stream.WriteAsync(Encoding.ASCII.GetBytes(
-                        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n"
-                        + "X-Obscura-Reason: max-connections\r\n\r\n"), write.Token).ConfigureAwait(false);
+                    await stream.WriteAsync(Encoding.ASCII.GetBytes(response), write.Token).ConfigureAwait(false);
                     await stream.FlushAsync(write.Token).ConfigureAwait(false);
                 }
                 if (stream is SslStream ssl)
@@ -624,7 +776,8 @@ public static class ServeCommand
     /// </summary>
     /// <remarks>
     /// A worker that exits first fails startup with
-    /// <c>worker N exited during startup: exit status: C</c>; one still not
+    /// <c>worker on port P exited during startup: exit status: C</c> (the wording
+    /// of upstream f2b9e99, which shares this wait with a restart); one still not
     /// listening at the deadline fails it with the connect error, as upstream
     /// returns the io error.
     /// </remarks>
@@ -633,29 +786,35 @@ public static class ServeCommand
         var deadline = Stopwatch.GetTimestamp() + (5 * Stopwatch.Frequency);
         for (var i = 0; i < children.Count; i++)
         {
-            while (true)
-            {
-                if (children[i].HasExited)
-                {
-                    throw new CliException(string.Create(
-                        CultureInfo.InvariantCulture,
-                        $"worker {i + 1} exited during startup: exit status: {children[i].ExitCode}"));
-                }
+            await WaitForWorkerAsync(children[i], workerPorts[i], deadline).ConfigureAwait(false);
+        }
+    }
 
-                try
-                {
-                    using var probe = new TcpClient(AddressFamily.InterNetwork);
-                    await probe.ConnectAsync(IPAddress.Loopback, workerPorts[i]).ConfigureAwait(false);
-                    break;
-                }
-                catch (SocketException) when (Stopwatch.GetTimestamp() < deadline)
-                {
-                    await Task.Delay(5).ConfigureAwait(false);
-                }
-                catch (SocketException error)
-                {
-                    throw new CliException(error.Message, error);
-                }
+    /// <summary>Upstream <c>wait_for_serve_worker</c>: poll one worker's port until it accepts.</summary>
+    private static async Task WaitForWorkerAsync(Process child, int workerPort, long deadline)
+    {
+        while (true)
+        {
+            if (child.HasExited)
+            {
+                throw new CliException(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"worker on port {workerPort} exited during startup: exit status: {child.ExitCode}"));
+            }
+
+            try
+            {
+                using var probe = new TcpClient(AddressFamily.InterNetwork);
+                await probe.ConnectAsync(IPAddress.Loopback, workerPort).ConfigureAwait(false);
+                return;
+            }
+            catch (SocketException) when (Stopwatch.GetTimestamp() < deadline)
+            {
+                await Task.Delay(5).ConfigureAwait(false);
+            }
+            catch (SocketException error)
+            {
+                throw new CliException(error.Message, error);
             }
         }
     }

@@ -249,9 +249,10 @@ public sealed partial class MultiWorkerServeTests
         await child.StandardOutput.ReadToEndAsync();
         Assert.True(child.WaitForExit(30_000));
 
+        var port = FreePort();
         var error = await Assert.ThrowsAsync<CliException>(
-            () => ServeCommand.WaitForWorkersAsync([child], [FreePort()]));
-        Assert.Equal("worker 1 exited during startup: exit status: 0", error.Message);
+            () => ServeCommand.WaitForWorkersAsync([child], [port]));
+        Assert.Equal($"worker on port {port} exited during startup: exit status: 0", error.Message);
     }
 
     /// <summary>

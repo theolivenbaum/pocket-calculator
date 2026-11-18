@@ -120,6 +120,9 @@ browser `Origin`, and CDP requests with a foreign `Host`, are refused. MCP calle
 from a browser can be allowed with `POCKETCALCULATOR_MCP_ALLOWED_ORIGINS`. With
 `serve --workers N`, the balancer tells its workers the public address it bound, so a
 DNS host name that reaches the balancer is accepted and advertised.
+A worker that exits is restarted, and new connections go only to workers that are up
+(HTTP 503 when none is); its open sessions close and clients must reconnect. Worker
+errors are written to the balancer's stderr.
 
 ## Build, test and publish
 
