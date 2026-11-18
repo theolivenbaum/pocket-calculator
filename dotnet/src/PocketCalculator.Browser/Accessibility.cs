@@ -175,7 +175,12 @@ public sealed class AccessibilityContext
 
             if (Value is not null)
             {
-                target["value"] = AxValueString(Value);
+                // Chromium reports a slider's value as a number (deviation from Rust's string).
+                target["value"] = Role == "slider"
+                    && double.TryParse(Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double number)
+                    && double.IsFinite(number)
+                        ? new JsonObject { ["type"] = "number", ["value"] = number }
+                        : AxValueString(Value);
             }
 
             if (Properties.Count != 0)
@@ -446,6 +451,8 @@ public sealed class AccessibilityContext
                     "dialog" => "dialog",
                     "hr" => "separator",
                     "label" => "LabelText",
+                    // Chromium maps <p> to paragraph (deviation from Rust's generic).
+                    "p" => "paragraph",
                     "article" => "article",
                     "aside" => "complementary",
                     "section" => "region",
@@ -690,7 +697,7 @@ public sealed class AccessibilityContext
         }
 
         if (MapRole(node.Data) is "button" or "link" or "heading" or "checkbox" or "radio" or "menuitem"
-            or "tab" or "cell" or "row" or "LabelText" or "StaticText"
+            or "tab" or "cell" or "row" or "StaticText"
             && NonEmpty(ContentName(dom, node.Id, includeHidden: false)) is { } contentName)
         {
             return contentName;
@@ -715,10 +722,18 @@ public sealed class AccessibilityContext
         string tag = element.Name.Local;
         if (tag is "input" or "textarea" or "select")
         {
-            // A password's value is never exposed (upstream 3c56f59).
-            if (tag == "input" && InputType(node) == "password")
+            // A password's value is never exposed (upstream 3c56f59). A button-like input has
+            // no value in Chromium; its value is its name (deviation from Rust).
+            if (tag == "input" && InputType(node) is "password" or "submit" or "reset" or "button" or "image")
             {
                 return null;
+            }
+
+            // A <select>'s value is its selected option's text in Chromium (deviation from Rust,
+            // which reports none).
+            if (tag == "select")
+            {
+                return SelectedOptionText(dom, node);
             }
 
             // The live value script set, then the content attribute. Upstream reads
@@ -732,6 +747,39 @@ public sealed class AccessibilityContext
         }
 
         return IsContentEditingHost(dom, node) ? dom.TextContent(node.Id) : null;
+    }
+
+    /// <summary>The text of a single-select's selected option: the live choice, else the first
+    /// option with <c>selected</c>, else the first option.</summary>
+    private static string? SelectedOptionText(DomTree dom, Node select)
+    {
+        string? live = dom.TryGetDirtyFormValue(select.Id, out string dirty) ? dirty : null;
+        Node? first = null;
+        Node? marked = null;
+        Node? matched = null;
+        foreach (NodeId id in dom.Descendants(select.Id))
+        {
+            if (dom.GetNode(id) is not { } option || Tag(option) != "option")
+            {
+                continue;
+            }
+
+            first ??= option;
+            if (marked is null && option.GetAttribute("selected") is not null)
+            {
+                marked = option;
+            }
+
+            if (matched is null && live is not null
+                && (option.GetAttribute("value") ?? dom.TextContent(id).Trim()) == live)
+            {
+                matched = option;
+            }
+        }
+
+        return (matched ?? marked ?? first) is { } chosen
+            ? string.Join(' ', dom.TextContent(chosen.Id).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+            : null;
     }
 
     private static bool? ContentEditableKeyword(Node node)
@@ -799,8 +847,12 @@ public sealed class AccessibilityContext
         List<PocketCalculator.Dom.Attribute> attrs = element.Attrs;
         var props = new List<JsonObject>();
 
-        bool focusable = tag is "a" or "button" or "input" or "select" or "textarea" or "details" or "summary"
-            || attrs.Exists(a => a.Name.Local is "tabindex" or "contenteditable");
+        // A disabled form control is not focusable in Chromium (deviation from Rust).
+        bool disabledControl = tag is "button" or "input" or "select" or "textarea"
+            && node.GetAttribute("disabled") is not null;
+        bool focusable = !disabledControl
+            && (tag is "a" or "button" or "input" or "select" or "textarea" or "details" or "summary"
+                || attrs.Exists(a => a.Name.Local is "tabindex" or "contenteditable"));
         if (focusable)
         {
             props.Add(Property("focusable", AxValueBoolean(true)));
@@ -818,19 +870,21 @@ public sealed class AccessibilityContext
         string inputType = tag == "input" ? InputType(node) : string.Empty;
         if (inputType is "checkbox" or "radio")
         {
+            // A tristate is the string "true", "false" or "mixed" in Chromium, which is what
+            // Puppeteer compares against; Rust emits a JSON boolean (deviation).
             JsonNode checkedValue = inputType == "checkbox" && dom.IsDirtyFormIndeterminate(node.Id)
                 ? JsonValue.Create("mixed")
-                : JsonValue.Create(dom.TryGetDirtyFormChecked(node.Id, out bool dirtyChecked)
+                : JsonValue.Create((dom.TryGetDirtyFormChecked(node.Id, out bool dirtyChecked)
                     ? dirtyChecked
-                    : node.GetAttribute("checked") is not null);
+                    : node.GetAttribute("checked") is not null) ? "true" : "false");
             props.Add(Property("checked", new JsonObject { ["type"] = "tristate", ["value"] = checkedValue }));
         }
         else if (node.GetAttribute("aria-checked") is { } ariaChecked)
         {
             JsonNode? value = ariaChecked switch
             {
-                "true" => JsonValue.Create(true),
-                "false" => JsonValue.Create(false),
+                "true" => JsonValue.Create("true"),
+                "false" => JsonValue.Create("false"),
                 "mixed" when MapRole(node.Data) == "checkbox" => JsonValue.Create("mixed"),
                 _ => null,
             };
@@ -847,6 +901,12 @@ public sealed class AccessibilityContext
         else if (AriaBoolean(node, "aria-disabled") is { } disabled)
         {
             props.Add(Property("disabled", AxValueBoolean(disabled)));
+        }
+
+        // A collapsed native <select> reports expanded=false in Chromium (deviation from Rust).
+        if (tag == "select" && node.GetAttribute("multiple") is null && node.GetAttribute("aria-expanded") is null)
+        {
+            props.Add(Property("expanded", AxValueBoolean(false)));
         }
 
         foreach ((string property, string attribute) in (ReadOnlySpan<(string, string)>)

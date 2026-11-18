@@ -105,7 +105,8 @@ public sealed class AccessibilityDomainTests
         }
 
         Assert.Equal(["level"], PropertiesOf("h"));
-        Assert.Equal(["focusable", "disabled"], PropertiesOf("b"));
+        // Chromium: a disabled button is not focusable (deviation from Rust).
+        Assert.Equal(["disabled"], PropertiesOf("b"));
         Assert.Equal(["focusable", "editable", "required"], PropertiesOf("text"));
         Assert.Equal(["focusable", "editable", "checked"], PropertiesOf("check"));
         Assert.Equal(["focusable", "editable", "multiline"], PropertiesOf("area"));

@@ -51,6 +51,33 @@ public sealed class AccessibilityTests
     private static bool InTree(List<JsonObject> nodes, NodeId id) =>
         nodes.Exists(node => node["backendDOMNodeId"]!.GetValue<uint>() == id.Raw);
 
+    /// <summary>
+    /// Values measured on Chromium 1243 with Accessibility.getFullAXTree (2026-11-18), where the
+    /// Rust reference differs: tristate strings, a select's selected text and collapsed state, a
+    /// numeric slider value, no value on a submit input, no focusable on a disabled control, an
+    /// empty LabelText name and the paragraph role.
+    /// </summary>
+    [Fact]
+    public void ControlValuesAndRolesMatchChromium()
+    {
+        DomTree dom = HtmlParsing.ParseHtml(
+            "<input id=c type=checkbox checked aria-label=C><select id=s aria-label=Pick><option>One</option><option selected>Two</option></select>"
+            + "<input id=r type=range aria-label=Vol value=3 min=0 max=10><input id=g type=submit value=Go>"
+            + "<button id=b disabled>B</button><label id=l>L</label><p id=p>P</p>");
+        List<JsonObject> nodes = AccessibilityTree.BuildAxNodes(dom);
+        JsonObject Node(string id) => AxNodeFor(nodes, Id(dom, id));
+        Assert.Equal("true", PropertyValue(Node("c"), "checked")!.GetValue<string>());
+        Assert.Equal("""{"type":"string","value":"Two"}""", Node("s")["value"]!.ToJsonString());
+        Assert.False(PropertyValue(Node("s"), "expanded")!.GetValue<bool>());
+        Assert.Equal("""{"type":"number","value":3}""", Node("r")["value"]!.ToJsonString());
+        Assert.Null(Node("g")["value"]);
+        Assert.DoesNotContain(
+            Node("b")["properties"]!.AsArray(), property => property!["name"]!.GetValue<string>() == "focusable");
+        Assert.Equal("LabelText", Node("l")["role"]!["value"]!.GetValue<string>());
+        Assert.Equal("", Node("l")["name"]?["value"]?.GetValue<string>() ?? "");
+        Assert.Equal("paragraph", Node("p")["role"]!["value"]!.GetValue<string>());
+    }
+
     [Fact]
     public void LiveControlStateOverridesInitialAttributes()
     {
@@ -60,7 +87,8 @@ public sealed class AccessibilityTests
         dom.SetDirtyFormChecked(checkbox, false);
         dom.SetDirtyFormValue(Id(dom, "f"), "fresh");
         List<JsonObject> nodes = AccessibilityTree.BuildAxNodes(dom);
-        Assert.False(PropertyValue(AxNodeFor(nodes, checkbox), "checked")!.GetValue<bool>());
+        // Chromium's tristate is a string (deviation from Rust's boolean).
+        Assert.Equal("false", PropertyValue(AxNodeFor(nodes, checkbox), "checked")!.GetValue<string>());
         AssertAxValue(nodes, dom, "f", "fresh");
         AssertAxValue(nodes, dom, "p", null);
         dom.SetDirtyFormIndeterminate(checkbox, true);

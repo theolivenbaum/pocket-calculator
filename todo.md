@@ -2306,6 +2306,14 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
 - Parity harness: `ParityAssert.UnbrandPort` no longer renames the checkout path when it
   contains `pocket-calculator`, which made fixtures that print their own `file://` URL differ.
 
+- Accessibility (measured on Chromium 1243, 2026-11-18, `Accessibility.getFullAXTree` over the
+  3c56f59 test pages and a control sampler): `checked` is the tristate string Chromium and
+  Puppeteer use, not Rust's boolean; a `<select>` reports its selected text and
+  `expanded=false`; a slider's value is a number; button-like inputs carry no value; a disabled
+  control is not focusable; `<label>` (LabelText) has an empty name; `<p>` is `paragraph`. MCP
+  snapshot lines keep upstream's format (`checked=false` unquoted). Still different: Chromium
+  lists a select's options and its internal `MenuListPopup` / `ListMarker` nodes.
+
 ### Operator font directories load per render pass, not into a cached base database
 
 Upstream 343fdc7 adds `serve --font-dir DIR`: `ttf/ttc/otf/otc` files found recursively

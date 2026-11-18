@@ -663,7 +663,8 @@ internal static partial class Tools
                     line.Append(" name=").Append(TextExtraction.RustDebugString(Preview(name)));
                 }
 
-                if (ax["value"]?["value"]?.GetValue<string>() is { } value)
+                if (ax["value"]?["value"] is JsonValue axValue
+                    && (axValue.TryGetValue(out string? textValue) ? textValue : axValue.ToJsonString()) is { } value)
                 {
                     line.Append(" value=").Append(TextExtraction.RustDebugString(Preview(value)));
                 }
@@ -675,9 +676,14 @@ internal static partial class Tools
                         var propertyName = property?["name"]?.GetValue<string>() ?? string.Empty;
                         if (propertyName is "checked" or "disabled" or "required" or "expanded" or "selected" or "pressed")
                         {
-                            // serde_json's Display: true, false, or "mixed" with its quotes.
+                            // serde_json's Display of upstream's values: true, false, or "mixed"
+                            // with its quotes. The CDP tristate is now Chromium's string, so
+                            // "true"/"false" print bare to keep the line format.
+                            var propertyValue = property!["value"]?["value"];
                             line.Append(' ').Append(propertyName).Append('=')
-                                .Append(property!["value"]?["value"]?.ToJsonString() ?? "null");
+                                .Append(propertyValue is JsonValue tri && tri.TryGetValue(out string? text) && text is "true" or "false"
+                                    ? text
+                                    : propertyValue?.ToJsonString() ?? "null");
                         }
                     }
                 }
