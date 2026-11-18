@@ -320,7 +320,8 @@ Found during the review, not from upstream:
 
 Reviewed 2026-11-18; detail per commit in `dotnet/docs/upstream-review-2026-11.md`.
 `.reference/obscura/` is at `4eb1235` already (advanced with this review), so the
-reference is ahead of the port until these are ported or declined. 319 commits: 116
+reference is ahead of the port until these are ported or declined. 319 commits (plus 11
+merges with fix content, reviewed at the end of the document): 116
 port, 56 partial, 70 already, 2 conflict, 75 skip. One upstream fix per commit, citing
 the upstream sha. The open `727cc46..1a3169d` items above still stand; several below
 pair with them.
@@ -398,6 +399,10 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `cbc2f97`; `9855ef4` web_search stays opt-in
 - [ ] CLI and workers: `11d6ea8` + `afb0d61`, `ec0186b`, `1949e9b`, `f2b9e99`, `4b14a76`,
       `0f27e69`, `9a6dd86`, `52d8ddd`, `1b259b9` failed-save log
+- [ ] From merges: `61aa8fb` CDP URL pattern matcher (`?`, `\` escapes, backtracking;
+      `PageHelpers.UrlMatchesCdpPattern`), `fded066` (`flex: 200px` sets grow 1, an
+      invalid `flex` keeps the cascade), `8a4d745` real bold faces and kerning (with
+      `9a3d12e`), `322f46c`, `d04b661`, `ab19571`, `97f8f81`, `4c12826`, `716826c`
 - [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `35b9448`, `a2bfd32`,
       `3a4a0b5`, `8bb46be`, `3a9eb06`, `8310ebf`, `acff100`, `503a66d`, `786fde5` + `7d9ed8a`
 
