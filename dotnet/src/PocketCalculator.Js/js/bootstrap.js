@@ -1673,9 +1673,11 @@ function _schedulerRemoveAbort(task) {
     // Scheduler options accept only this realm's AbortSignal. Use its private
     // listener store so page code cannot intercept teardown by overriding the
     // public removeEventListener method.
-    const index = task.signal._listeners.indexOf(task.abortHandler);
-    if (index >= 0) task.signal._listeners.splice(index, 1);
+    const listeners = _abortSignalState(task.signal).listeners;
+    const index = _arrayIndexOf(listeners, task.abortHandler);
+    if (index >= 0) listeners.splice(index, 1);
     task.abortHandler = null;
+    _retainObservedSignal(task.signal);
   }
 }
 
@@ -1740,7 +1742,7 @@ function _schedulerNormalizeOptions(options) {
   }
 
   const signal = dictionary.signal;
-  if (signal !== undefined && !(signal instanceof globalThis.AbortSignal)) {
+  if (signal !== undefined && _abortSignalState(signal) === undefined) {
     throw new TypeError("Failed to read the 'signal' property from 'SchedulerPostTaskOptions': Failed to convert value to 'AbortSignal'.");
   }
   return { delay, priority, signal: signal === undefined ? null : signal };
@@ -1767,7 +1769,9 @@ function _schedulerCreateTask(callback, state, resolve, reject) {
       reject(task.signal.reason);
     };
     // See _schedulerRemoveAbort: the public method is intentionally bypassed.
-    task.signal._listeners.push(task.abortHandler);
+    const listeners = _abortSignalState(task.signal).listeners;
+    listeners[listeners.length] = task.abortHandler;
+    _retainObservedSignal(task.signal);
   }
   return task;
 }
@@ -2336,10 +2340,21 @@ let _currentEvent = undefined;
 let _invocationInShadow = false;
 // Set by _eventPath: whether the dispatch ends with target and relatedTarget cleared.
 let _pathClearsTargets = false;
-// AbortSignal.prototype as bootstrap defined it, and each signal's abort algorithms, which
-// run before its abort event as DOM's "signal abort" orders them.
-let _AbortSignalProto = null;
+// Each signal's listener-removal algorithms (addEventListener's `signal` option), which run
+// before its abort event as DOM's "signal abort" orders them.
 const _abortAlgorithms = _private(new WeakMap());
+// Each AbortSignal's state (upstream 0155807): aborted, reason, listeners, onabort, the abort
+// algorithms fetch() and Response bodies register, and the dependent signals that follow it.
+// It lives here rather than on the instance, so a forged Object.create(AbortSignal.prototype)
+// is not a signal and page script cannot flip a signal's flag. DEVIATION from
+// crates/obscura-js, which keeps the state under a V8 private symbol (op_abort_signal_state)
+// that every realm of the isolate shares; ClearScript has no private-symbol API, so the port
+// keeps it in this realm's closure. Undefined for anything that is not a signal.
+const _abortSignalStates = _private(new WeakMap());
+function _abortSignalState(signal) {
+  return signal !== null && (typeof signal === 'object' || typeof signal === 'function')
+    ? _weakMapGet(_abortSignalStates, signal) : undefined;
+}
 let _NodeProtoAtBoot = null;
 let _EventProtoAtBoot = null;
 // performance.now as bootstrap left it, for Event.timeStamp (set by _captureDispatchImpls).
@@ -2405,8 +2420,7 @@ function _listenerOptionFlags(options, add, method) {
   if (passive !== undefined) flags |= passive ? 12 : 4;
   const signal = options.signal;
   if (signal !== undefined) {
-    if (_AbortSignalProto === null || signal === null || typeof signal !== 'object'
-        || !_isPrototypeOf(_AbortSignalProto, signal)) {
+    if (_abortSignalState(signal) === undefined) {
       throw new TypeError("Failed to execute '" + method + "' on 'EventTarget': Failed to read the 'signal' property from 'AddEventListenerOptions': Failed to convert value to 'AbortSignal'.");
     }
     _optSignal = signal;
@@ -2441,6 +2455,7 @@ function _abortAlgorithmAdd(signal, algorithm) {
     _weakMapSet(_abortAlgorithms, signal, list);
   }
   list[list.length] = algorithm;
+  _retainObservedSignal(signal);
 }
 function _runAbortAlgorithms(signal) {
   const list = _weakMapGet(_abortAlgorithms, signal);
@@ -2483,7 +2498,7 @@ function _eventTargetAdd(target, type, callback, options) {
   const signal = _optSignal;
   _optSignal = null;
   if (callback === null || callback === undefined) return;
-  if (signal !== null && signal._aborted) return;
+  if (signal !== null && _abortSignalState(signal).aborted) return;
   _addListenerEntry(target, type, callback, (flags & 1) !== 0, (flags & 2) !== 0,
     (flags & 4) !== 0 ? (flags & 8) !== 0 : null, signal);
 }
@@ -10775,10 +10790,50 @@ globalThis.fetch = async (input, init = {}) => {
   // with the page's own URL global: op_fetch_url derives the requesting origin from the
   // calling realm's document host-side and ignores this argument (SECURITY.md C1). The
   // slot carries the referrer settings instead (FetchReferrer.cs).
+  // upstream 0155807: fetch() follows init's signal, else the Request's (an explicit null
+  // overrides the Request's). An aborted one rejects with its reason before any request
+  // goes out; aborting later cancels the op and errors an unread body.
+  const initSignal = init.signal;
+  const inputSignal = initSignal !== undefined ? initSignal : (request ? request.signal : null);
+  if (inputSignal != null && _abortSignalState(inputSignal) === undefined) {
+    throw new TypeError("Failed to execute 'fetch' on 'Window': Failed to read the 'signal' property from 'RequestInit': Failed to convert value to 'AbortSignal'.");
+  }
+  const signal = inputSignal == null ? null : _createDependentAbortSignal([inputSignal]);
+  const signalState = signal === null ? undefined : _abortSignalState(signal);
+  if (signalState !== undefined && signalState.aborted) throw signalState.reason;
   const local = _fetchLocalScheme(url, method);
-  if (local !== null) return local;
-  const raw = await __obscuraCore.ops.op_fetch_url(
-    url, method, hdrs, body, _referrerArg(fetchReferrerPolicy, fetchReferrer), fetchMode, fetchCredentials, false);
+  if (local !== null) {
+    // Port addition: data: and blob: answer here (upstream sends them to the op), and
+    // observe the signal the same way.
+    let localResponse;
+    try { localResponse = await local; }
+    catch (error) { throw signalState !== undefined && signalState.aborted ? signalState.reason : error; }
+    if (signalState !== undefined && signalState.aborted) throw signalState.reason;
+    _attachResponseAbort(localResponse, signal);
+    return localResponse;
+  }
+  const cancellation = { rid: signal === null ? undefined : __obscuraCore.ops.op_fetch_cancel_handle() };
+  const cancelRid = cancellation.rid;
+  const removeAbort = signal === null ? null : _addAbortAlgorithm(signal, cancellation, _cancelFetchHandle);
+  // The op returns the whole body (upstream 3aa2f59's body resource is not ported), so the
+  // handle is released as soon as it settles; the body's own abort is _attachResponseAbort.
+  const cleanup = () => {
+    if (removeAbort !== null) {
+      removeAbort();
+      _cancelFetchHandle(cancellation);
+    }
+  };
+  let raw;
+  try {
+    raw = await __obscuraCore.ops.op_fetch_url(
+      url, method, hdrs, body, _referrerArg(fetchReferrerPolicy, fetchReferrer), fetchMode, fetchCredentials,
+      signal === null ? false : { cancel_rid: cancelRid });
+  } catch (error) {
+    cleanup();
+    throw signalState !== undefined && signalState.aborted ? signalState.reason : error;
+  }
+  cleanup();
+  if (signalState !== undefined && signalState.aborted) throw signalState.reason;
   const parsed = _JSONparse(raw);
   if (parsed.blocked) {
     const err = new TypeError('net::ERR_FAILED');
@@ -10805,6 +10860,7 @@ globalThis.fetch = async (input, init = {}) => {
   // A fetched response's headers have the "immutable" guard, as in Chromium:
   // set/append/delete throw TypeError. Rust left them writable.
   _headersGuards.set(response.headers, 'immutable');
+  _attachResponseAbort(response, signal);
   if (parsed.requestId) {
     Object.defineProperty(response, "__obscuraRequestId", {
       value: parsed.requestId,
@@ -11467,7 +11523,13 @@ if (typeof Request === 'undefined') {
       this._referrerPolicy = init.referrerPolicy !== undefined
         ? _requestReferrerPolicy(init.referrerPolicy, "Failed to construct 'Request'")
         : '';
-      this._signal = init.signal || { aborted: false, addEventListener(){}, removeEventListener(){} };
+      // upstream 0155807: a Request's signal is its own, following init's (a placeholder
+      // object before). Read once; anything but an AbortSignal is a TypeError.
+      const signal = init.signal;
+      if (signal != null && _abortSignalState(signal) === undefined) {
+        throw new TypeError("Failed to construct 'Request': Failed to read the 'signal' property from 'RequestInit': Failed to convert value to 'AbortSignal'.");
+      }
+      this._signal = _createDependentAbortSignal(signal == null ? [] : [signal]);
       this._cache = init.cache || 'default';
     }
     clone() {
@@ -11525,9 +11587,16 @@ if (typeof Response === 'undefined') {
       this._bodyNull = body === null || body === undefined;
       this._bodyStream = null;
       this._bodyUsed = false;
+      // upstream 0155807: a fetch()'s signal aborting errors a body not yet read.
+      this._bodyAborted = false;
+      this._bodyAbortReason = undefined;
+      this._bodySignal = null;
     }
     _consumeBody() {
       if (this._bodyUsed) throw new TypeError("Body is already consumed");
+      // An aborted body rejects with the signal's reason and is left unused, as in
+      // Chromium. DEVIATION from crates/obscura-js, which marks it used first.
+      if (this._bodyAborted) throw this._bodyAbortReason;
       this._bodyUsed = true;
     }
     get body() {
@@ -11536,6 +11605,7 @@ if (typeof Response === 'undefined') {
       if (!this._bodyStream) {
         this._bodyStream = new ReadableStream({
           start: (controller) => {
+            if (this._bodyAborted) { controller.error(this._bodyAbortReason); return; }
             if (this._bodyBytes.length) controller.enqueue(this._bodyBytes);
             controller.close();
           },
@@ -11567,6 +11637,8 @@ if (typeof Response === 'undefined') {
       // A clone keeps its source's guard (immutable for a fetched response).
       const guard = _headersGuards.get(this.headers);
       if (guard) _headersGuards.set(copy.headers, guard);
+      // A clone follows its source's fetch signal (an aborted one errors it at once).
+      _attachResponseAbort(copy, this._bodySignal);
       return copy;
     }
     // Response.error() and Response.redirect() have immutable headers (Fetch, Chromium).
@@ -14849,59 +14921,201 @@ _markNative(globalThis.StorageEvent);
 // prototype, so feature-detection and `AbortSignal.prototype` access work. It
 // carries aborted/reason, supports throwIfAborted(), and fires "abort" to
 // onabort and addEventListener listeners when the controller aborts.
+//
+// upstream 0155807: the state is private (_abortSignalStates), a Request's signal and
+// AbortSignal.any() follow their sources as dependent signals, and fetch() and Response
+// bodies register abort algorithms rather than public listeners, so overriding a signal's
+// addEventListener cannot stop a cancellation. Dependency links and the algorithms hold
+// their signal and target weakly; a dependent signal with an abort listener is kept alive
+// by its source until it aborts.
+const _WeakRefAtBoot = WeakRef;
+const _weakRefDeref = _uncurry(WeakRef.prototype.deref);
+const _FinalizationRegistryAtBoot = FinalizationRegistry;
+const _finalizerRegister = _uncurry(FinalizationRegistry.prototype.register);
+const _finalizerUnregister = _uncurry(FinalizationRegistry.prototype.unregister);
+function _newAbortSignalState(signal) {
+  return {
+    aborted: false, reason: undefined, listeners: [], onabort: null,
+    algorithms: _private(new Set()), sources: _private(new Set()), dependents: _private(new Map()),
+    dependent: false, ref: new _WeakRefAtBoot(signal),
+  };
+}
+// A dependent signal is held strongly by its sources only while something observes it.
+function _retainObservedSignal(signal) {
+  const state = _abortSignalState(signal);
+  if (state === undefined) return;
+  const retained = !state.aborted && (state.listeners.length !== 0 || state.onabort !== null
+    || state.algorithms.size !== 0 || _weakMapGet(_abortAlgorithms, signal) !== undefined)
+    ? signal : undefined;
+  state.sources.forEach((source) => {
+    const parent = _weakRefDeref(source);
+    const parentState = parent === undefined ? undefined : _abortSignalState(parent);
+    if (parentState !== undefined) parentState.dependents.set(state.ref, retained);
+  });
+}
+const _abortAlgorithmFinalizer = new _FinalizationRegistryAtBoot((holding) => {
+  const signal = _weakRefDeref(holding.source);
+  const state = signal === undefined ? undefined : _abortSignalState(signal);
+  if (state !== undefined) {
+    state.algorithms.delete(holding.algorithm);
+    _retainObservedSignal(signal);
+  }
+});
+// Kept in its own scope: a finalizer's holdings must not capture the registered target.
+function _weakAbortAlgorithm(target, source, callback) {
+  return () => {
+    const value = _weakRefDeref(target), signal = _weakRefDeref(source);
+    if (value !== undefined && signal !== undefined) callback(value, _abortSignalState(signal).reason);
+  };
+}
+// Run callback(target, reason) when signal aborts (now, if it has). Returns the remover.
+function _addAbortAlgorithm(signal, target, callback) {
+  const state = _abortSignalState(signal);
+  if (state.aborted) { callback(target, state.reason); return () => {}; }
+  const algorithm = _weakAbortAlgorithm(new _WeakRefAtBoot(target), state.ref, callback);
+  state.algorithms.add(algorithm);
+  _finalizerRegister(_abortAlgorithmFinalizer, target, { source: state.ref, algorithm }, algorithm);
+  _retainObservedSignal(signal);
+  return () => {
+    state.algorithms.delete(algorithm);
+    _finalizerUnregister(_abortAlgorithmFinalizer, algorithm);
+    _retainObservedSignal(signal);
+  };
+}
+// The host cancellation handle of one in-flight fetch(): closing it cancels the op.
+function _cancelFetchHandle(handle) {
+  const rid = handle.rid;
+  if (rid === undefined) return;
+  handle.rid = undefined;
+  __obscuraCore.ops.op_try_close(rid);
+}
+// Abort a Response's body: an unread body errors with the signal's reason. A body that is
+// fully read or already cancelled stays as it is.
+function _abortResponseBody(response, reason) {
+  const stream = response._bodyStream;
+  if (stream && stream._state !== 'readable') return;
+  response._bodyAborted = true;
+  response._bodyAbortReason = reason;
+  if (stream) _readableStreamError(stream, reason);
+}
+function _attachResponseAbort(response, signal) {
+  if (signal && !response._bodyNull) {
+    response._bodySignal = signal;
+    _addAbortAlgorithm(signal, response, _abortResponseBody);
+  }
+}
+let _createDependentAbortSignal;
 (function () {
   const BRAND = Symbol("AbortSignal");
-  function emit(signal, evt) {
-    if (typeof signal.onabort === "function") {
-      try { signal.onabort.call(signal, evt); } catch (_) {}
+  const dependentsFinalizer = new _FinalizationRegistryAtBoot((holding) => {
+    const sources = holding.sources;
+    for (let i = 0; i < sources.length; i++) {
+      const signal = _weakRefDeref(sources[i]);
+      const state = signal === undefined ? undefined : _abortSignalState(signal);
+      if (state !== undefined) state.dependents.delete(holding.ref);
     }
-    for (const cb of signal._listeners.slice()) {
+  });
+  function stateOf(signal) {
+    const state = _abortSignalState(signal);
+    if (state === undefined) throw new TypeError("Illegal invocation");
+    return state;
+  }
+  function emit(signal, evt) {
+    const state = _abortSignalState(signal);
+    if (typeof state.onabort === "function") {
+      try { state.onabort.call(signal, evt); } catch (_) {}
+    }
+    const listeners = _arraySlice(state.listeners);
+    for (let i = 0; i < listeners.length; i++) {
+      const cb = listeners[i];
       const fn = typeof cb === "function" ? cb : cb && cb.handleEvent;
       if (typeof fn === "function") { try { fn.call(signal, evt); } catch (_) {} }
     }
   }
-  function fire(signal, reason) {
-    if (signal._aborted) return;
-    signal._aborted = true;
-    signal._reason = reason !== undefined
-      ? reason
-      : new DOMException("signal is aborted without reason", "AbortError");
-    // DOM "signal abort": the abort algorithms (listeners added with this signal) run
-    // before the abort event.
+  // DOM "run the abort steps": the abort algorithms, then the abort event.
+  function runAbortSteps(signal) {
+    const state = _abortSignalState(signal);
+    const algorithms = [];
+    state.algorithms.forEach((algorithm) => { algorithms[algorithms.length] = algorithm; });
+    state.algorithms.clear();
+    for (let i = 0; i < algorithms.length; i++) { try { algorithms[i](); } catch (_) {} }
     _runAbortAlgorithms(signal);
+    state.sources.forEach((source) => {
+      const parent = _weakRefDeref(source);
+      const parentState = parent === undefined ? undefined : _abortSignalState(parent);
+      if (parentState !== undefined) parentState.dependents.delete(state.ref);
+    });
+    state.sources.clear();
+    _finalizerUnregister(dependentsFinalizer, state.ref);
+    state.dependents.clear();
     const evt = typeof Event === "function" ? new Event("abort") : { type: "abort" };
+    // The user agent's own abort event is trusted, as in Chromium; one page script
+    // dispatches itself is not.
+    _trustedAdd(_trustedEvents, evt);
     try { evt.target = signal; evt.currentTarget = signal; } catch (_) {}
     emit(signal, evt);
+  }
+  // DOM "signal abort": every dependent is marked aborted before any abort steps run, and
+  // runs its own steps after the source's.
+  function fire(signal, reason) {
+    const state = _abortSignalState(signal);
+    if (state.aborted) return;
+    state.aborted = true;
+    state.reason = reason !== undefined
+      ? reason
+      : new DOMException("signal is aborted without reason", "AbortError");
+    const pending = [];
+    state.dependents.forEach((_, ref) => {
+      const dependent = _weakRefDeref(ref);
+      if (dependent === undefined) return;
+      const child = _abortSignalState(dependent);
+      if (child.aborted) return;
+      child.aborted = true;
+      child.reason = state.reason;
+      pending[pending.length] = dependent;
+    });
+    runAbortSteps(signal);
+    for (let i = 0; i < pending.length; i++) runAbortSteps(pending[i]);
   }
   globalThis.AbortSignal = class AbortSignal {
     constructor(brand) {
       if (brand !== BRAND) {
         throw new TypeError("Failed to construct 'AbortSignal': Illegal constructor");
       }
-      this._aborted = false;
-      this._reason = undefined;
-      this._listeners = [];
-      this.onabort = null;
+      _weakMapSet(_abortSignalStates, this, _newAbortSignalState(this));
     }
-    get aborted() { return this._aborted; }
-    get reason() { return this._reason; }
-    throwIfAborted() { if (this._aborted) throw this._reason; }
+    get aborted() { return stateOf(this).aborted; }
+    get reason() { return stateOf(this).reason; }
+    get onabort() { return stateOf(this).onabort; }
+    set onabort(callback) {
+      stateOf(this).onabort = typeof callback === "function" ? callback : null;
+      _retainObservedSignal(this);
+    }
+    throwIfAborted() { const state = stateOf(this); if (state.aborted) throw state.reason; }
     addEventListener(type, cb) {
-      if (type === "abort" && cb != null) this._listeners.push(cb);
+      const state = stateOf(this);
+      if (type === "abort" && cb != null) {
+        state.listeners[state.listeners.length] = cb;
+        _retainObservedSignal(this);
+      }
     }
     removeEventListener(type, cb) {
+      const state = stateOf(this);
       if (type !== "abort") return;
-      const i = this._listeners.indexOf(cb);
-      if (i >= 0) this._listeners.splice(i, 1);
+      const i = _arrayIndexOf(state.listeners, cb);
+      if (i >= 0) state.listeners.splice(i, 1);
+      _retainObservedSignal(this);
     }
     dispatchEvent(evt) {
+      stateOf(this);
       if (evt && evt.type === "abort") emit(this, evt);
       return true;
     }
     static abort(reason) {
       const s = new AbortSignal(BRAND);
-      s._aborted = true;
-      s._reason = reason !== undefined
+      const state = _abortSignalState(s);
+      state.aborted = true;
+      state.reason = reason !== undefined
         ? reason
         : new DOMException("signal is aborted without reason", "AbortError");
       return s;
@@ -14912,18 +15126,45 @@ _markNative(globalThis.StorageEvent);
       return s;
     }
     static any(signals) {
-      const s = new AbortSignal(BRAND);
-      const list = Array.from(signals || []);
-      for (const sig of list) {
-        if (sig && sig.aborted) { s._aborted = true; s._reason = sig.reason; return s; }
-      }
-      for (const sig of list) {
-        if (sig && typeof sig.addEventListener === "function") {
-          sig.addEventListener("abort", () => fire(s, sig.reason));
-        }
-      }
-      return s;
+      return _createDependentAbortSignal(Array.from(signals));
     }
+  };
+  const Signal = globalThis.AbortSignal;
+  // DOM "create a dependent abort signal". A dependent signal follows its sources' own
+  // sources, so a chain of Requests all follow the controller's signal directly.
+  _createDependentAbortSignal = function (signals) {
+    const states = [];
+    for (let i = 0; i < signals.length; i++) {
+      const state = _abortSignalState(signals[i]);
+      if (state === undefined) {
+        throw new TypeError("Failed to execute 'any' on 'AbortSignal': Failed to convert value to 'AbortSignal'.");
+      }
+      states[states.length] = state;
+    }
+    const signal = new Signal(BRAND), state = _abortSignalState(signal);
+    for (let i = 0; i < states.length; i++) {
+      if (states[i].aborted) { state.aborted = true; state.reason = states[i].reason; return signal; }
+    }
+    state.dependent = true;
+    for (let i = 0; i < states.length; i++) {
+      const parent = states[i];
+      const sources = [];
+      if (parent.dependent) parent.sources.forEach((source) => { sources[sources.length] = source; });
+      else sources[0] = parent.ref;
+      for (let j = 0; j < sources.length; j++) {
+        const source = sources[j];
+        const root = _weakRefDeref(source);
+        if (root === undefined || state.sources.has(source)) continue;
+        state.sources.add(source);
+        _abortSignalState(root).dependents.set(state.ref, undefined);
+      }
+    }
+    if (state.sources.size !== 0) {
+      const sources = [];
+      state.sources.forEach((source) => { sources[sources.length] = source; });
+      _finalizerRegister(dependentsFinalizer, signal, { sources, ref: state.ref }, state.ref);
+    }
+    return signal;
   };
   globalThis.AbortController = class AbortController {
     constructor() { this.signal = new globalThis.AbortSignal(BRAND); }
@@ -14931,7 +15172,6 @@ _markNative(globalThis.StorageEvent);
   };
   _markNative(globalThis.AbortSignal);
   _markNative(globalThis.AbortController);
-  _AbortSignalProto = globalThis.AbortSignal.prototype;
 })();
 // Normalize one Blob part to bytes. `native` newline normalization applies to
 // string parts when the Blob/File `endings` option is "native".
@@ -20733,39 +20973,58 @@ globalThis.postMessage = function(data, targetOrigin, _transfer) {
 _markNative(globalThis.postMessage);
 globalThis.requestIdleCallback = globalThis.requestIdleCallback || function(cb) { return setTimeout(cb, 0); };
 globalThis.cancelIdleCallback = globalThis.cancelIdleCallback || function(id) { clearTimeout(id); };
+// A stream's own controller record, which the shim errors through (a Response body on
+// abort) without going through the page-visible controller interface.
+const _readableStreamRecords = _private(new WeakMap());
+function _readableStreamError(stream, error) {
+  const record = _weakMapGet(_readableStreamRecords, stream);
+  if (record !== undefined) record.error(error);
+}
 if (typeof ReadableStream === 'undefined') {
   globalThis.ReadableStream = class ReadableStream {
     constructor(source = {}, strategy = {}) {
       this._source = source;
       this._queue = [];
       this._reads = [];
+      // upstream 0155807: reader.closed waits on the stream rather than polling it with a
+      // timer, close() takes effect once the queue drains, and error() discards the queue,
+      // as the Streams standard (and Chromium) order them.
+      this._closedWaiters = [];
+      this._closeRequested = false;
       this._state = "readable";
       this._error = null;
       this.locked = false;
       const stream = this;
-      // A ReadableStreamDefaultController (see the global interfaces near the end of this file).
-      this._controller = _wrapStreamPart('ReadableStreamDefaultController', {
+      const record = {
         enqueue(chunk) {
-          if (stream._state !== "readable") return;
+          if (stream._state !== "readable" || stream._closeRequested) return;
           const pending = stream._reads.shift();
           if (pending) pending.resolve({value: chunk, done: false});
           else stream._queue.push(chunk);
         },
         close() {
           if (stream._state !== "readable") return;
+          stream._closeRequested = true;
+          if (stream._queue.length) return;
           stream._state = "closed";
           while (stream._reads.length) {
             stream._reads.shift().resolve({value: undefined, done: true});
           }
+          while (stream._closedWaiters.length) stream._closedWaiters.shift().resolve();
         },
         error(error) {
           if (stream._state !== "readable") return;
           stream._state = "errored";
           stream._error = error;
+          stream._queue.length = 0;
           while (stream._reads.length) stream._reads.shift().reject(error);
+          while (stream._closedWaiters.length) stream._closedWaiters.shift().reject(error);
         },
         get desiredSize() { return Math.max(0, 1 - stream._queue.length); },
-      });
+      };
+      _weakMapSet(_readableStreamRecords, this, record);
+      // A ReadableStreamDefaultController (see the global interfaces near the end of this file).
+      this._controller = _wrapStreamPart('ReadableStreamDefaultController', record);
       try {
         const started = source.start?.(this._controller);
         if (started && typeof started.then === "function") {
@@ -20779,9 +21038,14 @@ if (typeof ReadableStream === 'undefined') {
       if (this.locked) throw new TypeError("ReadableStream is locked");
       this.locked = true;
       const stream = this;
+      let closedPromise;
       return {
         read() {
-          if (stream._queue.length > 0) return Promise.resolve({ value: stream._queue.shift(), done: false });
+          if (stream._queue.length > 0) {
+            const value = stream._queue.shift();
+            if (!stream._queue.length && stream._closeRequested) _weakMapGet(_readableStreamRecords, stream).close();
+            return Promise.resolve({ value, done: false });
+          }
           if (stream._state === "closed") return Promise.resolve({ value: undefined, done: true });
           if (stream._state === "errored") return Promise.reject(stream._error);
           return new Promise((resolve, reject) => stream._reads.push({resolve, reject}));
@@ -20789,16 +21053,15 @@ if (typeof ReadableStream === 'undefined') {
         releaseLock() { stream.locked = false; },
         cancel(reason) { return stream.cancel(reason); },
         get closed() {
-          if (stream._state === "closed") return Promise.resolve();
-          if (stream._state === "errored") return Promise.reject(stream._error);
-          return new Promise((resolve, reject) => {
-            const poll = () => {
+          if (!closedPromise) {
+            closedPromise = new Promise((resolve, reject) => {
               if (stream._state === "closed") resolve();
               else if (stream._state === "errored") reject(stream._error);
-              else setTimeout(poll, 0);
-            };
-            poll();
-          });
+              else stream._closedWaiters.push({resolve, reject});
+            });
+            closedPromise.catch(() => {});
+          }
+          return closedPromise;
         },
       };
     }

@@ -698,11 +698,46 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
     /// as before; only the document the request is made <em>by</em> is pinned, because that
     /// is what decides CORS, credentials and SameSite.
     /// </remarks>
-    private void BindFetch(ScriptObject ops, PocketCalculatorState document) =>
+    /// <remarks>
+    /// upstream 0155807: the last argument is either <c>internal_load</c> or, for a page
+    /// <c>fetch()</c> with a signal, <c>{cancel_rid}</c> naming a handle from
+    /// <c>op_fetch_cancel_handle</c>; closing it with <c>op_try_close</c> cancels the request.
+    /// </remarks>
+    private void BindFetch(ScriptObject ops, PocketCalculatorState document)
+    {
         Bind(ops, "op_fetch_url", (Func<object?, object?, object?, object?, object?, object?, object?, object?, Task<string>>)(
-            (url, method, headers, body, origin, mode, credentials, internalLoad) => FetchOps.OpFetchUrlAsync(
-                RealmState(), S(url), S(method), S(headers), Bytes(body), S(origin), S(mode), S(credentials),
-                B(internalLoad), document, tailOnPageLoop: true)));
+            (url, method, headers, body, origin, mode, credentials, options) =>
+                FetchCancellation(document, options) is { } cancellation
+                    ? FetchOps.OpFetchUrlAsync(
+                        RealmState(), S(url), S(method), S(headers), Bytes(body), S(origin), S(mode), S(credentials),
+                        options is not ScriptObject && B(options), document, tailOnPageLoop: true,
+                        cancellation: cancellation)
+                    : Task.FromException<string>(new OpException("Bad resource ID"))));
+        Bind(ops, "op_fetch_cancel_handle", (Func<double>)(
+            () => OpGuard.Run("op_fetch_cancel_handle", () => (double)FetchOps.OpenCancelHandle(document), 0d)));
+        Bind(ops, "op_try_close", (Action<object?>)(
+            rid => OpGuard.Run("op_try_close", () => FetchOps.CloseCancelHandle(document, U32(rid)))));
+    }
+
+    /// <summary>The token of the <c>{cancel_rid}</c> handle <paramref name="options"/> names.</summary>
+    /// <remarks>
+    /// An unknown id is refused like a bad resource id in Rust, so the request fails rather
+    /// than going out uncancellable.
+    /// </remarks>
+    private static CancellationToken? FetchCancellation(PocketCalculatorState document, object? options)
+    {
+        if (options is not ScriptObject handle)
+        {
+            return CancellationToken.None;
+        }
+
+        return OpGuard.Run<CancellationToken?>(
+            "op_fetch_url",
+            () => document.FetchCancellations.TryGetValue(U32(handle.GetProperty("cancel_rid")), out var source)
+                ? source.Token
+                : null,
+            null);
+    }
 
     private void Bind(ScriptObject ops, string name, object function)
     {

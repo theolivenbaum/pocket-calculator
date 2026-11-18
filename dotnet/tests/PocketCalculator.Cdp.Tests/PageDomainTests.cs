@@ -183,6 +183,66 @@ public sealed class PageDomainTests
             e.Method is not ("Page.frameNavigated" or "Page.lifecycleEvent")));
     }
 
+    // upstream 0155807: a request that got no response reports Network.loadingFailed, not a
+    // response, from both the runtime and the navigation emitters.
+    [Fact]
+    public void FailedScriptRequestsReportLoadingFailed()
+    {
+        var ctx = CdpContext.New();
+        using IDisposable owned = CoreCdp.Owned(ctx);
+        string pageId = ctx.CreatePage();
+        string sessionId = $"{pageId}-session";
+        ctx.Sessions[sessionId] = pageId;
+        ctx.CurrentLoaderIds[pageId] = "loader-current";
+        var failed = new NetworkEvent
+        {
+            RequestId = "fetch-7",
+            Url = "https://example.test/data.json",
+            Method = "GET",
+            ResourceType = "Fetch",
+            Status = 0,
+            Headers = new Dictionary<string, string>(StringComparer.Ordinal),
+            ResponseHeaders = new Dictionary<string, string>(StringComparer.Ordinal),
+            BodySize = 0,
+            Timestamp = 42.0,
+            ErrorText = "net::ERR_ABORTED",
+        };
+
+        PageDomain.EmitRuntimeNetworkEvents(
+            ctx, sessionId, "frame-1", "https://example.test/", pageId, [failed]);
+        Assert.Equal(
+            ["Network.requestWillBeSent", "Network.loadingFailed"],
+            ctx.PendingEvents.Select(e => e.Method));
+        JsonNode loadingFailed = ctx.PendingEvents[1].Params!;
+        Assert.Equal(
+            """{"requestId":"fetch-7","timestamp":42,"type":"Fetch","errorText":"net::ERR_ABORTED","canceled":true}""",
+            loadingFailed.ToJsonString());
+
+        ctx.PendingEvents.Clear();
+        PageDomain.EmitNavigationEvents(
+            ctx, sessionId, "frame-1", "loader-current", "https://example.test/",
+            pageId,
+            [new NetworkEvent
+            {
+                RequestId = failed.RequestId,
+                Url = failed.Url,
+                Method = failed.Method,
+                ResourceType = failed.ResourceType,
+                Status = 0,
+                Headers = failed.Headers,
+                ResponseHeaders = failed.ResponseHeaders,
+                BodySize = 0,
+                Timestamp = 42.0,
+                ErrorText = "net::ERR_FAILED",
+            }],
+            WaitUntil.Load,
+            true);
+        var network = ctx.PendingEvents.Where(e => e.Method.StartsWith("Network.", StringComparison.Ordinal)).ToList();
+        Assert.Equal(["Network.requestWillBeSent", "Network.loadingFailed"], network.Select(e => e.Method));
+        Assert.Equal("fetch-7", network[1].Params!["requestId"]!.GetValue<string>());
+        Assert.False(network[1].Params!["canceled"]!.GetValue<bool>());
+    }
+
     // upstream 939086a / e70183d (#1224), e5bcd75, 192561c: commands Playwright and go-rod send.
     [Fact]
     public async Task BypassCspStopLoadingCloseAndScriptRemovalAnswerAsChromeDoes()

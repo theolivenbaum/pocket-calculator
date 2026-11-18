@@ -479,7 +479,8 @@ public static partial class FetchOps
         string credentials,
         bool internalLoad = false,
         PocketCalculatorState? document = null,
-        bool tailOnPageLoop = false)
+        bool tailOnPageLoop = false,
+        CancellationToken cancellation = default)
     {
         bool frameDocument = internalLoad && string.Equals(mode, "navigate", StringComparison.Ordinal);
         if (frameDocument)
@@ -494,8 +495,15 @@ public static partial class FetchOps
             // (FetchReferrer.Parse); anything else means the defaults.
             return await FetchUrlAsync(
                     state, document ?? state, url, method, headersJson, body, mode, credentials, internalLoad,
-                    referrer: FetchReferrer.Parse(origin), tailOnPageLoop: tailOnPageLoop)
+                    referrer: FetchReferrer.Parse(origin), tailOnPageLoop: tailOnPageLoop,
+                    cancellation: cancellation)
                 .ConfigureAwait(false);
+        }
+        catch (Exception) when (cancellation.IsCancellationRequested)
+        {
+            // upstream 0155807: the page's AbortSignal cancelled the request; the shim rejects
+            // with the signal's reason instead of this message.
+            throw new OpException("Fetch was cancelled");
         }
         catch (OpException)
         {
@@ -530,7 +538,8 @@ public static partial class FetchOps
         bool internalLoad,
         bool hostConsumesBody = false,
         FetchReferrer? referrer = null,
-        bool tailOnPageLoop = false)
+        bool tailOnPageLoop = false,
+        CancellationToken cancellation = default)
     {
         ArgumentNullException.ThrowIfNull(gs);
         ArgumentNullException.ThrowIfNull(document);
@@ -556,7 +565,7 @@ public static partial class FetchOps
             navigationInitiator = next;
         }
 
-        using FetchConcurrency.Slot slot = await FetchConcurrency.EnterAsync(gs).ConfigureAwait(false);
+        using FetchConcurrency.Slot slot = await FetchConcurrency.EnterAsync(gs, cancellation).ConfigureAwait(false);
 
         // Page-script requests run under the Fetch request guards; the engine's own
         // loads do not. Rust applies neither (see FilterScriptRequestHeaders).
@@ -632,6 +641,11 @@ public static partial class FetchOps
         }
 
         pageInFlight.Increment();
+        // upstream 0155807 (FetchNetworkGuard): from here on a request that ends without a
+        // response (cancelled, failed, refused) reports one terminal failure to CDP,
+        // Network.loadingFailed, rather than nothing. A fulfilled response records itself and
+        // an interception Fail is reported by the CDP layer, so both settle it.
+        var settled = false;
         try
         {
             // Slots the interception channel can override via Continue so a consumer
@@ -654,10 +668,11 @@ public static partial class FetchOps
                 };
                 if (channel.Sink.TrySend(intercepted))
                 {
-                    var resolution = await intercepted.Resolver.Task.ConfigureAwait(false);
+                    var resolution = await intercepted.Resolver.Task.WaitAsync(cancellation).ConfigureAwait(false);
                     switch (resolution)
                     {
                         case InterceptResolution.Fulfill fulfill when internalLoad:
+                            settled = true;
                             return InternalLoadResponse(
                                 document,
                                 mode,
@@ -679,6 +694,7 @@ public static partial class FetchOps
                             // transport one (responseReceived, loadingFinished, its body), under
                             // the id it paused with. Written on the page's loop, as the transport
                             // tail is.
+                            settled = true;
                             var fulfilledId = channel.RequestId;
                             var fulfilledUrl = url;
                             var fulfilledMethod = method;
@@ -702,6 +718,7 @@ public static partial class FetchOps
                         }
 
                         case InterceptResolution.Fail fail:
+                            settled = true;
                             return Blocked(url, fail.Reason);
 
                         case InterceptResolution.Continue cont:
@@ -798,7 +815,10 @@ public static partial class FetchOps
             // the body. DEVIATION from crates/obscura-js (ops.rs), whose timeout covered
             // each hop's headers only, so a server that trickled the body one byte at a
             // time held the fetch, and the page's in-flight count, forever (SECURITY.md M3).
-            using var deadline = new CancellationTokenSource(FetchTimeout());
+            // The page's AbortSignal (upstream 0155807) cancels it too; OpFetchUrlAsync tells
+            // the two apart.
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+            deadline.CancelAfter(FetchTimeout());
 
             var isCors = string.Equals(mode, "cors", StringComparison.Ordinal);
             var unsafeHeaderNames = isCrossOrigin && isCors
@@ -1263,6 +1283,7 @@ public static partial class FetchOps
                 // drives no loop, and the tail then runs where the body was read, as before.
                 // The transport is done with: the next queued request need not wait for the loop.
                 slot.Dispose();
+                settled = true;
                 Func<string> finish = () =>
                 {
                     gs.NetworkResponseBodyCounter++;
@@ -1369,6 +1390,81 @@ public static partial class FetchOps
         finally
         {
             pageInFlight.Decrement();
+            if (!settled)
+            {
+                var failure = RecordFetchFailure(
+                    gs, url, method, cancellation.IsCancellationRequested ? "net::ERR_ABORTED" : "net::ERR_FAILED");
+                if (tailOnPageLoop)
+                {
+                    // Posted before the op settles, so the page records it first; not awaited,
+                    // because a failure can be the page going away.
+                    _ = gs.IsolateLock.RunOnPageAsync(failure).ContinueWith(
+                        static task => _ = task.Exception,
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                }
+                else
+                {
+                    failure();
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Rust <c>FetchNetworkGuard</c>'s drop (upstream 0155807): the one network event a request
+    /// that got no response reports, status 0 with <paramref name="errorText"/>, under a fresh
+    /// <c>fetch-{N}</c> id like a completed request's.
+    /// </summary>
+    private static Func<bool> RecordFetchFailure(PocketCalculatorState gs, string url, string method, string errorText) =>
+        () =>
+        {
+            gs.NetworkResponseBodyCounter++;
+            gs.JsNetworkEvents.Add(new JsNetworkEvent
+            {
+                RequestId = "fetch-" + gs.NetworkResponseBodyCounter.ToString(CultureInfo.InvariantCulture),
+                Url = url,
+                Method = method,
+                Status = 0,
+                ResponseHeaders = new Dictionary<string, string>(StringComparer.Ordinal),
+                BodySize = 0,
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+                ErrorText = errorText,
+            });
+            if (gs.JsNetworkEvents.Count > MaxJsNetworkEvents)
+            {
+                gs.JsNetworkEvents.RemoveRange(0, gs.JsNetworkEvents.Count - MaxJsNetworkEvents);
+            }
+
+            return true;
+        };
+
+    /// <summary><c>op_fetch_cancel_handle</c>: a new cancellation handle for one fetch().</summary>
+    internal static uint OpenCancelHandle(PocketCalculatorState document)
+    {
+        uint rid;
+        do
+        {
+            rid = ++document.FetchCancellationCounter;
+        }
+        while (rid == 0 || document.FetchCancellations.ContainsKey(rid));
+
+        document.FetchCancellations[rid] = new CancellationTokenSource();
+        return rid;
+    }
+
+    /// <summary>
+    /// <c>op_try_close</c> on a fetch cancellation handle: cancels the request it was given
+    /// to, if it is still running, and forgets it. An unknown id is ignored, as deno's
+    /// <c>try_close</c> ignores one.
+    /// </summary>
+    internal static void CloseCancelHandle(PocketCalculatorState document, uint rid)
+    {
+        if (document.FetchCancellations.Remove(rid, out var source))
+        {
+            // Not disposed: the request may still be unwinding with its token.
+            source.Cancel();
         }
     }
 

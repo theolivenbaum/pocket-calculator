@@ -72,7 +72,14 @@ The shim also sends its own closure-held realm id, not the page-writable
 and the form-state mirror passes the id `BootstrapLoader.Install` was given as
 `op_dom`'s frame id. The op signatures are unchanged.
 
-## Ops (55)
+## Ops (56)
+
+Upstream 0155807: `op_fetch_url`'s last argument is `internal_load`, or, for a page
+`fetch()` with a signal, `{cancel_rid}` naming a handle from `op_fetch_cancel_handle`.
+Closing the handle with deno_core's built-in `op_try_close(rid)` cancels the request;
+the port binds `op_try_close` for these handles only and ignores any other id.
+Upstream's `op_abort_signal_state` (a V8 private-symbol brand) is not bound: the port
+keeps signal state in a closure WeakMap in `bootstrap.js`.
 
 `fast` marks ops deno_core binds on the fast path; in C# the distinction is
 informational, but a `fast` op must stay allocation-light. Argument types are
@@ -98,7 +105,8 @@ shown with the deno_core attribute markers stripped: `String` is a JS string,
 | `op_external_stylesheet_get` | sync | `owner_nid: u32, frame_id: u32` | `String` |
 | `op_external_stylesheet_remove` | fast | `owner_nid: u32, frame_id: u32` | `bool` |
 | `op_external_stylesheet_set` | fast | `owner_nid: u32, css: String, response_url: String, imported_origin_clean: bool, frame_id: u32` | `bool` |
-| `op_fetch_url` | async | `url: String, method: String, headers_json: String, body: JsBuffer, origin: String, mode: String, credentials: String, internal_load: bool` | `String` |
+| `op_fetch_cancel_handle` | fast | `(none)` | `u32` cancellation handle id (upstream 0155807) |
+| `op_fetch_url` | async | `url: String, method: String, headers_json: String, body: JsBuffer, origin: String, mode: String, credentials: String, options: bool \| {cancel_rid: u32}` | `String` |
 | `op_frame_document_ready` | fast | `url: &str, html: &str, viewport_width: u64, viewport_height: u64` | `u32` |
 | `op_get_cookies` | sync | `(none)` | `String` |
 | `op_image_metadata` | sync | `nid: u32, _cached_only: bool` | `String` |

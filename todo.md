@@ -438,8 +438,12 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `fb23f18`, `0a14a4c`, `721e40f` (with open
       `2b07b76`), `ee74973`, `60107d1`. Keep history helpers on `__obscura_host` and
       gate traversal through the `file://` check
-- [ ] Network fidelity: `359362f`, `3f37d91` + `73358fd` + `8440fe6`, `0155807`
-      (AbortSignal), `3aa2f59`, `a1dd711`, `004bcdd`, `a134a7e` (after `8162c0f`)
+- [ ] Network fidelity: `359362f`, `3f37d91` + `73358fd` + `8440fe6`, `3aa2f59`, `a1dd711`,
+      `004bcdd`, `a134a7e` (after `8162c0f`)
+- [x] `0155807` (AbortSignal): fetch() rejects with the signal's reason before and during the
+      request (the op is cancelled, Network.loadingFailed net::ERR_ABORTED), an unread body
+      errors on abort, Request has its own following signal, private signal state, trusted
+      abort events, ReadableStream drain/error order. XHR abort still lets its request run
 - [ ] Storage: `f661c2e` persistence, `677f6d2`, `9a5d9c6`, `3dea548` IndexedDB,
       `1e4238e`
 - [ ] Frames (within the separate-engine design): `20299be`, `12b40f6` + `bcf6d03`,
@@ -2394,6 +2398,16 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   commands meanwhile, as Chromium does. A fulfilled internal load (frame document, classic
   script, stylesheet) is not recorded as a network completion; upstream records it like a
   fetch.
+- Fetch abort (`0155807`): signal state lives in a closure WeakMap of the realm, not under
+  upstream's V8 private symbol (`op_abort_signal_state` is not bound; ClearScript has no
+  private-symbol API). The op still returns the whole body (`3aa2f59` not ported), so the
+  cancel handle is released when the op settles and an abort after that errors the buffered
+  body instead of cancelling a body read; until `3aa2f59`, fetch() resolves at the body, not
+  at the headers. data: and blob: fetches answer in the shim and observe the signal there.
+  An aborted body's text()/json() rejects with the reason and leaves bodyUsed false, as in
+  Chromium; upstream marks it used. A failed request's network event takes a fresh
+  `fetch-{N}` id when it fails (upstream allocates it up front). AbortSignal getters throw
+  "Illegal invocation" on a non-signal, as Chromium's do.
 
 ### Operator font directories load per render pass, not into a cached base database
 

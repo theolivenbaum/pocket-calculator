@@ -33,10 +33,10 @@ internal static class FetchConcurrency
     }
 
     /// <summary>Wait for a slot on <paramref name="state"/>'s page; dispose the result to free it.</summary>
-    internal static async Task<Slot> EnterAsync(PocketCalculatorState state)
+    internal static async Task<Slot> EnterAsync(PocketCalculatorState state, CancellationToken cancellation = default)
     {
         SemaphoreSlim gate = Gates.GetValue(state, static _ => new SemaphoreSlim(Limit()));
-        await gate.WaitAsync().ConfigureAwait(false);
+        await gate.WaitAsync(cancellation).ConfigureAwait(false);
         return new Slot(new StrongBox<SemaphoreSlim?>(gate));
     }
 

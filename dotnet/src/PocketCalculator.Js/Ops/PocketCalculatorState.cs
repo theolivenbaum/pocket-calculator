@@ -281,6 +281,16 @@ public sealed class PocketCalculatorState
     public List<JsNetworkEvent> JsNetworkEvents { get; } = [];
 
     /// <summary>
+    /// The cancellation handles of this document's in-flight <c>fetch()</c> calls with a
+    /// signal, by the id <c>op_fetch_cancel_handle</c> handed out (upstream 0155807, which
+    /// keeps them in the deno resource table). <c>op_try_close</c> cancels and removes one.
+    /// Touched only from ops, on the page's thread.
+    /// </summary>
+    internal Dictionary<uint, CancellationTokenSource> FetchCancellations { get; } = [];
+
+    internal uint FetchCancellationCounter { get; set; }
+
+    /// <summary>
     /// Subresources this document actually fetched, in completion order, for
     /// <c>performance.getEntriesByType('resource')</c>. Appended by the host transport
     /// (scripts, stylesheets, images, fonts) and by <c>op_fetch_url</c>; read
@@ -715,6 +725,13 @@ public sealed class JsNetworkEvent
     /// under <see cref="RequestId"/>, so only its completion is reported.
     /// </summary>
     public bool Intercepted { get; init; }
+
+    /// <summary>
+    /// The request got no response (upstream 0155807): <c>net::ERR_ABORTED</c> when its
+    /// signal cancelled it, <c>net::ERR_FAILED</c> otherwise. CDP reports it as
+    /// <c>Network.loadingFailed</c>.
+    /// </summary>
+    public string? ErrorText { get; init; }
 }
 
 /// <summary>

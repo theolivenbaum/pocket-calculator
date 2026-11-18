@@ -283,6 +283,7 @@ public sealed partial class Page
                 BodySize = ev.BodySize,
                 Timestamp = ev.Timestamp,
                 Intercepted = ev.Intercepted,
+                ErrorText = ev.ErrorText,
             });
         }
     }

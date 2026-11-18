@@ -378,6 +378,13 @@ public static partial class Page
                 });
             }
 
+            // upstream 0155807: a request that got no response fails instead.
+            if (networkEvent.ErrorText is { } navigationError)
+            {
+                ctx.PendingEvents.Add(NetworkLoadingFailed(networkEvent, rid, es, navigationError));
+                continue;
+            }
+
             // An intercepted document of this page (one a script navigated away from, or the
             // committed one) is its own loader (upstream b76d966).
             bool ownLoader = networkEvent.Intercepted
@@ -643,6 +650,11 @@ public static partial class Page
                     SessionId = sessionId,
                 });
             }
+            if (networkEvent.ErrorText is { } errorText)
+            {
+                ctx.PendingEvents.Add(NetworkLoadingFailed(networkEvent, requestId, sessionId, errorText));
+                continue;
+            }
             ctx.PendingEvents.Add(new CdpEvent
             {
                 Method = "Network.responseReceived",
@@ -657,6 +669,28 @@ public static partial class Page
             });
         }
     }
+
+    /// <summary>
+    /// <c>Network.loadingFailed</c> for a request that ended without a response (upstream
+    /// 0155807 <c>network_loading_failed</c>): cancelled by its signal, or failed.
+    /// </summary>
+    private static CdpEvent NetworkLoadingFailed(
+        NetworkEvent networkEvent,
+        string requestId,
+        string? sessionId,
+        string errorText) => new()
+    {
+        Method = "Network.loadingFailed",
+        Params = new JsonObject
+        {
+            ["requestId"] = requestId,
+            ["timestamp"] = JsonValue.Create(networkEvent.Timestamp),
+            ["type"] = networkEvent.ResourceType,
+            ["errorText"] = errorText,
+            ["canceled"] = string.Equals(errorText, "net::ERR_ABORTED", StringComparison.Ordinal),
+        },
+        SessionId = sessionId,
+    };
 
     /// <summary>
     /// <c>Network.loadingFailed</c> for a paused document request that never got a response

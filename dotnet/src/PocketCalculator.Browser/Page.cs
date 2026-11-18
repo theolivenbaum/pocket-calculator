@@ -53,6 +53,12 @@ public sealed class NetworkEvent
     /// <see cref="RequestId"/>; the CDP layer must not announce it again.
     /// </summary>
     public bool Intercepted { get; init; }
+
+    /// <summary>
+    /// Set when the request failed without a response (upstream 0155807); CDP reports
+    /// <c>Network.loadingFailed</c> with it instead of a response.
+    /// </summary>
+    public string? ErrorText { get; init; }
 }
 
 /// <summary>One redirect a request followed: the URL it asked for and the response that sent it on.</summary>
