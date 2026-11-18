@@ -926,7 +926,7 @@ public static partial class RenderDom
                     taffyTree.ComputeLayoutWithMeasure(taffyRoot, available, Measure);
                 }
 
-                if (DomPasses.ResolveAtomicPercentageHeights(
+                if (DomPasses.ResolveInlinePercentageHeights(
                         tree, taffyTree, taffyRoot, idMap, styles, definiteHeightNodes))
                 {
                     taffyTree.ComputeLayoutWithMeasure(taffyRoot, available, Measure);

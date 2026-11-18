@@ -134,10 +134,10 @@ internal static class DomPasses
     }
 
     /// <summary>
-    /// Reify the block-axis percentage basis of a definite floated/inline-block containing
-    /// block after the preliminary layout.
+    /// Reify the block-axis percentage basis of a definite floated, inline-block or (across an
+    /// anonymous inline wrapper) block containing block after the preliminary layout.
     /// </summary>
-    internal static bool ResolveAtomicPercentageHeights(
+    internal static bool ResolveInlinePercentageHeights(
         DomTree tree,
         TaffyTree taffyTree,
         TaffyNodeId taffyRoot,
@@ -168,12 +168,20 @@ internal static class DomPasses
                     childPercent = childStyle.Height.Value;
                 }
 
-                bool parentIsDefiniteAtomic = styles.TryGetValue(parentId, out LayoutStyle? parentStyle)
-                    && (parentStyle.Float is not null || parentStyle.IsInlineBlock)
+                // upstream 0e99b3a: an ordinary block parent counts too when the child sits in
+                // an anonymous inline-run wrapper (its taffy parent has no DOM node), whose
+                // indefinite height would otherwise collapse the child's `height: 100%`.
+                bool parentIsDefinite = styles.TryGetValue(parentId, out LayoutStyle? parentStyle)
+                    && (parentStyle.Float is not null
+                        || parentStyle.IsInlineBlock
+                        || (parentStyle.Display == Display.Block
+                            && parentStyle.ColumnCount is null
+                            && taffyTree.Parent(node) is { } taffyParent
+                            && !idMap.ContainsKey(taffyParent)))
                     && definiteHeightNodes.Contains(parentId)
                     && parentStyle.SizeExpressions[1] is null;
                 if (isDirectDomChild
-                    && parentIsDefiniteAtomic
+                    && parentIsDefinite
                     && float.IsFinite(containingBlockHeight)
                     && childPercent is { } percent)
                 {
