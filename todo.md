@@ -444,8 +444,10 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] `a134a7e`: the resource cache gives a response with only `Last-Modified` a tenth of its
       age (24 h cap, 200/203/204/206, no `Expires`, less its current age); `max-age` is strict,
       and a repeated, quoted-empty, signed or spaced value disables reuse and the heuristic
-- [ ] Network fidelity: `359362f`, `3f37d91` + `73358fd` + `8440fe6`, `3aa2f59`, `a1dd711`,
-      `004bcdd`
+- [x] `004bcdd`: TextDecoder's non-fatal UTF-8 path is the native `op_decode` (U+FFFD for
+      malformed input, one copy for a large body, replacing the shim's M4 chunked decoder), and
+      an explicit label removes only its own BOM (`utf-8` over `FF FE` gives two U+FFFD)
+- [ ] Network fidelity: `359362f`, `3f37d91` + `73358fd` + `8440fe6`, `3aa2f59`, `a1dd711`
 - [x] `0155807` (AbortSignal): fetch() rejects with the signal's reason before and during the
       request (the op is cancelled, Network.loadingFailed net::ERR_ABORTED), an unread body
       errors on abort, Request has its own following signal, private signal state, trusted
@@ -2105,8 +2107,8 @@ pool for a second under a 64 MB V8 limit; without the multiplier the test host a
 - **op_fetch_url result (M4):** the JSON is byte-identical to Rust's, but it is written
   once from the body bytes in two passes instead of holding the decoded string, the
   base64 string, a builder and a final copy. A declared Content-Length is read into an
-  exact array. bootstrap.js `_utf8DecodeBytes` joins 8K chunks instead of appending per
-  character; the output is identical.
+  exact array. TextDecoder's UTF-8 path is the native `op_decode` since upstream
+  `004bcdd` (the shim's chunked `_utf8DecodeBytes` is gone).
 - **DOM garbage collector (`DomTree.Gc.cs`, `PocketCalculatorJsRuntime.DomGc.cs`,
   bootstrap.js `_gcWeaken`/`_gcSurvivors`/`_gcForget`):** Rust never frees a detached
   node and keeps every wrapper in a strong `_cache`, so a long-running page leaks and,

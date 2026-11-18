@@ -302,6 +302,11 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
         // --- Encoding ------------------------------------------------------
         Bind(ops, "op_encoding_for_label", (Func<object?, string>)(
             label => CoreOps.OpEncodingForLabel(S(label))));
+        // upstream 004bcdd: TextDecoder's non-fatal UTF-8 path, deno_core's built-in
+        // op_decode there. The string crosses back with no JSON, so a large body costs one
+        // copy (SECURITY.md M4), and malformed input becomes U+FFFD per WHATWG.
+        Bind(ops, "op_decode", (Func<object?, string>)(
+            bytes => CoreOps.OpUtf8Decode(Bytes(bytes))));
         Bind(ops, "op_text_decode", (Func<object?, object?, object?, object?, string>)(
             (label, bytes, fatal, ignoreBom) =>
                 CoreOps.OpTextDecode(S(label), Bytes(bytes), B(fatal), B(ignoreBom))));

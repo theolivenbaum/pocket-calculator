@@ -12054,35 +12054,6 @@ if (typeof TextEncoder === 'undefined') {
     encodeInto(str, dest) { const enc = this.encode(str); dest.set(enc.slice(0, dest.length)); return { read: str.length, written: Math.min(enc.length, dest.length) }; }
   };
 }
-// Fast pure-JS UTF-8 decode (the common case: Response/Blob .text(), most
-// pages). Avoids the op + JSON round trip for plain UTF-8.
-// DEVIATION from crates/obscura-js/js/bootstrap.js, which appends one character
-// at a time: V8 keeps that as a rope of one cons cell per character, so
-// Response.text() of a 100 MB body took several GB of heap (SECURITY.md M4).
-// The same code units are collected into 8K chunks and joined; the output is
-// unchanged, malformed input included (a Uint16Array store truncates exactly as
-// String.fromCharCode does).
-function _utf8DecodeBytes(bytes, start) {
-  let i = start | 0;
-  const n = bytes.length;
-  const CHUNK = 8192;
-  const units = new Uint16Array(Math.min(CHUNK, Math.max(0, n - i)) + 2);
-  const parts = [];
-  let k = 0;
-  while (i < n) {
-    let c = bytes[i++];
-    if (c < 0x80) units[k++] = c;
-    else if (c < 0xE0) units[k++] = ((c & 0x1F) << 6) | (bytes[i++] & 0x3F);
-    else if (c < 0xF0) { const b1 = bytes[i++], b2 = bytes[i++]; units[k++] = ((c & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F); }
-    else { const b1 = bytes[i++], b2 = bytes[i++], b3 = bytes[i++]; const cp = ((c & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F); if (cp > 0xFFFF) { const s = cp - 0x10000; units[k++] = 0xD800 + (s >> 10); units[k++] = 0xDC00 + (s & 0x3FF); } else units[k++] = cp; }
-    if (k >= units.length - 2) {
-      parts.push(String.fromCharCode.apply(null, units.subarray(0, k)));
-      k = 0;
-    }
-  }
-  if (k > 0) parts.push(String.fromCharCode.apply(null, units.subarray(0, k)));
-  return parts.length === 1 ? parts[0] : parts.join('');
-}
 if (typeof TextDecoder === 'undefined') {
   globalThis.TextDecoder = class TextDecoder {
     constructor(label, options) {
@@ -12105,11 +12076,11 @@ if (typeof TextDecoder === 'undefined') {
       const bytes = ArrayBuffer.isView(input)
         ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
         : new Uint8Array(input);
-      // Fast path: plain UTF-8, non-fatal (Response/Blob text, most pages).
-      if (this.encoding === 'utf-8' && !this.fatal) {
-        let off = 0;
-        if (!this.ignoreBOM && bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) off = 3;
-        return _utf8DecodeBytes(bytes, off);
+      // upstream 004bcdd: the native UTF-8 decoder replaces malformed sequences with
+      // U+FFFD, without JSON or per-byte JS work. The pure-JS _utf8DecodeBytes it replaces
+      // (and the port's chunked M4 rewrite of it) decoded malformed input to garbage.
+      if (this.encoding === 'utf-8' && !this.fatal && !this.ignoreBOM) {
+        return __obscuraCore.ops.op_decode(bytes);
       }
       // Legacy encodings / fatal mode: encoding_rs via the op.
       const r = _JSONparse(__obscuraCore.ops.op_text_decode(this.encoding, bytes, this.fatal, this.ignoreBOM));

@@ -113,6 +113,24 @@ public sealed class WhatwgEncoding
         return encoding.DecodeWithoutBomHandling(bytes[offset..]);
     }
 
+    /// <summary>
+    /// Decode, removing only this encoding's own byte order mark (encoding_rs
+    /// <c>new_decoder_with_bom_removal</c>, which TextDecoder uses since upstream 004bcdd):
+    /// unlike <see cref="Decode"/>, a BOM of another encoding does not switch the decoder,
+    /// so <c>utf-8</c> over <c>FF FE</c> gives two U+FFFD and <c>windows-1252</c> keeps
+    /// <c>EF BB BF</c> as three characters.
+    /// </summary>
+    public string DecodeWithBomRemoval(ReadOnlySpan<byte> bytes) =>
+        DecodeWithoutBomHandling(bytes[OwnBomLength(bytes)..]);
+
+    private int OwnBomLength(ReadOnlySpan<byte> bytes) => Name switch
+    {
+        "UTF-8" when bytes.StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF]) => 3,
+        "UTF-16LE" when bytes.StartsWith((ReadOnlySpan<byte>)[0xFF, 0xFE]) => 2,
+        "UTF-16BE" when bytes.StartsWith((ReadOnlySpan<byte>)[0xFE, 0xFF]) => 2,
+        _ => 0,
+    };
+
     /// <summary>Decode without BOM handling; malformed input becomes U+FFFD.</summary>
     public string DecodeWithoutBomHandling(ReadOnlySpan<byte> bytes)
     {
@@ -135,12 +153,10 @@ public sealed class WhatwgEncoding
     /// </summary>
     public string? DecodeFatal(ReadOnlySpan<byte> bytes, bool ignoreBom)
     {
+        // Only this encoding's own BOM is removed (upstream 004bcdd); another
+        // encoding's BOM is data, as in encoding_rs's new_decoder_with_bom_removal.
         var target = this;
-        var offset = 0;
-        if (!ignoreBom)
-        {
-            (target, offset) = SniffBom(bytes, this);
-        }
+        var offset = ignoreBom ? 0 : OwnBomLength(bytes);
 
         var rest = bytes[offset..];
         if (target.IsReplacement)

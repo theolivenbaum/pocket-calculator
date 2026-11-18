@@ -3,50 +3,62 @@ using Xunit;
 namespace PocketCalculator.Js.Tests;
 
 /// <summary>
-/// M4: <c>Response.text()</c> decoded one character at a time, a V8 rope of one cons cell per
-/// character (several GB for a 100 MB body). The chunked decoder must give the same string.
+/// TextDecoder's UTF-8 path. Since upstream 004bcdd it is a native op: malformed input
+/// becomes U+FFFD as WHATWG specifies (the pure-JS decoder before it produced garbage), and
+/// a large body still decodes in one copy (M4: the original decoder built a V8 rope of one
+/// cons cell per character, several GB for a 100 MB body).
 /// </summary>
 public sealed class Utf8DecodeTests
 {
-    private const string OldDecoder = """
-        (bytes, start) => {
-          let str = '', i = start | 0;
-          const n = bytes.length;
-          while (i < n) {
-            let c = bytes[i++];
-            if (c < 0x80) str += String.fromCharCode(c);
-            else if (c < 0xE0) str += String.fromCharCode(((c & 0x1F) << 6) | (bytes[i++] & 0x3F));
-            else if (c < 0xF0) { const b1 = bytes[i++], b2 = bytes[i++]; str += String.fromCharCode(((c & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)); }
-            else { const b1 = bytes[i++], b2 = bytes[i++], b3 = bytes[i++]; const cp = ((c & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F); if (cp > 0xFFFF) { const s = cp - 0x10000; str += String.fromCharCode(0xD800 + (s >> 10), 0xDC00 + (s & 0x3FF)); } else str += String.fromCharCode(cp); }
-          }
-          return str;
-        }
-        """;
-
+    // Port of upstream 004bcdd's text_decoder_replaces_malformed_utf8_and_preserves_bom_options.
     [Fact]
-    public void ChunkedDecodeMatchesTheCharacterAtATimeDecode()
+    public void TextDecoderReplacesMalformedUtf8AndPreservesBomOptions()
     {
         using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
-        string result = fixture.Runtime.Evaluate($$"""
-            (() => { try {
-              const old = {{OldDecoder}};
-              const cases = [[], [0x41], [0xEF, 0xBB, 0xBF, 0x41], [0xFF, 0xFE, 0xC3], [0xE2, 0x82], [0xF0, 0x9F, 0x98, 0x80], [0xF7, 0xBF, 0xBF, 0xBF]];
-              let seed = 7;
-              const noise = new Uint8Array(50000);
-              for (let i = 0; i < noise.length; i++) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; noise[i] = seed & 0xff; }
-              cases.push(Array.from(noise));
-              cases.push(Array.from(new TextEncoder().encode('a\u{1F600}"\\é中'.repeat(5000))));
-              for (const c of cases) {
-                const bytes = new Uint8Array(c);
-                for (const start of [0, 3]) {
-                  const sub = bytes.subarray(Math.min(start, bytes.length));
-                  const bom = sub.length >= 3 && sub[0] === 0xEF && sub[1] === 0xBB && sub[2] === 0xBF ? 3 : 0;
-                  if (new TextDecoder().decode(sub) !== old(sub, bom)) return 'mismatch at ' + c.length + '/' + start;
-                }
+        string result = fixture.Runtime.Evaluate("""
+            JSON.stringify((() => {
+              const cases = [
+                [[0x80], '�'],
+                [[0xc0, 0xaf], '��'],
+                [[0xe0, 0x80, 0xaf], '���'],
+                [[0xed, 0xa0, 0x80], '���'],
+                [[0xf4, 0x90, 0x80, 0x80], '����'],
+                [[0xf5, 0x80, 0x80, 0x80], '����'],
+                [[0xe2, 0x82], '�'],
+                [[0xf0, 0x9f, 0x92], '�'],
+                [[0xc2, 0x41], '�A'],
+                [[0xe2, 0x28, 0xa1], '�(�'],
+              ];
+              for (const [bytes, expected] of cases) {
+                const buffer = new Uint8Array([99, ...bytes, 99]);
+                const view = new DataView(buffer.buffer, 1, bytes.length);
+                const actual = new TextDecoder().decode(view);
+                if (actual !== expected) return {bytes, actual, expected};
+                try { new TextDecoder('utf-8', {fatal:true}).decode(view); return 'fatal accepted'; }
+                catch (error) { if (!(error instanceof TypeError)) return error.name; }
               }
-              return String(new TextDecoder().decode(new Uint8Array(20000).fill(0x61)).length);
-            } catch (e) { return String(e); } })()
+              const bytes = new Uint8Array([0xef,0xbb,0xbf,65,0,34,92,10,0xc3,0xa9,0xf0,0x9f,0x98,0x80]);
+              const expected = 'A\0"\\\né😀';
+              const decoder = new TextDecoder('utf8', {fatal:true});
+              return [new TextDecoder().decode(bytes) === expected,
+                new TextDecoder('utf8', {ignoreBOM:true}).decode(bytes) === '﻿' + expected,
+                decoder.decode(bytes) === expected, decoder.decode(new Uint8Array()) === ''];
+            })())
             """)?.ToString() ?? "null";
-        Assert.Equal("20000", result);
+        Assert.Equal("[true,true,true,true]", result);
+    }
+
+    [Fact]
+    public void LargeAndWellFormedBodiesDecodeUnchanged()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
+        string result = fixture.Runtime.Evaluate("""
+            (() => {
+              const text = 'a\u{1F600}"\\é中'.repeat(5000);
+              if (new TextDecoder().decode(new TextEncoder().encode(text)) !== text) return 'mismatch';
+              return String(new TextDecoder().decode(new Uint8Array(2000000).fill(0x61)).length);
+            })()
+            """)?.ToString() ?? "null";
+        Assert.Equal("2000000", result);
     }
 }

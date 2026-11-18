@@ -756,6 +756,15 @@ public static class CoreOps
         string.Empty);
 
     /// <summary>
+    /// <c>op_decode</c>: UTF-8 with the UTF-8 BOM removed, malformed sequences replaced by
+    /// U+FFFD (maximal subparts, as WHATWG and encoding_rs do).
+    /// </summary>
+    public static string OpUtf8Decode(byte[] bytes) => OpGuard.Run(
+        "op_decode",
+        () => WhatwgEncoding.Utf8.DecodeWithBomRemoval(bytes),
+        string.Empty);
+
+    /// <summary>
     /// <c>op_text_decode</c>. Decodes bytes with a legacy/explicit encoding. Returns
     /// <c>{"ok":true,"v":&lt;string&gt;}</c> or <c>{"ok":false}</c> (unknown label, or a
     /// fatal decode error). The UTF-8 non-fatal common case is handled in JS.

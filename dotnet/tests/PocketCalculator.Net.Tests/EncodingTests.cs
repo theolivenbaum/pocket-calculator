@@ -5,6 +5,23 @@ namespace PocketCalculator.Net.Tests;
 /// <summary>Port of the <c>#[cfg(test)] mod tests</c> block in <c>encoding.rs</c>.</summary>
 public class EncodingTests
 {
+    // Upstream 004bcdd: TextDecoder removes only the selected encoding's own BOM.
+    [Fact]
+    public void TextDecoderBomDoesNotOverrideTheSelectedEncoding()
+    {
+        Assert.Equal("\uFFFD\uFFFDA\0", ContentEncoding.DecodeWithLabel("utf-8", [0xff, 0xfe, 65, 0], false, false));
+        Assert.Null(ContentEncoding.DecodeWithLabel("utf-8", [0xff, 0xfe, 65, 0], true, false));
+        Assert.Equal("\u00EF\u00BB\u00BFA", ContentEncoding.DecodeWithLabel("windows-1252", [0xef, 0xbb, 0xbf, 65], false, false));
+        foreach (var fatal in new[] { false, true })
+        {
+            Assert.Equal("A", ContentEncoding.DecodeWithLabel("utf-8", [0xef, 0xbb, 0xbf, 65], fatal, false));
+            Assert.Equal("\uFEFFA", ContentEncoding.DecodeWithLabel("utf-8", [0xef, 0xbb, 0xbf, 65], fatal, true));
+            Assert.Equal("A", ContentEncoding.DecodeWithLabel("utf-16le", [0xff, 0xfe, 65, 0], fatal, false));
+            Assert.Equal("\uFEFFA", ContentEncoding.DecodeWithLabel("utf-16le", [0xff, 0xfe, 65, 0], fatal, true));
+            Assert.Equal("\uFFFE\u4100", ContentEncoding.DecodeWithLabel("utf-16le", [0xfe, 0xff, 0, 65], fatal, false));
+        }
+    }
+
     [Fact]
     public void ContentTypeCharsetWins()
     {

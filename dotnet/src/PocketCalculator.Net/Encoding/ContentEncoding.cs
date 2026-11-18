@@ -57,7 +57,7 @@ public static class ContentEncoding
             return encoding.DecodeFatal(bytes, ignoreBom);
         }
 
-        return ignoreBom ? encoding.DecodeWithoutBomHandling(bytes) : encoding.Decode(bytes);
+        return ignoreBom ? encoding.DecodeWithoutBomHandling(bytes) : encoding.DecodeWithBomRemoval(bytes);
     }
 
     /// <summary>

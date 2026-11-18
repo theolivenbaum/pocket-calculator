@@ -138,6 +138,7 @@ shown with the deno_core attribute markers stripped: `String` is a JS string,
 | `op_subtle_hkdf` | sync | `hash: &str, ikm: &[u8], salt: &[u8], info: &[u8], length: u32` | `Vec<u8` |
 | `op_subtle_hmac` | sync | `hash: &str, key: &[u8], data: &[u8]` | `Vec<u8` |
 | `op_subtle_pbkdf2` | sync | `hash: &str, password: &[u8], salt: &[u8], iterations: u32, length: u32` | `Vec<u8` |
+| `op_decode` | sync | `bytes: &[u8]` | `String` (UTF-8, BOM removed, U+FFFD replacement; deno_core built-in upstream) |
 | `op_text_decode` | sync | `label: &str, bytes: &[u8], fatal: bool, ignore_bom: bool` | `String` |
 | `op_url_encode_query` | sync | `query: &str, label: &str, special: bool` | `String` |
 | `op_url_parse` | sync | `href: &str, base: &str` | `String` |
