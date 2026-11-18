@@ -174,7 +174,7 @@ public sealed class CookieJar
                         case "expires":
                             if (TryParseHttpDate(val.Trim(), out var ts))
                             {
-                                expires = ts;
+                                expires = Math.Min(ts, Now() + MaxCookieLifetimeSeconds);
                             }
 
                             break;
@@ -185,7 +185,9 @@ public sealed class CookieJar
                                     System.Globalization.CultureInfo.InvariantCulture,
                                     out var secs))
                             {
-                                expires = secs <= 0 ? 0 : Now() + secs;
+                                // Saturating: Now() + long.MaxValue used to wrap negative and
+                                // store the cookie as already expired.
+                                expires = secs <= 0 ? 0 : Now() + Math.Min(secs, MaxCookieLifetimeSeconds);
                             }
 
                             break;
@@ -1089,6 +1091,12 @@ public sealed class CookieJar
 
     private static long Now() => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
+    /// <summary>
+    /// Chromium caps a cookie's lifetime at 400 days (RFC 6265bis 5.6.1/5.6.2, Chromium 104),
+    /// for Expires and Max-Age alike. Deviation: the Rust jar stores any expiry.
+    /// </summary>
+    internal const long MaxCookieLifetimeSeconds = 400L * 24 * 60 * 60;
+
     internal static string HostOf(Uri url) =>
         url.HostNameType == UriHostNameType.IPv6 ? url.Host.Trim('[', ']') : url.Host;
 
@@ -1138,6 +1146,23 @@ public sealed class CookieJar
         var minute = ParseOrZero(timeParts, 1);
         var second = ParseOrZero(timeParts, 2);
 
+        // RFC 6265 5.1.1 field ranges (upstream 8162c0f). Bounding the year also bounds the
+        // calendar walk below: any server can send `Expires=Thu, 01 Jan 99999999999 ...`,
+        // which otherwise spins this parser inside an op where no V8 interrupt reaches.
+        // An out-of-range date fails, so the cookie degrades to a session cookie; this also
+        // removes the day-0 underflow.
+        // Deviation: Rust rejects two-digit years as below 1601. RFC 6265 5.1.1 step 3-4
+        // and Chromium map 70-99 to 19xx and 0-69 to 20xx, so `01-Jan-30` is 2030 here.
+        if (parts[3].Length <= 2)
+        {
+            year += year >= 70 ? 1900UL : 2000UL;
+        }
+
+        if (day is < 1 or > 31 || year is < 1601 or > 9999 || hour > 23 || minute > 59 || second > 59)
+        {
+            return false;
+        }
+
         ulong daysTotal = 0;
         for (var y = 1970UL; y < year; y++)
         {
@@ -1153,7 +1178,8 @@ public sealed class CookieJar
 
         daysTotal += day - 1;
 
-        seconds = (long)((daysTotal * 86400) + (hour * 3600) + (minute * 60) + second);
+        // A date before 1970 has no unix time; it is in the past, so it expires the cookie.
+        seconds = year < 1970 ? 1 : (long)((daysTotal * 86400) + (hour * 3600) + (minute * 60) + second);
         return true;
     }
 
@@ -1285,8 +1311,19 @@ public sealed class CookieJar
             return false;
         }
 
-        return host.AsSpan(prefixLength).Equals(trimmed, StringComparison.OrdinalIgnoreCase);
+        if (!host.AsSpan(prefixLength).Equals(trimmed, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // RFC 6265 5.1.3: an IP address domain-matches only itself (upstream 8162c0f). Only a
+        // would-be suffix match pays for the parse, so the per-fetch jar walk stays cheap.
+        return !IsIpAddress(host) && !IsIpAddress(trimmed);
     }
+
+    /// <summary>A dotted IPv4 or a bracketed or bare IPv6 literal.</summary>
+    private static bool IsIpAddress(ReadOnlySpan<char> host) =>
+        System.Net.IPAddress.TryParse(host.TrimStart('[').TrimEnd(']'), out _);
 
     private static (string First, string? Remainder) SplitOnce(string value, char separator)
     {

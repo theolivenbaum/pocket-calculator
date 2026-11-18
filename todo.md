@@ -328,7 +328,7 @@ pair with them.
 
 Security (exposed today unless noted):
 
-- [ ] `8162c0f` - cookie `Expires` year loop is unbounded (`CookieJar.TryParseHttpDate`),
+- [x] `8162c0f` - cookie `Expires` year loop is unbounded (`CookieJar.TryParseHttpDate`),
       day 0 underflows; validate RFC 6265 ranges first. Also `Max-Age` overflow and the
       400-day cap; IP literals must not suffix-match in `DomainMatches`
 - [ ] `281470c` - grid `DistributeSpaceUpToLimits` can loop forever and has no
@@ -2216,6 +2216,15 @@ Servers:
 - CDP shutdown stops the accept thread before disposing the listener: disposing it under a
   blocked `Accept()` made .NET close fd 0, which in a process with stdin closed is some other
   live handle.
+
+### Upstream ports 1a3169d..4eb1235
+
+Each is commented at its site. Where upstream and Chromium differ, Chromium wins.
+
+- Cookies (`8162c0f`): `Expires` validates the RFC 6265 5.1.1 ranges as upstream does, but
+  maps two-digit years (70-99 to 19xx, 0-69 to 20xx) like Chromium, where upstream rejects
+  them; a pre-1970 date expires the cookie. Both `Expires` and `Max-Age` are capped at 400
+  days (Chromium 104+); upstream stores any expiry.
 
 ### Operator font directories load per render pass, not into a cached base database
 

@@ -1010,4 +1010,81 @@ public class CookieTests
 
         return count;
     }
+
+    // upstream 8162c0f: expires_with_out_of_range_fields_is_rejected_quickly
+    [Fact]
+    public void ExpiresWithOutOfRangeFieldsIsRejectedQuickly()
+    {
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        Assert.False(CookieJar.TryParseHttpDate("Thu, 01 Jan 99999999999 00:00:00 GMT", out _));
+        Assert.False(CookieJar.TryParseHttpDate("Thu, 00 Jan 2030 00:00:00 GMT", out _));
+        Assert.False(CookieJar.TryParseHttpDate("Thu, 32 Jan 2030 00:00:00 GMT", out _));
+        Assert.False(CookieJar.TryParseHttpDate("Thu, 01 Jan 2030 24:00:00 GMT", out _));
+        Assert.False(CookieJar.TryParseHttpDate("Thu, 01 Jan 2030 00:60:00 GMT", out _));
+        Assert.False(CookieJar.TryParseHttpDate("Thu, 01 Jan 2030 00:00:60 GMT", out _));
+        Assert.False(CookieJar.TryParseHttpDate("Thu, 01 Jan 1600 00:00:00 GMT", out _));
+        Assert.True(started.Elapsed < TimeSpan.FromSeconds(1), "rejecting a bad date must not cost a calendar walk");
+        Assert.True(CookieJar.TryParseHttpDate("Thu, 01 Jan 2030 00:00:00 GMT", out var a));
+        Assert.True(CookieJar.TryParseHttpDate("Thu, 01-Jan-2030 23:59:59 GMT", out var b));
+        Assert.Equal(1893456000L, a);
+        Assert.Equal(1893542399L, b);
+
+        // Through the public path the cookie degrades to a session cookie.
+        var jar = new CookieJar();
+        var url = new Uri("http://example.test/");
+        jar.SetCookie("sid=abc; Expires=Thu, 01 Jan 99999999999 00:00:00 GMT", url);
+        Assert.Contains("sid=abc", jar.GetCookieHeaderSameSite(url));
+    }
+
+    // Deviation from Rust: RFC 6265 5.1.1 and Chromium map two-digit years.
+    [Fact]
+    public void TwoDigitExpiresYearsMapLikeChromium()
+    {
+        Assert.True(CookieJar.TryParseHttpDate("Thu, 01-Jan-30 00:00:00 GMT", out var y2030));
+        Assert.Equal(1893456000L, y2030);
+        Assert.True(CookieJar.TryParseHttpDate("Thu, 01-Jan-99 00:00:00 GMT", out var y1999));
+        Assert.Equal(915148800L, y1999);
+    }
+
+    // Chromium caps lifetimes at 400 days, and a huge Max-Age must not wrap into the past.
+    [Fact]
+    public void CookieLifetimeIsCappedAtFourHundredDays()
+    {
+        var jar = new CookieJar();
+        var url = new Uri("http://example.test/");
+        jar.SetCookie("a=1; Max-Age=9223372036854775807", url);
+        jar.SetCookie("b=2; Expires=Fri, 31 Dec 9999 23:59:59 GMT", url);
+        var header = jar.GetCookieHeaderSameSite(url);
+        Assert.Contains("a=1", header);
+        Assert.Contains("b=2", header);
+        var limit = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + CookieJar.MaxCookieLifetimeSeconds + 5;
+        Assert.All(jar.GetAllCookies(), c => Assert.True(c.Expires is { } e && e <= limit, $"{c.Name} expires {c.Expires}"));
+    }
+
+    // upstream 8162c0f: ip_address_origin_cannot_set_a_cookie_for_a_numeric_suffix
+    [Fact]
+    public void IpAddressOriginCannotSetACookieForANumericSuffix()
+    {
+        var jar = new CookieJar();
+        var server = new Uri("http://192.168.1.100/");
+        jar.SetCookie("sid=planted; Domain=168.1.100; Path=/", server);
+        var victim = new Uri("http://10.168.1.100/");
+        Assert.DoesNotContain("sid=planted", jar.GetCookieHeaderSameSite(victim));
+        Assert.DoesNotContain("sid=planted", jar.GetCookieHeaderSameSite(server));
+
+        jar.SetCookie("sid=own; Domain=192.168.1.100; Path=/", server);
+        Assert.Contains("sid=own", jar.GetCookieHeaderSameSite(server));
+        Assert.DoesNotContain("sid=own", jar.GetCookieHeaderSameSite(victim));
+    }
+
+    // upstream 8162c0f: domain_matches_never_suffix_matches_an_ip_address
+    [Fact]
+    public void DomainMatchesNeverSuffixMatchesAnIpAddress()
+    {
+        Assert.True(CookieJar.DomainMatches("192.168.1.100", "192.168.1.100"));
+        Assert.False(CookieJar.DomainMatches("10.168.1.100", "168.1.100"));
+        Assert.False(CookieJar.DomainMatches("10.168.1.100", ".168.1.100"));
+        Assert.False(CookieJar.DomainMatches("[::ffff:10.0.0.1]", "0.0.1"));
+        Assert.True(CookieJar.DomainMatches("sub.example.com", "example.com"));
+    }
 }
