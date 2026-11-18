@@ -146,11 +146,16 @@ internal static class PaintDomPainter
         return bounds;
     }
 
+    /// <remarks>
+    /// A non-replaced inline box is not transformable (upstream df5ee65 for geometry; the port
+    /// also leaves it out of paint, stacking and hit testing, as Chromium does).
+    /// </remarks>
     internal static bool HasAuthoredTransform(LayoutStyle style) =>
-        style.TransformOps.Count > 0
-        || style.IndividualTranslate is not null
-        || style.IndividualRotate is not null
-        || style.IndividualScale is not null;
+        (style.TransformOps.Count > 0
+            || style.IndividualTranslate is not null
+            || style.IndividualRotate is not null
+            || style.IndividualScale is not null)
+        && !style.IgnoresUsedBoxSizes();
 
     /// <summary>The used <c>z-index</c> for an element which participates in stacking order.</summary>
     internal static int? StackingZIndex(DomTree tree, DomLayout laid, NodeId id)

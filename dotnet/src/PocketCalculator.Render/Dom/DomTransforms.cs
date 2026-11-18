@@ -44,7 +44,9 @@ internal static class DomTransforms
         // (percentages resolve against its own border box).
         (float ownTx, float ownTy) = (0f, 0f);
         Affine2 ownTransform = Affine2.Identity;
-        if (styles.TryGetValue(id, out LayoutStyle? style))
+        // upstream df5ee65: a transform does not apply to a non-replaced inline box (CSS
+        // Transforms 1, transformable elements), as in Chromium.
+        if (styles.TryGetValue(id, out LayoutStyle? style) && !style.IgnoresUsedBoxSizes())
         {
             Rect rect = rects.TryGetValue(id, out Rect found) ? found : default;
             (ownTx, ownTy) = ResolvedOwnTranslate(style, rect, rootFontSize, viewport);
