@@ -784,110 +784,166 @@ public static partial class ComputedStyle
 
     // -------------------------------------------------------------- flex
 
+    /// <summary>A parsed <c>flex-basis</c>: the dimension, or a late-resolved math expression.</summary>
+    private readonly record struct ParsedFlexBasis(Dimension Basis, GridCalcExpression? Calc, string? Specified);
+
     /// <summary>
-    /// Apply one <c>flex-basis</c> value, from the longhand or from the <c>flex</c> shorthand's
-    /// basis component.
+    /// Parse one <c>flex-basis</c> value, from the longhand or from the <c>flex</c> shorthand's
+    /// basis component; <c>null</c> when it is invalid (upstream fded066 <c>parse_flex_basis</c>:
+    /// a negative, unknown or malformed basis leaves the cascade alone).
     /// </summary>
     /// <remarks>
-    /// DEVIATION from crates/obscura-render/src/style.rs, which runs every basis through
-    /// <c>dimension_value</c> and so flattens a <c>calc()</c> against the initial 16px - the
-    /// percentage basis is the flex container's inner main size and is not known at
-    /// computed-value time. <c>flex-basis: calc(50% - 6px)</c> became a 2px basis, and the
-    /// computed value was reported as <c>2px</c> rather than the math function Chromium keeps.
-    /// A percentage-dependent expression is kept whole here, exactly as a grid track's is, and
-    /// taffy resolves it against the used basis. See "Known deviations" in todo.md.
+    /// The calc arm was a DEVIATION from crates/obscura-render/src/style.rs before upstream
+    /// fded066, which ran every basis through <c>dimension_value</c> and so flattened a
+    /// <c>calc()</c> against the initial 16px. A percentage-dependent expression is kept whole
+    /// here, exactly as a grid track's is, and taffy resolves it against the used basis.
+    /// Upstream now keeps every math function as a handle; the port still flattens one without
+    /// a percentage when it can (so the zero-basis and definite-basis rules keep seeing a
+    /// length), and keeps the handle otherwise.
     /// </remarks>
+    private static ParsedFlexBasis? ParseFlexBasis(string value)
+    {
+        string trimmed = value.Trim();
+        if (trimmed.Contains('(', StringComparison.Ordinal))
+        {
+            if (GridCalcExpression.Parse(trimmed) is not { } calc)
+            {
+                return null;
+            }
+
+            if (!trimmed.Contains('%', StringComparison.Ordinal)
+                && DimensionValue(trimmed) is { IsAuto: false } flat)
+            {
+                return flat.Value >= 0f ? new ParsedFlexBasis(flat, null, null) : null;
+            }
+
+            return new ParsedFlexBasis(Dimension.Auto, calc, string.Join(" ", SplitWhitespace(trimmed)));
+        }
+
+        if (CssText.AsciiLower(trimmed) is "auto" or "initial" or "unset" or "inherit" or "revert" or "revert-layer")
+        {
+            return new ParsedFlexBasis(Dimension.Auto, null, null);
+        }
+
+        Dimension dimension = DimensionValue(trimmed);
+        return !dimension.IsAuto && float.IsFinite(dimension.Value) && dimension.Value >= 0f
+            ? new ParsedFlexBasis(dimension, null, null)
+            : null;
+    }
+
+    private static void CommitFlexBasis(LayoutStyle style, ParsedFlexBasis basis)
+    {
+        style.FlexBasis = basis.Basis;
+        style.FlexBasisCalc = basis.Calc;
+        style.FlexBasisSpecified = basis.Specified;
+    }
+
+    /// <summary>Apply a <c>flex-basis</c> declaration; an invalid one keeps the cascade.</summary>
     internal static void SetFlexBasis(LayoutStyle style, string value)
     {
-        style.FlexBasisCalc = null;
-        style.FlexBasisSpecified = null;
-
-        string trimmed = value.Trim();
-        if (trimmed.Contains('%', StringComparison.Ordinal)
-            && trimmed.Contains('(', StringComparison.Ordinal)
-            && GridCalcExpression.Parse(trimmed) is { } calc)
+        if (ParseFlexBasis(value) is { } basis)
         {
-            style.FlexBasisCalc = calc;
-            style.FlexBasisSpecified = string.Join(" ", SplitWhitespace(trimmed));
-            style.FlexBasis = Dimension.Auto;
+            CommitFlexBasis(style, basis);
+        }
+    }
+
+    /// <summary>
+    /// upstream fded066 <c>flex_shorthand_value</c>:
+    /// <c>none | auto | [&lt;grow&gt; &lt;shrink&gt;? || &lt;basis&gt;]</c>, or <c>null</c> when
+    /// invalid. A basis alone gives grow and shrink 1 (<c>flex: 200px</c> is
+    /// <c>1 1 200px</c>), numbers alone give a zero basis, and <c>unset</c>, <c>revert</c>
+    /// and <c>revert-layer</c> behave as <c>initial</c>.
+    /// </summary>
+    private static (float Grow, float Shrink, ParsedFlexBasis Basis)? FlexShorthandValue(string value)
+    {
+        ParsedFlexBasis auto = new(Dimension.Auto, null, null);
+        switch (CssText.AsciiLower(value.Trim()))
+        {
+            case "none":
+                return (0f, 0f, auto);
+            case "auto":
+                return (1f, 1f, auto);
+            case "initial" or "unset" or "revert" or "revert-layer":
+                return (0f, 1f, auto);
+        }
+
+        static float? Number(string token) =>
+            ParseF32(token) is { } number && float.IsFinite(number) && number >= 0f ? number : null;
+        static ParsedFlexBasis? Basis(string token) =>
+            CssText.AsciiLower(token) is "initial" or "inherit" or "unset" or "revert" or "revert-layer"
+                ? null
+                : ParseFlexBasis(token);
+        ParsedFlexBasis zero = new(Dimension.Px(0f), null, null);
+
+        List<string> tokens = SplitWsParen(value);
+        switch (tokens.Count)
+        {
+            case 1:
+                if (Number(tokens[0]) is { } only)
+                {
+                    return (only, 1f, zero);
+                }
+
+                return Basis(tokens[0]) is { } alone ? (1f, 1f, alone) : null;
+            case 2:
+                (float? a, float? b) = (Number(tokens[0]), Number(tokens[1]));
+                if (a is { } grow2 && b is { } shrink2)
+                {
+                    return (grow2, shrink2, zero);
+                }
+
+                if (a is { } growFirst)
+                {
+                    return Basis(tokens[1]) is { } second ? (growFirst, 1f, second) : null;
+                }
+
+                if (b is { } growLast)
+                {
+                    return Basis(tokens[0]) is { } first ? (growLast, 1f, first) : null;
+                }
+
+                return null;
+            case 3:
+                if (Number(tokens[0]) is { } grow3)
+                {
+                    return Number(tokens[1]) is { } shrink3 && Basis(tokens[2]) is { } basis3
+                        ? (grow3, shrink3, basis3)
+                        : null;
+                }
+
+                return Number(tokens[1]) is { } growTail && Number(tokens[2]) is { } shrinkTail
+                    && Basis(tokens[0]) is { } basisHead
+                    ? (growTail, shrinkTail, basisHead)
+                    : null;
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>Whether <c>flex</c> accepts <paramref name="value"/>.</summary>
+    internal static bool FlexShorthandSupported(string value) => FlexShorthandValue(value) is not null;
+
+    /// <summary>Whether <c>flex-basis</c> accepts <paramref name="value"/>.</summary>
+    internal static bool FlexBasisSupported(string value) => ParseFlexBasis(value) is not null;
+
+    /// <summary>
+    /// Rust <c>parse_flex_shorthand</c> (upstream fded066): every component is committed
+    /// together, so an invalid value keeps the cascade.
+    /// </summary>
+    internal static void ParseFlexShorthand(LayoutStyle style, string value)
+    {
+        if (CssText.EqualsAscii(value.Trim(), "inherit"))
+        {
+            // Upstream's own arm: only the basis is touched.
+            SetFlexBasis(style, value);
             return;
         }
 
-        style.FlexBasis = DimensionValue(trimmed);
-    }
-
-    /// <summary>Rust <c>parse_flex_shorthand</c>.</summary>
-    internal static void ParseFlexShorthand(LayoutStyle style, string value)
-    {
-        style.FlexBasisCalc = null;
-        style.FlexBasisSpecified = null;
-        switch (value.Trim())
+        if (FlexShorthandValue(value) is { } parsed)
         {
-            case "none":
-                style.FlexGrow = 0f;
-                style.FlexShrink = 0f;
-                style.FlexBasis = Dimension.Auto;
-                return;
-            case "auto":
-                style.FlexGrow = 1f;
-                style.FlexShrink = 1f;
-                style.FlexBasis = Dimension.Auto;
-                return;
-            case "initial":
-                style.FlexGrow = 0f;
-                style.FlexShrink = 1f;
-                style.FlexBasis = Dimension.Auto;
-                return;
-        }
-
-        List<float> numbers = [];
-        string? basis = null;
-
-        // A math function is one token: splitting on plain whitespace tore `calc(50% - 6px)`
-        // into three fragments, none of them a basis, and the declaration lost it entirely.
-        foreach (string token in SplitWsParen(value))
-        {
-            if (ParseF32(token) is { } number)
-            {
-                if (numbers.Count < 2)
-                {
-                    numbers.Add(number);
-                }
-                else
-                {
-                    basis = token;
-                }
-            }
-            else
-            {
-                basis = token;
-            }
-        }
-
-        if (numbers.Count == 1)
-        {
-            style.FlexGrow = numbers[0];
-            style.FlexShrink = 1f;
-        }
-        else if (numbers.Count >= 2)
-        {
-            style.FlexGrow = numbers[0];
-            style.FlexShrink = numbers[1];
-        }
-
-        if (basis is { } explicitBasis)
-        {
-            SetFlexBasis(style, explicitBasis);
-        }
-        else if (numbers.Count != 0)
-        {
-            style.FlexBasis = Dimension.Px(0f);
-        }
-        else
-        {
-            style.FlexGrow = 1f;
-            style.FlexShrink = 1f;
-            style.FlexBasis = Dimension.Auto;
+            style.FlexGrow = parsed.Grow;
+            style.FlexShrink = parsed.Shrink;
+            CommitFlexBasis(style, parsed.Basis);
         }
     }
 

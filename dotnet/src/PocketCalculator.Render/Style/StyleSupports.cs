@@ -1046,36 +1046,8 @@ public static partial class ComputedStyle
                 or "upper-alpha" or "upper-latin" or "lower-roman" or "upper-roman";
     }
 
-    /// <summary>Rust <c>supports_flex_value</c>.</summary>
-    internal static bool SupportsFlexValue(string value)
-    {
-        string lower = CssText.AsciiLower(value.Trim());
-        if (lower is "none" or "auto" or "initial")
-        {
-            return true;
-        }
-
-        List<string> tokens = SplitWsParen(value);
-        if (tokens.Count == 0 || tokens.Count > 3)
-        {
-            return false;
-        }
-
-        int numbers = 0;
-        foreach (string token in tokens)
-        {
-            if (ParseF32(token) is { } number && float.IsFinite(number) && number >= 0f)
-            {
-                numbers++;
-            }
-            else if (DimensionValue(token).IsAuto && !CssText.EqualsAscii(token, "auto"))
-            {
-                return false;
-            }
-        }
-
-        return numbers <= 2;
-    }
+    /// <summary>Rust <c>supports_flex_value</c>: the same parser as the declaration (upstream fded066).</summary>
+    internal static bool SupportsFlexValue(string value) => FlexShorthandSupported(value);
 
     /// <summary>Rust <c>supports_transform_value</c>.</summary>
     internal static bool SupportsTransformValue(string value) =>
@@ -1104,8 +1076,9 @@ public static partial class ComputedStyle
             case "max-inline-size":
             case "max-height":
             case "max-block-size":
-            case "flex-basis":
                 return DimensionSupported(value, true);
+            case "flex-basis":
+                return FlexBasisSupported(value);
             case "margin":
             case "margin-inline":
             case "margin-block":
@@ -1171,7 +1144,7 @@ public static partial class ComputedStyle
             case "flex-shrink":
                 return ParseF32(value.Trim()) is { } number && float.IsFinite(number) && number >= 0f;
             case "flex":
-                return SupportsFlexValue(value);
+                return FlexShorthandSupported(value);
             case "order":
                 return ParseI32(value.Trim()) is not null;
             case "opacity":

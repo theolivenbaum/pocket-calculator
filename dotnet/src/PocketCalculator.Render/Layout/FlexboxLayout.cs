@@ -723,7 +723,9 @@ public static class FlexboxLayout
 
             // A / B: a definite used flex basis, or a ratio-derived main size
             float? mainSize = child.Size.Main(dir);
-            float? definiteBasis = flexBasis ?? mainSize;
+            // upstream fded066: only `auto` retrieves the authored main size. An unresolved
+            // percentage basis (calc() included) uses the content instead, as in Chromium.
+            float? definiteBasis = flexBasis ?? (childStyle.FlexBasis.IsAuto ? mainSize : null);
             if (definiteBasis.HasValue)
             {
                 child.FlexBasis = definiteBasis.Value;

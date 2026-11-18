@@ -1052,7 +1052,7 @@ internal static class DomSubgridPasses
             // A content-sized flex item whose only definite inline content was a cyclic
             // percentage image measured 0 during the intrinsic pass: lift it to its deferred
             // images' natural width before pinning.
-            if (style.Width.IsAuto && style.FlexBasis.IsAuto)
+            if (style.Width.IsAuto && style.FlexBasis.IsAuto && style.FlexBasisCalc is null)
             {
                 float naturalFloor = 0f;
                 foreach (DeferredCyclicInlineSize entry in deferred)
