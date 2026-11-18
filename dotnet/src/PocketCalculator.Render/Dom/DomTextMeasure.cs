@@ -65,6 +65,11 @@ internal static class DomTextMeasure
         return separators * spacing;
     }
 
+    /// <summary>
+    /// paint.rs <c>measure_text</c> as of upstream 8a4d745: the bundled face for the family
+    /// and weight (a real bold face, not the old one-pixel-per-glyph synthetic advance),
+    /// em-scaled, with the face's <c>kern</c> table pairs applied.
+    /// </summary>
     internal static float MeasureText(string text, float size, bool isBold, string? family)
     {
         if (text.Length == 0 || !float.IsFinite(size) || size <= 0f)
@@ -72,12 +77,11 @@ internal static class DomTextMeasure
             return 0f;
         }
 
-        string stem = FallbackFaceStem(family);
+        string stem = FaceStem(family, isBold);
         float width;
-        int glyphCount;
         lock (Gate)
         {
-            if (!Advances.TryGetValue((stem, text), out (float Units, float Divisor, int Glyphs) advance))
+            if (!Advances.TryGetValue((stem, text), out (float Units, float Divisor) advance))
             {
                 advance = UnitAdvances(FallbackFontByStem(stem), text);
                 if (Advances.Count >= MaxAdvances)
@@ -89,17 +93,26 @@ internal static class DomTextMeasure
             }
 
             width = advance.Divisor > 0f ? advance.Units * size / advance.Divisor : 0f;
-            glyphCount = advance.Glyphs;
-        }
-
-        // paint.rs adds one pixel per glyph as its synthetic-bold advance.
-        if (isBold)
-        {
-            width += glyphCount;
         }
 
         return width;
     }
+
+    /// <summary>Rust <c>inline::bundled_font_bytes</c>, by asset stem.</summary>
+    internal static string FaceStem(string? family, bool isBold)
+    {
+        string stem = FallbackFaceStem(family);
+        return isBold ? BoldStem(stem) : stem;
+    }
+
+    private static string BoldStem(string stem) => stem switch
+    {
+        "liberation-sans" => "liberation-sans-bold",
+        "liberation-serif" => "liberation-serif-bold",
+        "liberation-mono" => "liberation-mono-bold",
+        "dejavu-sans" => "dejavu-sans-bold",
+        _ => stem,
+    };
 
     /// <summary>
     /// The unscaled advance sum of each word measured, by face: the per-word fallback lays a
@@ -107,20 +120,19 @@ internal static class DomTextMeasure
     /// sixth of a retained box-tree build on nvidia.com). The width is the same function of
     /// the sum, so a hit gives the same float.
     /// </summary>
-    private static readonly Dictionary<(string Stem, string Text), (float Units, float Divisor, int Glyphs)> Advances = [];
+    private static readonly Dictionary<(string Stem, string Text), (float Units, float Divisor)> Advances = [];
 
     private const int MaxAdvances = 1 << 16;
 
     private static readonly Dictionary<string, string> StemsByFamily = new(StringComparer.Ordinal);
 
-    private static (float Units, float Divisor, int Glyphs) UnitAdvances(SKFont font, string text)
+    private static (float Units, float Divisor) UnitAdvances(SKFont font, string text)
     {
         char[]? rented = text.Length > MaxStackChars ? ArrayPool<char>.Shared.Rent(text.Length) : null;
         try
         {
             Span<char> buffer = rented is null ? stackalloc char[MaxStackChars] : rented;
             int length = 0;
-            int glyphCount = 0;
             foreach (System.Text.Rune rune in text.EnumerateRunes())
             {
                 if (System.Text.Rune.IsControl(rune))
@@ -129,12 +141,11 @@ internal static class DomTextMeasure
                 }
 
                 length += rune.EncodeToUtf16(buffer[length..]);
-                glyphCount++;
             }
 
             if (length == 0)
             {
-                return (0f, 0f, glyphCount);
+                return (0f, 0f);
             }
 
             // Measure in font units and scale once, rather than measuring at the
@@ -147,7 +158,7 @@ internal static class DomTextMeasure
             ushort[] glyphs = font.GetGlyphs(buffer[..length]);
             if (glyphs.Length == 0)
             {
-                return (0f, 0f, glyphCount);
+                return (0f, 0f);
             }
 
             float[] widths = font.GetGlyphWidths(glyphs);
@@ -157,10 +168,20 @@ internal static class DomTextMeasure
                 units += advance;
             }
 
+            // Upstream 8a4d745: ab_glyph's `kern` between consecutive glyphs, which reads the
+            // face's legacy `kern` table (as Skia's pair adjustments do), in font units.
+            if (glyphs.Length > 1)
+            {
+                foreach (int adjustment in font.Typeface.GetKerningPairAdjustments(glyphs))
+                {
+                    units += adjustment;
+                }
+            }
+
             // Em-based (upstream 9a3d12e): one CSS pixel of font-size is one em, as the shaped
             // inline path and Chromium measure. Rust used to scale by the font's height
             // (ab_glyph's PxScale), which made every advance ~11% short.
-            return (units, unitsPerEm > 0 ? unitsPerEm : 1f, glyphCount);
+            return (units, unitsPerEm > 0 ? unitsPerEm : 1f);
         }
         finally
         {

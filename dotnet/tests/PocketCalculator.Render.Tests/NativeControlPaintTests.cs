@@ -445,4 +445,93 @@ public class NativeControlPaintTests
             }
         }
     }
+
+    /// <summary>
+    /// Port of paint.rs <c>native_button_and_select_labels_keep_inline_text_width</c> (merge
+    /// 8a4d745): a button or select sized from its label is as wide as the same text in a span.
+    /// </summary>
+    [Theory]
+    [InlineData("Arial", 400, "abcdefghij")]
+    [InlineData("Arial", 700, "Create new form")]
+    [InlineData("Arial", 400, "AVATAR Toffee")]
+    [InlineData("Times New Roman", 700, "abcdefghij")]
+    [InlineData("Courier New", 700, "abcdefghij")]
+    [InlineData("MissingFont, Arial", 400, "caf\u00e9 \u03a9mega")]
+    public void NativeButtonAndSelectLabelsKeepInlineTextWidth(string family, int weight, string text)
+    {
+        DomTree tree = Parse($$"""
+            <style>
+            body{margin:0} .q{display:inline-block;padding:0;border:0;
+            font:14px {{family}};font-weight:{{weight}};white-space:nowrap;appearance:none}
+            </style><span class=q id=reference>{{text}}</span><button class=q id=button>{{text}}</button>
+            <select class=q id=select><option>{{text}}</option></select>
+            """);
+        PreparedRender prepared = RenderPaint.PrepareDom(tree, (800f, 120f), null, new RenderResourceCache())!;
+        float Width(string id) => prepared.DocumentRect(tree.GetElementById(id)!.Value)!.Value.Width;
+        foreach (string id in new[] { "button", "select" })
+        {
+            Assert.True(
+                MathF.Abs(Width(id) - Width("reference")) <= 1f,
+                $"{family}, weight={weight}, {text}: {id}={Width(id)}, span={Width("reference")}");
+        }
+    }
+
+    /// <summary>
+    /// Port of paint.rs <c>native_control_glyph_size_matches_shaped_inline_text</c> (merge
+    /// 8a4d745): native control text paints at the same glyph size as shaped inline text, bold
+    /// included.
+    /// </summary>
+    [Theory]
+    [InlineData("Arial", 400)]
+    [InlineData("Times New Roman", 700)]
+    [InlineData("Courier New", 700)]
+    [InlineData("system-ui", 700)]
+    public void NativeControlGlyphSizeMatchesShapedInlineText(string family, int weight)
+    {
+        foreach (string control in new[]
+        {
+            "<input value=abcdefghij>",
+            "<select><option>abcdefghij</option></select>",
+            "<button>abcdefghij</button>",
+        })
+        {
+            DomTree tree = Parse($$"""
+                <style>
+                body{margin:0;background:white} span,input,select,button{display:block;
+                width:380px;height:50px;padding:0;border:0;font:32px {{family}};
+                font-weight:{{weight}};line-height:40px;background:transparent;white-space:nowrap}
+                span{color:red}input,select,button{color:blue}
+                </style><span>abcdefghij</span>{{control}}
+                """);
+            using Pixmap pixmap = RenderPaint.PaintDom(tree, (420f, 120f), null)!;
+            (int W, int H) Bounds(bool blue)
+            {
+                (uint X0, uint Y0, uint X1, uint Y1) bounds = (uint.MaxValue, uint.MaxValue, 0, 0);
+                for (uint y = 0; y < pixmap.Height; y++)
+                {
+                    // The select disclosure arrow is outside this text region.
+                    for (uint x = 0; x < 320; x++)
+                    {
+                        PremultipliedColor p = pixmap.Pixel(x, y)!.Value;
+                        bool hit = blue
+                            ? p.Blue > 200 && p.Red < 50 && p.Green < 50
+                            : p.Red > 200 && p.Blue < 50 && p.Green < 50;
+                        if (hit)
+                        {
+                            bounds = (Math.Min(bounds.X0, x), Math.Min(bounds.Y0, y), Math.Max(bounds.X1, x), Math.Max(bounds.Y1, y));
+                        }
+                    }
+                }
+
+                Assert.True(bounds.X0 != uint.MaxValue, $"missing glyphs: {family}, {control}");
+                return ((int)(bounds.X1 - bounds.X0 + 1), (int)(bounds.Y1 - bounds.Y0 + 1));
+            }
+
+            (int W, int H) reference = Bounds(false);
+            (int W, int H) native = Bounds(true);
+            Assert.True(
+                Math.Abs(reference.W - native.W) <= 2 && Math.Abs(reference.H - native.H) <= 2,
+                $"{family}, weight={weight}, {control}: inline={reference}, native={native}");
+        }
+    }
 }

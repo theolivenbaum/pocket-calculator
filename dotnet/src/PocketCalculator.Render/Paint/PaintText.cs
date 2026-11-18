@@ -25,7 +25,7 @@ internal static class PaintText
     /// The face's ascent-to-descent height at <paramref name="size"/>, em-scaled like
     /// <see cref="DrawText"/>: paint.rs <c>font.as_scaled(native_font_scale(..)).height()</c>.
     /// </summary>
-    internal static float NativeFontHeight(float size, string? family)
+    internal static float NativeFontHeight(float size, bool isBold, string? family)
     {
         if (!float.IsFinite(size) || size <= 0f)
         {
@@ -35,7 +35,7 @@ internal static class PaintText
         SKTypeface typeface;
         try
         {
-            typeface = Typeface(family);
+            typeface = Typeface(family, isBold);
         }
         catch (Exception)
         {
@@ -47,9 +47,10 @@ internal static class PaintText
         return metrics.Descent - metrics.Ascent;
     }
 
-    private static SKTypeface Typeface(string? family)
+    /// <summary>Rust <c>inline::bundled_font_bytes</c>: the bundled face for the family and weight.</summary>
+    private static SKTypeface Typeface(string? family, bool isBold)
     {
-        string stem = DomTextMeasure.FallbackFaceStem(family);
+        string stem = DomTextMeasure.FaceStem(family, isBold);
         lock (Gate)
         {
             if (Typefaces.TryGetValue(stem, out SKTypeface? cached))
@@ -67,7 +68,7 @@ internal static class PaintText
 
     /// <summary>
     /// Paint one run of text with the static bundled face, matching paint.rs's `draw_text`
-    /// caret accumulation, synthetic-bold smear and manual source-over blend.
+    /// caret accumulation, kerning and manual source-over blend.
     /// </summary>
     internal static void DrawText(
         Pixmap pixmap,
@@ -101,7 +102,7 @@ internal static class PaintText
         SKTypeface typeface;
         try
         {
-            typeface = Typeface(family);
+            typeface = Typeface(family, isBold);
         }
         catch (Exception)
         {
@@ -128,8 +129,11 @@ internal static class PaintText
                 (bounds.Y + bounds.Height) * rasterScale)
             : null;
         PremultipliedColor[] pixels = pixmap.Pixels;
-        int boldSmear = isBold ? Math.Max((int)MathF.Ceiling(rasterScale), 1) : 1;
 
+        // Upstream 8a4d745: a real bold face rather than a smeared regular one, and the face's
+        // `kern` table pairs between consecutive glyphs, as measuring applies them.
+        ushort? previous = null;
+        ushort[] pair = new ushort[2];
         foreach (Rune rune in text.EnumerateRunes())
         {
             if (Rune.IsControl(rune))
@@ -140,6 +144,17 @@ internal static class PaintText
             ReadOnlySpan<char> encoded = rune.ToString().AsSpan();
             ushort[] glyphs = font.GetGlyphs(encoded);
             float advance = 0f;
+            if (glyphs.Length > 0 && previous is { } before)
+            {
+                pair[0] = before;
+                pair[1] = glyphs[0];
+                int[] kerning = typeface.GetKerningPairAdjustments(pair);
+                if (kerning.Length > 0 && kerning[0] != 0 && typeface.UnitsPerEm > 0)
+                {
+                    caretX += kerning[0] * scale / typeface.UnitsPerEm;
+                }
+            }
+
             if (glyphs.Length > 0)
             {
                 float[] widths = font.GetGlyphWidths(glyphs);
@@ -159,11 +174,11 @@ internal static class PaintText
                     width,
                     height,
                     clipBounds,
-                    clipMask,
-                    boldSmear);
+                    clipMask);
+                previous = glyphs[^1];
             }
 
-            caretX += advance + (isBold ? rasterScale : 0f) + (letterSpacing * rasterScale);
+            caretX += advance + (letterSpacing * rasterScale);
             if (rune.Value is ' ' or 0xA0)
             {
                 // Upstream bf10c46: word separators advance by `word-spacing` as well.
@@ -183,8 +198,7 @@ internal static class PaintText
         int width,
         int height,
         (float X0, float Y0, float X1, float Y1)? clipBounds,
-        Mask? clipMask,
-        int boldSmear)
+        Mask? clipMask)
     {
         SKRect[] bounds = new SKRect[glyphs.Length];
         font.GetGlyphWidths(glyphs, null, bounds);
@@ -275,9 +289,8 @@ internal static class PaintText
                     continue;
                 }
 
-                for (int dx = 0; dx < boldSmear; dx++)
                 {
-                    int target = px + dx;
+                    int target = px;
                     if (target < 0 || target >= width)
                     {
                         continue;

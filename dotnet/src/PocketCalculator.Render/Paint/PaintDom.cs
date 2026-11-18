@@ -1559,6 +1559,7 @@ internal static class PaintDomPainter
                     bool hasValue = shownValue is { Length: > 0 };
                     float textSize = style.FontSize ?? 16f;
                     float textX = rect.X + style.Padding.Left + style.Border.Left;
+                    bool textBold = ComputedStyle.UsedFontWeight(style) >= 600;
 
                     // Upstream 1fff1f7: a single-line editor clips its text horizontally to
                     // the content box but lets glyph ink use the vertical padding; a textarea
@@ -1580,7 +1581,7 @@ internal static class PaintDomPainter
                             0f)
                         : FontResolution.UsedLineHeight(style);
                     float textY = rect.Y + style.Border.Top + style.Padding.Top
-                        + ((textLineHeight - PaintText.NativeFontHeight(textSize, style.FontFamily)) / 2f);
+                        + ((textLineHeight - PaintText.NativeFontHeight(textSize, textBold, style.FontFamily)) / 2f);
                     if (hasValue && !isTextarea && PaintNativeControls.ShowsTextValue(inputType))
                     {
                         RgbaColor color = style.Color ?? new RgbaColor(0, 0, 0, 255);
@@ -1596,7 +1597,7 @@ internal static class PaintDomPainter
                                 textY,
                                 color,
                                 textSize,
-                                false,
+                                textBold,
                                 style.FontFamily,
                                 style.LetterSpacing ?? 0f,
                                 style.WordSpacing ?? 0f,
@@ -1622,7 +1623,7 @@ internal static class PaintDomPainter
                                 textY,
                                 color,
                                 textSize,
-                                false,
+                                textBold,
                                 style.FontFamily,
                                 style.LetterSpacing ?? 0f,
                                 style.WordSpacing ?? 0f,

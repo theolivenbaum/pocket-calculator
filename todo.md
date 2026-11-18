@@ -422,8 +422,10 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `e1acbe5` + `31e1dfe`. Do not port `8a2f957`
 - [ ] Media emulation: `c9978c3` + `c7ec60a` + `6ba3613` (setEmulatedMedia, reduced
       motion, color scheme, MediaQueryList change events)
-- [ ] Render text: [x] `bf10c46` word-spacing; [x] `f8a36a4` font size keywords and `<font size>`; [x] `1fff1f7` native control text clip and centring
-      (`9a3d12e` is done; the kerning and real bold faces of merge `8a4d745` are not)
+- [x] Render text: `bf10c46` word-spacing; `f8a36a4` font size keywords and `<font size>`;
+      `1fff1f7` native control text clip and centring; `9a3d12e` em scale; merge `8a4d745`
+      real bold faces and `kern` pairs in `DomTextMeasure` / `PaintText.DrawText`, bold input
+      text (list markers are the port's own path and unaffected)
 - [ ] Render layout: tables `2b61abf` + `7bf782b`; floats `9f64ce9`, `6a7bbf3`, `423e58a`;
       inline `0e99b3a`, `a41696e`, `df5ee65`, `62e8e7f`; flex merges `fded066`/`322f46c`
       then `3155d6a`, `a04e024`, `b223a2c`, `6234ed3`; `contain: size` from `542df14`
@@ -472,8 +474,8 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [ ] CLI and workers: `11d6ea8` + `afb0d61`, `ec0186b`, `1949e9b`, `f2b9e99`, `4b14a76`,
       `0f27e69`, `9a6dd86`, `52d8ddd`, `1b259b9` failed-save log
 - [ ] From merges: `61aa8fb` CDP URL pattern matcher (done, see CDP Fetch), `fded066` (`flex: 200px` sets grow 1, an
-      invalid `flex` keeps the cascade), `8a4d745` real bold faces and kerning (with
-      `9a3d12e`), `322f46c`, `d04b661`, `ab19571`, `97f8f81`, `4c12826`, `716826c`
+      invalid `flex` keeps the cascade), `8a4d745` real bold faces and kerning (done, see
+      Render text), `322f46c`, `d04b661`, `ab19571`, `97f8f81`, `4c12826`, `716826c`
 - [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `35b9448`, `a2bfd32`,
       `3a4a0b5`, `8bb46be`, `3a9eb06`, `8310ebf`, `acff100`, `503a66d`, `786fde5` + `7d9ed8a`
 
