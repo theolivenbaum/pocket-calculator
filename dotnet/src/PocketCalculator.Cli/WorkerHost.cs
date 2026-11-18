@@ -56,7 +56,13 @@ public static class WorkerHost
         var stealth = EnvFlag(Environment.GetEnvironmentVariable("POCKETCALCULATOR_STEALTH"));
         var obeyRobots = EnvFlag(Environment.GetEnvironmentVariable("POCKETCALCULATOR_OBEY_ROBOTS"));
 
-        var context = BrowserContext.WithOptions("worker", proxy, stealth);
+        var userAgent = Environment.GetEnvironmentVariable("POCKETCALCULATOR_USER_AGENT")?.Trim();
+        if (userAgent is { Length: 0 })
+        {
+            userAgent = null;
+        }
+
+        var context = BrowserContext.WithFullOptions("worker", proxy, stealth, userAgent);
         context.ObeyRobots = obeyRobots;
         using var page = new Page("page-1", context);
 

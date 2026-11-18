@@ -61,7 +61,14 @@ public static class CliDefinition
         DefaultValueFactory = _ => 9222,
         CustomParser = ClapNumbers.U16("--port", "PORT"),
     };
-    public static readonly Option<string?> RootUserAgent = new("--user-agent") { Description = "Override the user agent" };
+    // Global since upstream 1949e9b: before it the root value was read by no command, so
+    // `--user-agent X fetch URL` silently used the default, and scrape had no flag at all.
+    // A subcommand's own --user-agent still wins (CliOptions.MergeUserAgent).
+    public static readonly Option<string?> RootUserAgent = new("--user-agent")
+    {
+        Description = "Override the User-Agent sent with every request. Global: applies to fetch, serve, scrape, and mcp. A subcommand-level --user-agent still wins where one exists.",
+        Recursive = true,
+    };
     public static readonly Option<FileSystemInfo?> RootStorageDir = new("--storage-dir") { Description = "Directory for persisted cookies and storage" };
     public static readonly Option<string?> V8FlagsOption = new("--v8-flags")
     {

@@ -26,7 +26,8 @@ public static class ScrapeCommand
             scrape.Quiet,
             args.Proxy,
             args.Stealth,
-            args.ObeyRobots);
+            args.ObeyRobots,
+            args.UserAgent);
 
     /// <summary>The worker binary's file name for this platform.</summary>
     public static string WorkerName =>
@@ -52,7 +53,8 @@ public static class ScrapeCommand
         bool quiet,
         string? proxy,
         bool stealth,
-        bool obeyRobots)
+        bool obeyRobots,
+        string? userAgent = null)
     {
         var total = urls.Count;
         var start = Stopwatch.StartNew();
@@ -91,7 +93,7 @@ public static class ScrapeCommand
                 try
                 {
                     return await ScrapeOneAsync(
-                        workerPath, url, index, eval, proxy, stealth, obeyRobots,
+                        workerPath, url, index, eval, proxy, stealth, obeyRobots, userAgent,
                         workerTimeout, readTimeout, shutdownTimeout).ConfigureAwait(false);
                 }
                 finally
@@ -165,6 +167,7 @@ public static class ScrapeCommand
         string? proxy,
         bool stealth,
         bool obeyRobots,
+        string? userAgent,
         TimeSpan workerTimeout,
         TimeSpan readTimeout,
         TimeSpan shutdownTimeout)
@@ -180,6 +183,7 @@ public static class ScrapeCommand
         psi.Environment["POCKETCALCULATOR_PROXY"] = proxy ?? string.Empty;
         psi.Environment["POCKETCALCULATOR_STEALTH"] = stealth ? "1" : string.Empty;
         psi.Environment["POCKETCALCULATOR_OBEY_ROBOTS"] = obeyRobots ? "1" : string.Empty;
+        psi.Environment["POCKETCALCULATOR_USER_AGENT"] = userAgent ?? string.Empty;
 
         Process? child;
         try

@@ -99,6 +99,10 @@ public static class CliOptions
     public static string? MergeProxy(string? globalProxy, string? commandProxy) =>
         commandProxy ?? globalProxy;
 
+    /// <summary>Port of <c>merge_user_agent</c> (upstream 1949e9b): the subcommand's value wins.</summary>
+    public static string? MergeUserAgent(string? globalUserAgent, string? commandUserAgent) =>
+        commandUserAgent ?? globalUserAgent;
+
     /// <summary>
     /// Normalize a raw <c>--v8-flags</c> value into the string handed to V8.
     /// Null when the user did not pass the flag, passed an empty string, or

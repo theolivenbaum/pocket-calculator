@@ -10,6 +10,7 @@ public static class McpCommand
     public static async Task RunAsync(CliArgs args, CliCommand.Mcp mcp)
     {
         var proxy = CliOptions.MergeProxy(args.Proxy, mcp.Proxy);
+        var userAgent = CliOptions.MergeUserAgent(args.UserAgent, mcp.UserAgent);
         HardDeadline.ArmHangExit();
         if (mcp.Http)
         {
@@ -30,10 +31,10 @@ public static class McpCommand
                 throw new CliException(error.Message);
             }
 
-            await Http.RunAsync(mcp.Host, checked((ushort)mcp.Port), proxy, mcp.UserAgent, args.Stealth, certificate)
+            await Http.RunAsync(mcp.Host, checked((ushort)mcp.Port), proxy, userAgent, args.Stealth, certificate)
                 .ConfigureAwait(false);
             return;
         }
-        await McpServer.RunAsync(proxy, mcp.UserAgent, args.Stealth).ConfigureAwait(false);
+        await McpServer.RunAsync(proxy, userAgent, args.Stealth).ConfigureAwait(false);
     }
 }

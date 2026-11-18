@@ -18,6 +18,7 @@ public static class FetchCommand
     /// <summary>Dispatch for the <c>fetch</c> subcommand, including batch mode.</summary>
     public static async Task RunAsync(CliArgs args, CliCommand.Fetch fetch)
     {
+        var userAgent = CliOptions.MergeUserAgent(args.UserAgent, fetch.UserAgent);
         if (fetch.File is { } file)
         {
             if (fetch.Url is not null)
@@ -42,7 +43,7 @@ public static class FetchCommand
                 urls,
                 fetch.Concurrency,
                 fetch.Timeout,
-                fetch.UserAgent,
+                userAgent,
                 args.Proxy,
                 fetch.Output,
                 fetch.Quiet,
@@ -61,7 +62,7 @@ public static class FetchCommand
             waitIsFixed: fetch.Wait is not null,
             (ulong)fetch.Timeout,
             fetch.WaitUntil,
-            fetch.UserAgent,
+            userAgent,
             args.Stealth,
             fetch.Eval,
             fetch.Output,

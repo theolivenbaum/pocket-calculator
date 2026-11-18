@@ -235,4 +235,38 @@ public sealed class CliArgsTests
         Assert.True(Parse("obscura", "fetch", "https://x", "--obey-robots").ObeyRobots);
         Assert.Equal("http://p:1", Parse("obscura", "fetch", "https://x", "--proxy", "http://p:1").Proxy);
     }
+    // Upstream 1949e9b (issue #1278): a top-level --user-agent is global, so it reaches the
+    // subcommand before or after it, and a subcommand-level value still wins.
+    [Fact]
+    public void User_agent_before_subcommand_reaches_fetch()
+    {
+        var args = Parse("obscura", "--user-agent", "TestUA/1.0", "fetch", "https://example.com");
+        var fetch = Assert.IsType<CliCommand.Fetch>(args.Command);
+        Assert.Equal("TestUA/1.0", CliOptions.MergeUserAgent(args.UserAgent, fetch.UserAgent));
+    }
+
+    [Fact]
+    public void Subcommand_user_agent_wins_over_global()
+    {
+        var args = Parse("obscura", "--user-agent", "Global/1.0", "fetch", "--user-agent", "Sub/2.0", "https://example.com");
+        var fetch = Assert.IsType<CliCommand.Fetch>(args.Command);
+        Assert.Equal("Sub/2.0", CliOptions.MergeUserAgent(args.UserAgent, fetch.UserAgent));
+    }
+
+    [Fact]
+    public void Scrape_accepts_global_user_agent()
+    {
+        var args = Parse("obscura", "scrape", "https://example.com", "--user-agent", "TestUA/1.0");
+        Assert.IsType<CliCommand.Scrape>(args.Command);
+        Assert.Equal("TestUA/1.0", args.UserAgent);
+    }
+
+    [Fact]
+    public void Merge_user_agent_prefers_command_value()
+    {
+        Assert.Equal("C", CliOptions.MergeUserAgent("G", "C"));
+        Assert.Equal("G", CliOptions.MergeUserAgent("G", null));
+        Assert.Equal("C", CliOptions.MergeUserAgent(null, "C"));
+        Assert.Null(CliOptions.MergeUserAgent(null, null));
+    }
 }

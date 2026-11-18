@@ -485,7 +485,9 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       final HTTP status after redirects, null with no HTTP response or a blocked request
 - [x] `ec0186b`: worker `navigate` takes a strict `waitUntil` (`load`, `domcontentloaded`,
       `networkidle0`, `networkidle2`); anything else is an error that does not navigate
-- [ ] CLI and workers: `1949e9b`, `f2b9e99`, `4b14a76`,
+- [x] `1949e9b`: `--user-agent` is global (a subcommand's own value wins) and `scrape`
+      forwards it to its workers as `POCKETCALCULATOR_USER_AGENT`
+- [ ] CLI and workers: `f2b9e99`, `4b14a76`,
       `0f27e69`, `1b259b9` failed-save log
 - [x] `52d8ddd`: network errors from a send or a body read carry the inner exception chain
       (`ErrorChain`, each cause appended once), so a TLS failure names its certificate error

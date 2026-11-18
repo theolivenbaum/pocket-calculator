@@ -23,6 +23,7 @@ public static class ServeCommand
         // the proxy to each worker this way.
         var proxy = CliOptions.MergeProxy(args.Proxy, serve.Proxy)
             ?? EnvOrNull("POCKETCALCULATOR_PROXY");
+        var userAgent = CliOptions.MergeUserAgent(args.UserAgent, serve.UserAgent);
 
         CliOptions.ConfigureFontDirectories(serve.FontDirs);
         HardDeadline.ArmHangExit();
@@ -35,7 +36,7 @@ public static class ServeCommand
         {
             Log.Info($"Using proxy: {CliOptions.RedactProxy(configured)}");
         }
-        if (serve.UserAgent is { } ua)
+        if (userAgent is { } ua)
         {
             Log.Info($"User-Agent: {ua}");
         }
@@ -69,7 +70,7 @@ public static class ServeCommand
                 {
                     Proxy = proxy,
                     Stealth = args.Stealth,
-                    UserAgent = serve.UserAgent,
+                    UserAgent = userAgent,
                     FontDirs = serve.FontDirs,
                     AllowFileAccess = serve.AllowFileAccess,
                     StorageDir = serve.StorageDir,
@@ -89,7 +90,7 @@ public static class ServeCommand
             serve.Host,
             proxy,
             args.Stealth,
-            serve.UserAgent,
+            userAgent,
             serve.AllowFileAccess,
             serve.StorageDir,
             args.AllowPrivateNetwork,
