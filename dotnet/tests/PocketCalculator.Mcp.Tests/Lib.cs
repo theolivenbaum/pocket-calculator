@@ -260,6 +260,61 @@ public sealed class LibTests
             $"the submitted body must carry the filled field, got {submitted}");
     }
 
+    // upstream a449a80: element_refs_reject_copied_attributes_before_clicking
+    [Theory]
+    [InlineData("button.replaceWith(copy)")]
+    [InlineData("button.before(copy)")]
+    public async Task ElementRefsRejectCopiedAttributesBeforeClicking(string mutation)
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync("data:text/html,<button id=target>Buy</button>");
+        Tools.Snapshot(JsonNode.Parse("{}"), state);
+        var reference = state.InteractiveRefs.Keys.First();
+        state.PageMut().Evaluate(
+            "(function(){ window.clicks=0; document.body.addEventListener('click',function(){window.clicks++}); var button=document.getElementById('target'); var copy=button.cloneNode(true); "
+            + mutation + "; return true; })()");
+
+        var stale = await Assert.ThrowsAsync<ToolException>(() =>
+            Tools.ClickAsync(JsonNode.Parse($$"""{"ref":"{{reference}}"}"""), state));
+        Assert.Contains("stale ref", stale.Message, StringComparison.Ordinal);
+        Assert.Equal(0.0, state.PageMut().Evaluate("window.clicks").AsF64());
+
+        Tools.Snapshot(JsonNode.Parse("{}"), state);
+        reference = state.InteractiveRefs.Keys.First();
+        await Tools.ClickAsync(JsonNode.Parse($$"""{"ref":"{{reference}}"}"""), state);
+        Assert.Equal(1.0, state.PageMut().Evaluate("window.clicks").AsF64());
+    }
+
+    // upstream a449a80: element_refs_from_old_snapshots_cannot_alias_new_targets
+    [Fact]
+    public async Task ElementRefsFromOldSnapshotsCannotAliasNewTargets()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync("data:text/html,<button id=target>Buy</button>");
+        Tools.Snapshot(JsonNode.Parse("{}"), state);
+        var reference = state.InteractiveRefs.Keys.First();
+        state.PageMut().Evaluate(
+            "(function(){window.clicks=0; document.body.addEventListener('click',function(){window.clicks++}); var other=document.createElement('button'); other.textContent='Delete'; document.body.prepend(other); return true;})()");
+        Tools.Snapshot(JsonNode.Parse("{}"), state);
+        await Assert.ThrowsAsync<ToolException>(() =>
+            Tools.ClickAsync(JsonNode.Parse($$"""{"ref":"{{reference}}"}"""), state));
+        Assert.Equal(0.0, state.PageMut().Evaluate("window.clicks").AsF64());
+    }
+
+    // upstream a449a80: element_refs_follow_the_same_connected_node_after_reordering
+    [Fact]
+    public async Task ElementRefsFollowTheSameConnectedNodeAfterReordering()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync("data:text/html,<button id=target>Buy</button><p>Details</p>");
+        Tools.Snapshot(JsonNode.Parse("{}"), state);
+        var reference = state.InteractiveRefs.Keys.First();
+        state.PageMut().Evaluate(
+            "(function(){window.clicked=''; var button=document.getElementById('target'); button.addEventListener('click',function(){window.clicked=this.id}); document.body.appendChild(button); return true;})()");
+        await Tools.ClickAsync(JsonNode.Parse($$"""{"ref":"{{reference}}"}"""), state);
+        Assert.Equal("target", state.PageMut().Evaluate("window.clicked").AsString());
+    }
+
     [Fact]
     public async Task FillToolsNotifyControlledInputTracker()
     {

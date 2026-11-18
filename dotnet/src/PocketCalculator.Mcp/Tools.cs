@@ -342,7 +342,7 @@ internal static partial class Tools
         return state.AdvanceActivePageTasksAsync();
     }
 
-    private static PocketCalculator.Dom.NodeId? TryQuery(PocketCalculator.Dom.DomTree dom, string selector) =>
+    internal static PocketCalculator.Dom.NodeId? TryQuery(PocketCalculator.Dom.DomTree dom, string selector) =>
         dom.TryQuerySelector(selector, out var result, out _) ? result : null;
 
     internal static string NetworkRequests(BrowserState state)
@@ -566,16 +566,19 @@ internal static partial class Tools
     internal static void RebuildInteractiveRefs(BrowserState state)
     {
         state.InteractiveRefs.Clear();
+        state.RefGeneration = checked(state.RefGeneration + 1);
+        var prefix = "e" + state.RefGeneration.ToString(CultureInfo.InvariantCulture) + "-";
         var page = state.PageMut();
-        // Tag every interactable with data-obscura-ref="eN" in DOM order.
-        const string tagJs = """
+        // Tag every interactable with data-obscura-ref in DOM order. Never reuse tokens
+        // (upstream a449a80): an old snapshot must not name a different action.
+        var tagJs = $$"""
             (function(){
                 var sel = 'a[href], button, input:not([type=hidden]), select, textarea, [role=button], [role=link], [role=checkbox], [role=tab], [role=menuitem], [role=option], [onclick], [tabindex]:not([tabindex="-1"])';
                 var h = __obscura_host.dom;
                 var els = h.querySelectorAll(h.document(), sel);
                 var refs = [];
                 for (var i = 0; i < els.length; i++) {
-                    var ref = 'e' + (i + 1);
+                    var ref = '{{prefix}}' + (i + 1);
                     h.call(els[i], 'setAttribute', ['data-obscura-ref', ref]);
                     refs[refs.length] = ref;
                 }

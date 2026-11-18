@@ -346,7 +346,7 @@ Security (exposed today unless noted):
 - [x] `1ee3ac1` - markdown extraction is 2^depth on nested tables, unbounded recursion
 - [x] `daac810` (+ merge `4724f4b`) - `setProperty`/`removeProperty` of an unchanged
       value must not rewrite `style`
-- [ ] `a449a80` - MCP refs must be checked against the recorded node
+- [x] `a449a80` - MCP refs must be checked against the recorded node
 - [ ] `74ac75f`, `a3171f3`, `0d11d55`, `5efc4a1` - failed/evicted images refetched on
       every relayout
 - [ ] `0e17221` + robots in `b3475a5`, `8dd9d48`, `9e0b8b6` - bounded robots cache, body

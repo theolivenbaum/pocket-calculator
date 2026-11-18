@@ -67,6 +67,12 @@ public sealed class BrowserState : IDisposable
     internal Dictionary<string, NodeId> InteractiveRefs => _interactiveRefs;
 
     /// <summary>
+    /// Bumped by every ref rebuild (upstream a449a80): refs are <c>e{generation}-{n}</c> and are
+    /// never reused, so a ref from an old snapshot cannot name an element of a newer one.
+    /// </summary>
+    internal ulong RefGeneration { get; set; }
+
+    /// <summary>
     /// Make sure there is at least one tab and return the active tab's page.
     /// Auto-creates a default tab if none exist so every legacy single-page tool
     /// continues to work without requiring an explicit <c>browser_tab_new</c>.
@@ -248,13 +254,22 @@ public sealed class BrowserState : IDisposable
     /// </summary>
     internal string RefToSelector(string reference)
     {
-        if (!_interactiveRefs.ContainsKey(reference))
+        if (!_interactiveRefs.TryGetValue(reference, out var nodeId))
         {
             throw new ToolException(
                 $"unknown ref '{reference}'; call browser_snapshot first to refresh the ref table");
         }
 
-        return $"[data-obscura-ref=\"{reference}\"]";
+        // upstream a449a80: the ref must still resolve to the node it was recorded for. A clone
+        // (which copies the attribute) or a framework re-render would otherwise take the action.
+        var selector = $"[data-obscura-ref=\"{reference}\"]";
+        var sameNode = PageMut().WithDom(dom => Tools.TryQuery(dom, selector) == nodeId);
+        if (!sameNode)
+        {
+            throw new ToolException($"stale ref '{reference}'; call browser_snapshot to refresh the ref table");
+        }
+
+        return selector;
     }
 
     public void Dispose()
