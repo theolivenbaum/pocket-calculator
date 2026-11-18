@@ -320,7 +320,7 @@ public static class RetainedStylePlanner
         if (name is "align" or "bgcolor" or "cellpadding" or "cellspacing" or "color" or "height"
                 or "hidden" or "valign" or "viewbox" or "width"
             || (local is "input" && name is "size" or "type" or "value")
-            || (local is "select" && name is "size")
+            || (local is "select" or "font" && name is "size")
             || (local is "textarea" && name is "cols" or "rows" or "wrap")
             || (local is "dialog" && name is "open")
             || name is "dir" or "lang" or "xml:lang")

@@ -8,12 +8,64 @@ namespace PocketCalculator.Render;
 
 internal static class DomCascade
 {
+    private static readonly string[] LegacyFontSizeHints =
+    [
+        "font-size:x-small", "font-size:small", "font-size:medium", "font-size:large",
+        "font-size:x-large", "font-size:xx-large", "font-size:xxx-large",
+    ];
+
+    /// <summary>
+    /// Rust <c>legacy_font_size_hint</c>: the HTML rules for parsing a legacy font size
+    /// (https://html.spec.whatwg.org/multipage/rendering.html#rules-for-parsing-a-legacy-font-size).
+    /// </summary>
+    internal static string? LegacyFontSizeHint(string value)
+    {
+        ReadOnlySpan<char> rest = value.AsSpan().TrimStart("\t\n\f\r ");
+        int baseSize = 0;
+        int sign = 1;
+        if (rest.Length > 0 && rest[0] is '+' or '-')
+        {
+            baseSize = 3;
+            sign = rest[0] == '-' ? -1 : 1;
+            rest = rest[1..];
+        }
+
+        if (rest.Length == 0 || !char.IsAsciiDigit(rest[0]))
+        {
+            return null;
+        }
+
+        // Only the clamped 1..7 result matters, so arbitrarily long inputs cannot overflow.
+        int parsed = 0;
+        foreach (char character in rest)
+        {
+            if (!char.IsAsciiDigit(character))
+            {
+                break;
+            }
+
+            parsed = Math.Min((parsed * 10) + (character - '0'), 7);
+        }
+
+        return LegacyFontSizeHints[Math.Clamp(baseSize + (sign * parsed), 1, 7) - 1];
+    }
+
     /// <summary>
     /// Apply HTML presentational attributes at their cascade origin: above the UA defaults,
     /// but below every author stylesheet and style attribute.
     /// </summary>
     internal static void ApplyPresentationalHints(Node node, LayoutStyle style)
     {
+        // Upstream f8a36a4: <font size> maps to the keyword scale.
+        if (node.AsElement() is { } fontElement
+            && string.Equals(fontElement.Name.Local, "font", StringComparison.Ordinal)
+            && string.Equals(fontElement.Name.Ns, Namespaces.Html, StringComparison.Ordinal)
+            && node.GetAttribute("size") is { } legacySize
+            && LegacyFontSizeHint(legacySize) is { } hint)
+        {
+            ComputedStyle.ApplyInline(style, hint);
+        }
+
         if (node.GetAttribute("dir") is { } direction)
         {
             style.Direction = direction.Trim().ToLowerInvariant() switch

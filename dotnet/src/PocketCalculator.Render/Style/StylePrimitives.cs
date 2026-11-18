@@ -1183,16 +1183,20 @@ public static partial class ComputedStyle
         _ => null,
     };
 
-    /// <summary>Rust <c>font_size_keyword</c>.</summary>
+    /// <summary>
+    /// Rust <c>font_size_keyword</c>: absolute keyword font sizes on the default 16px
+    /// <c>medium</c> scale (upstream f8a36a4).
+    /// </summary>
     internal static float? FontSizeKeyword(string value) => CssText.AsciiLower(value) switch
     {
-        "xx-small" => 9.6f,
-        "x-small" => 12.0f,
-        "small" => 13.3f,
+        "xx-small" => 9.0f,
+        "x-small" => 10.0f,
+        "small" => 13.0f,
         "medium" => 16.0f,
         "large" => 18.0f,
         "x-large" => 24.0f,
         "xx-large" => 32.0f,
+        "xxx-large" => 48.0f,
         _ => null,
     };
 
