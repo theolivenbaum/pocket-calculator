@@ -375,9 +375,8 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `e1acbe5` + `31e1dfe`. Do not port `8a2f957`
 - [ ] Media emulation: `c9978c3` + `c7ec60a` + `6ba3613` (setEmulatedMedia, reduced
       motion, color scheme, MediaQueryList change events)
-- [ ] Render text: `bf10c46` word-spacing, `f8a36a4` font size keywords, `1fff1f7`,
-      `9a3d12e` em-based `DomTextMeasure` (retires the deviation "DomTextMeasure
-      reproduces ab_glyph's height-based scale")
+- [ ] Render text: `bf10c46` word-spacing, `f8a36a4` font size keywords, `1fff1f7`
+      (`9a3d12e` is done; the kerning and real bold faces of merge `8a4d745` are not)
 - [ ] Render layout: tables `2b61abf` + `7bf782b`; floats `9f64ce9`, `6a7bbf3`, `423e58a`;
       inline `0e99b3a`, `a41696e`, `df5ee65`, `62e8e7f`; flex merges `fded066`/`322f46c`
       then `3155d6a`, `a04e024`, `b223a2c`, `6234ed3`; `contain: size` from `542df14`
@@ -422,7 +421,7 @@ Decisions:
       tab suspension is preferred, as for CDP (`d792bae`)
 - [x] `8a2f957` - declined (2026-11-18): any loopback Origin could drive CDP; `1faf17f` is the
       port
-- [ ] `9a3d12e` - accepted (2026-11-18): drop the "DomTextMeasure reproduces ab_glyph's
+- [x] `9a3d12e` - accepted (2026-11-18): drop the "DomTextMeasure reproduces ab_glyph's
       height-based scale" deviation and measure by the em square, as upstream and Chromium do
 
 ## Open issues
@@ -5196,21 +5195,11 @@ fonts, which is a deliberate policy, so paint work cannot close it.
   against the real list's ~10,000). The algorithm is complete, and the implicit
   wildcard rule makes every single-label TLD correct, but a missing multi-label
   suffix would let `document.domain` relax one label further than the reference.
-- **`DomTextMeasure` reproduces ab_glyph's height-based scale, not Skia's em-based
-  one.** `PxScale::from(px)` sizes a glyph so hhea's ascender-minus-descender is
-  `px` tall; `SKFont.Size` sizes the em square. Liberation Sans is 2288 units
-  against a 2048 em, so measuring em-based made every advance 10.5% wider than
-  the reference reports, per face: Sans 1.1172, Serif 1.1074, Mono 1.1328, DejaVu
-  Sans 1.1641. Since `text_width` sizes auto-width `<button>` and `<select>`
-  boxes, RenderLab's "Launch simulated demo" button was 211px against the
-  reference's 196px, the label wrapped differently, and the document came out 16px
-  shorter at a 640px viewport - a 21.8% whole-page pixel difference, because every
-  row below the divergence was offset. Now 2.2%, which is edge shading. Advances
-  are summed in font units and scaled once, because Skia quantizes at a fractional
-  size and left three of seven calibration cases a pixel out. `PaintText.DrawText`
-  takes the same conversion, or the static-font glyphs would be drawn 11% larger
-  than the reference paints them and sit on a different baseline. Pinned by
-  `DomTextMeasureScaleTests`.
+- **`DomTextMeasure` measures by the em square** (retired deviation). It used to reproduce
+  ab_glyph's height-based `PxScale` to match the reference, which made advances ~11% short of
+  Chromium's. Upstream `9a3d12e` moved the reference to the em square, so both engines and
+  Chromium agree; `PaintText.DrawText` draws em-based too. Pinned by `DomTextMeasureScaleTests`
+  with upstream's Chromium widths.
 - **Grid `calc()` handles use a weak registry, not a raw pointer.** Rust hands
   taffy the `Arc` address as the opaque handle. Managed objects have no stable
   address, so the port allocates an aligned counter handle and keeps a weak

@@ -63,10 +63,9 @@ internal static class PaintText
             return;
         }
 
-        // ab_glyph's PxScale is height-based; see DomTextMeasure.HeightScaledSize.
-        // Drawing has to use the same conversion as measuring or the glyphs are
-        // ~11% larger than the reference paints and sit on a different baseline.
-        float scale = DomTextMeasure.HeightScaledSize(family, size * rasterScale);
+        // Em-based like measuring (upstream 9a3d12e and native_font_scale): the CSS size is
+        // the em square, as Skia's SKFont.Size already is.
+        float scale = size * rasterScale;
         if (text.Length == 0 || !float.IsFinite(scale) || scale <= 0f || color.A == 0)
         {
             return;
