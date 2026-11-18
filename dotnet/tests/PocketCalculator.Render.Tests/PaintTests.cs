@@ -996,6 +996,45 @@ public class PaintTests
         Assert.True(cache.HasSyncMisses);
     }
 
+    /// <summary>
+    /// Deviation from upstream, which retries a failed CSS image every two seconds: a
+    /// document-scoped cache keeps it failed for the document, as Chromium's resource fetcher
+    /// does, so relayout and paint do not request it again.
+    /// </summary>
+    [Fact]
+    public void FailedCssImageIsNotRequestedAgainInTheSameDocument()
+    {
+        DomTree tree = Parse("""<body style="margin:0"><div style="width:20px;height:20px;background-image:url(bg.png)"></div>""");
+        RenderResourceCache cache = DocumentScopedCache();
+        PreparedRender first = RenderPaint.PrepareDom(tree, (40f, 40f), "https://assets.test/", cache)!;
+        RenderPaint.PaintPrepared(tree, first, cache, (0f, 0f));
+        RenderResourceMiss miss = Assert.Single(cache.TakeSyncMisses());
+        Assert.Equal("https://assets.test/bg.png", miss.Url);
+        cache.SeedImageMissing(miss.Url, miss.Profile ?? ImageRequestProfile.NoCorsInclude);
+        cache.AgeEntryForTest(miss.Url, miss.Profile ?? ImageRequestProfile.NoCorsInclude, RenderResourceCache.MissingResourceRetryAfter * 2);
+
+        PreparedRender prepared = RenderPaint.PrepareDom(tree, (40f, 40f), "https://assets.test/", cache)!;
+        RenderPaint.PaintPrepared(tree, prepared, cache, (0f, 0f));
+        Assert.False(cache.HasSyncMisses);
+    }
+
+    /// <summary>The same rule for a failure whose cache entry has been evicted.</summary>
+    [Fact]
+    public void EvictedFailureIsNotRequestedAgainInTheSameDocument()
+    {
+        RenderResourceCache cache = DocumentScopedCache();
+        cache.SeedMissing("https://assets.test/font.woff2");
+        for (int i = 0; i < RenderResourceCache.DefaultResourceCacheEntries + 8; i++)
+        {
+            cache.SeedMissing($"https://assets.test/other-{i}.woff2");
+        }
+
+        Assert.Null(cache.GetOrLoad("https://assets.test/font.woff2", isFont: true));
+        Assert.False(cache.HasSyncMisses);
+        Assert.Null(cache.GetOrLoad("https://assets.test/never-tried.woff2", isFont: true));
+        Assert.True(cache.HasSyncMisses);
+    }
+
     [Fact]
     public void HtmlImageProfilesKeepIntrinsicGeometryAndPaintSeparate()
     {

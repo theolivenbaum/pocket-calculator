@@ -2286,6 +2286,13 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   dropped when next looked up. Rust's `stop_resource` completion has no counterpart
   because the port has no stopped-resource set.
 
+- Render resources (beyond upstream `74ac75f`/`a3171f3`): in a document-scoped cache a failed
+  CSS image, font or other request with no HTML image attempt stays failed for the document,
+  including after its FIFO entry is evicted (a bounded 4096-key set), as Chromium's
+  per-document resource fetcher does. Upstream retries those every 2 s. HTML `<img>` failures
+  keep upstream's per-attempt rules. Still open: a successful image evicted from the
+  512-entry / 64 MiB cache is fetched again when paint needs it, since its bytes are gone.
+
 ### Operator font directories load per render pass, not into a cached base database
 
 Upstream 343fdc7 adds `serve --font-dir DIR`: `ttf/ttc/otf/otc` files found recursively

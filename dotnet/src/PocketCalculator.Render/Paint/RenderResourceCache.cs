@@ -333,6 +333,7 @@ public sealed class RenderResourceCache
         lock (_gate)
         {
             _htmlImageRequests.Forget(node);
+            _settledFailures.Remove(key);
             if (_entries.TryGetValue(key, out CachedResource? entry) && entry is CachedResource.Missing)
             {
                 Remove(key);
@@ -518,7 +519,7 @@ public sealed class RenderResourceCache
                 && entry switch
                 {
                     CachedResource.Bytes => true,
-                    CachedResource.Missing missing => Elapsed(missing.At) < MissingResourceRetryAfter,
+                    CachedResource.Missing missing => MissingIsCurrent(NetworkResourceUrl(url), missing),
                     _ => false,
                 };
         }
@@ -613,6 +614,10 @@ public sealed class RenderResourceCache
             _htmlImageRequests.Complete(key, generation, true);
             Remove(key);
             InsertMissing(key);
+            if (generation is null)
+            {
+                RememberFailure(key);
+            }
         }
     }
 
@@ -635,6 +640,7 @@ public sealed class RenderResourceCache
         {
             Remove(key);
             InsertMissing(key);
+            RememberFailure(key);
         }
     }
 
@@ -681,7 +687,7 @@ public sealed class RenderResourceCache
         {
             if (!_entries.TryGetValue(NetworkResourceUrl(resolved), out entry))
             {
-                return null;
+                return IsSettledFailure(NetworkResourceUrl(resolved)) ? new CachedImageOutcome(null) : null;
             }
         }
 
@@ -693,7 +699,7 @@ public sealed class RenderResourceCache
                 return new CachedImageOutcome(size is { } value ? (resolved, value.Width, value.Height) : null);
             }
 
-            case CachedResource.Missing missing when Elapsed(missing.At) < MissingResourceRetryAfter:
+            case CachedResource.Missing missing when MissingIsCurrent(NetworkResourceUrl(resolved), missing):
                 return new CachedImageOutcome(null);
             default:
                 return null;
@@ -722,7 +728,7 @@ public sealed class RenderResourceCache
         {
             if (!_entries.TryGetValue(key, out entry))
             {
-                return null;
+                return IsSettledFailure(key) ? new CachedImageOutcome(null) : null;
             }
         }
 
@@ -734,7 +740,7 @@ public sealed class RenderResourceCache
                 return new CachedImageOutcome(size is { } value ? (resolved, value.Width, value.Height) : null);
             }
 
-            case CachedResource.Missing missing when Elapsed(missing.At) < MissingResourceRetryAfter:
+            case CachedResource.Missing missing when MissingIsCurrent(key, missing):
                 return new CachedImageOutcome(null);
             default:
                 return null;
@@ -864,9 +870,14 @@ public sealed class RenderResourceCache
                 {
                     case CachedResource.Bytes bytes:
                         return bytes.Value;
-                    case CachedResource.Missing missing when Elapsed(missing.At) < MissingResourceRetryAfter:
+                    case CachedResource.Missing missing when MissingIsCurrent(key, missing):
                         return null;
                 }
+            }
+
+            if (IsSettledFailure(key))
+            {
+                return null;
             }
 
             if (!_syncLoadingEnabled)
@@ -880,6 +891,7 @@ public sealed class RenderResourceCache
             if (loaded is null)
             {
                 InsertMissing(key);
+                RememberFailure(key);
                 return null;
             }
 
@@ -899,9 +911,14 @@ public sealed class RenderResourceCache
                 {
                     case CachedResource.Bytes bytes:
                         return bytes.Value;
-                    case CachedResource.Missing missing when Elapsed(missing.At) < MissingResourceRetryAfter:
+                    case CachedResource.Missing missing when MissingIsCurrent(key, missing):
                         return null;
                 }
+            }
+
+            if (IsSettledFailure(key))
+            {
+                return null;
             }
 
             if (!_syncLoadingEnabled)
@@ -919,6 +936,11 @@ public sealed class RenderResourceCache
             {
                 _htmlImageRequests.Complete(key, generation, true);
                 InsertMissing(key);
+                if (generation is null)
+                {
+                    RememberFailure(key);
+                }
+
                 return null;
             }
 
@@ -959,6 +981,7 @@ public sealed class RenderResourceCache
         _retainedBytes += bytes.Length;
         _order.Add(url);
         _entries[url] = new CachedResource.Bytes(bytes);
+        _settledFailures.Remove(url);
     }
 
     private void InsertMissing(string url)
@@ -1065,6 +1088,43 @@ public sealed class RenderResourceCache
     }
 
     private static TimeSpan Elapsed(long at) => TimeSpan.FromMilliseconds(Environment.TickCount64 - at);
+
+    /// <summary>
+    /// Whether a retained failure still answers. Deviation from Rust, which retries every
+    /// failed resource after <see cref="MissingResourceRetryAfter"/> unless an HTML image
+    /// attempt owns it: a document-scoped cache (one per document, with a page transport)
+    /// keeps the failure of a CSS image, a font or another untracked request for the
+    /// document's lifetime, as Chromium's per-document resource fetcher does, so a page with
+    /// a broken background or font and a periodic layout reader no longer re-requests it
+    /// every two seconds. HTML <c>&lt;img&gt;</c> failures keep upstream's per-attempt rules.
+    /// </summary>
+    private bool MissingIsCurrent(string key, CachedResource.Missing missing) =>
+        IsSettledFailure(key) || Elapsed(missing.At) < MissingResourceRetryAfter;
+
+    /// <summary>
+    /// Failures of a document-scoped cache that outlive their FIFO entry, so an evicted
+    /// failure is not requested again either. Bounded; past the bound the oldest is dropped.
+    /// </summary>
+    internal const int MaxSettledFailures = 4096;
+
+    private readonly HashSet<string> _settledFailures = new(StringComparer.Ordinal);
+    private readonly Queue<string> _settledFailureOrder = new();
+
+    private void RememberFailure(string key)
+    {
+        if (!_documentScoped || !_settledFailures.Add(key))
+        {
+            return;
+        }
+
+        _settledFailureOrder.Enqueue(key);
+        while (_settledFailures.Count > MaxSettledFailures && _settledFailureOrder.TryDequeue(out string? oldest))
+        {
+            _settledFailures.Remove(oldest);
+        }
+    }
+
+    private bool IsSettledFailure(string key) => _documentScoped && _settledFailures.Contains(key);
 
     internal static string ImageResourceKey(string url, ImageRequestProfile profile)
     {
