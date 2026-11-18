@@ -20915,14 +20915,37 @@ if (!globalThis.crypto.subtle) {
     constructor() { throw new TypeError("Illegal constructor"); }
     get [Symbol.toStringTag]() { return "CryptoKey"; }
   }
+  // upstream d853a73: the key's algorithm name and usages are kept privately, so the
+  // object the caller passed (exposed as key.algorithm) cannot be mutated later to change
+  // what the key may do, and key.algorithm is a copy rather than the caller's object.
+  const keyPermissions = new WeakMap();
   function makeKey(type, extractable, algorithm, usages, bytes) {
     const k = Object.create(CryptoKey.prototype);
+    const publicAlgorithm = Object.assign({}, algorithm);
+    if (algorithm && algorithm.hash && typeof algorithm.hash === "object") publicAlgorithm.hash = Object.assign({}, algorithm.hash);
+    const frozenUsages = Object.freeze((usages || []).slice());
     Object.defineProperty(k, "type", { value: type, enumerable: true });
     Object.defineProperty(k, "extractable", { value: !!extractable, enumerable: true });
-    Object.defineProperty(k, "algorithm", { value: algorithm, enumerable: true });
-    Object.defineProperty(k, "usages", { value: Object.freeze((usages || []).slice()), enumerable: true });
+    Object.defineProperty(k, "algorithm", { value: publicAlgorithm, enumerable: true });
+    Object.defineProperty(k, "usages", { value: frozenUsages, enumerable: true });
     keyMaterial.set(k, bytes);
+    const privateAlgorithm = Object.assign({}, publicAlgorithm);
+    if (publicAlgorithm.hash && typeof publicAlgorithm.hash === "object") privateAlgorithm.hash = Object.assign({}, publicAlgorithm.hash);
+    keyPermissions.set(k, { name: algorithm && algorithm.name, algorithm: privateAlgorithm, usages: frozenUsages });
     return k;
+  }
+  // upstream d853a73: a wrapping key must carry the wrapKey/unwrapKey usage and belong to the
+  // wrapping algorithm, as WebCrypto requires (InvalidAccessError otherwise).
+  function checkWrappingKey(key, algorithm, usage) {
+    keyBytes(key);
+    const name = normalizeAlgo(algorithm).name;
+    if (name !== "AES-KW" && name !== "AES-GCM" && name !== "AES-CBC" && name !== "AES-CTR") {
+      throw new DOMException("Unsupported key wrapping algorithm: " + name, "NotSupportedError");
+    }
+    const permissions = keyPermissions.get(key);
+    if (!permissions || permissions.name !== name || permissions.usages.indexOf(usage) < 0) {
+      throw new DOMException("Key does not allow " + usage + " with " + name, "InvalidAccessError");
+    }
   }
   function keyBytes(key) {
     if (!(key instanceof CryptoKey) || !keyMaterial.has(key)) {
@@ -20942,7 +20965,8 @@ if (!globalThis.crypto.subtle) {
   // material is registered once), matching structuredClone's identity rules.
   _hostVars.__obscura_clone_hooks["CryptoKey"] = function (src, seen) {
     if (seen && seen.has(src)) return seen.get(src);
-    const copy = makeKey(src.type, src.extractable, src.algorithm, src.usages, keyBytes(src));
+    const permissions = keyPermissions.get(src);
+    const copy = makeKey(src.type, src.extractable, permissions ? permissions.algorithm : src.algorithm, permissions ? permissions.usages : src.usages, keyBytes(src));
     if (seen) seen.set(src, copy);
     return copy;
   };
@@ -21140,6 +21164,7 @@ if (!globalThis.crypto.subtle) {
     },
 
     async wrapKey(format, key, wrappingKey, wrapAlgorithm) {
+      checkWrappingKey(wrappingKey, wrapAlgorithm, "wrapKey");
       const exported = await this.exportKey(format, key);
       const bytes = format === "jwk"
         ? new TextEncoder().encode(_JSONstringify(exported))
@@ -21148,6 +21173,7 @@ if (!globalThis.crypto.subtle) {
     },
 
     async unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgorithm, unwrappedKeyAlgorithm, extractable, keyUsages) {
+      checkWrappingKey(unwrappingKey, unwrapAlgorithm, "unwrapKey");
       const decrypted = await this.decrypt(unwrapAlgorithm, unwrappingKey, wrappedKey);
       const keyData = format === "jwk"
         ? _JSONparse(new TextDecoder().decode(new Uint8Array(decrypted)))
