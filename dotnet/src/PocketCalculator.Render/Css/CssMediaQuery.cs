@@ -15,6 +15,27 @@ namespace PocketCalculator.Render.Css;
 /// </remarks>
 public static class CssMediaQuery
 {
+    /// <summary>Whether every <c>prefers-color-scheme:</c> feature in the compact query is <paramref name="expected"/>.</summary>
+    private static bool ColorSchemeMatches(string compact, string expected)
+    {
+        const string Feature = "prefers-color-scheme:";
+        int at = compact.IndexOf(Feature, StringComparison.Ordinal);
+        while (at >= 0)
+        {
+            int start = at + Feature.Length;
+            int end = compact.IndexOf(')', start);
+            ReadOnlySpan<char> value = end < 0 ? compact.AsSpan(start) : compact.AsSpan(start, end - start);
+            if (!value.SequenceEqual(expected))
+            {
+                return false;
+            }
+
+            at = compact.IndexOf(Feature, start, StringComparison.Ordinal);
+        }
+
+        return true;
+    }
+
     public static bool AppliesForViewport(string query, (float Width, float Height) viewport) =>
         AppliesForViewportAndType(query, viewport, CssMediaType.Screen);
 
@@ -84,8 +105,8 @@ public static class CssMediaQuery
         var mediumMatches = medium switch
         {
             "all" => true,
-            "screen" => mediaType == CssMediaType.Screen,
-            "print" => mediaType == CssMediaType.Print,
+            "screen" => mediaType.IsScreen(),
+            "print" => mediaType.IsPrint(),
             _ => medium.StartsWith('('),
             // Unknown named media such as `speech` do not match either visual
             // rendering mode.
@@ -96,16 +117,18 @@ public static class CssMediaQuery
             return false;
         }
 
-        // Color-scheme: the light (default) context is rendered. A site's
-        // `@media (prefers-color-scheme: dark)` block must NOT apply on top of
-        // its light defaults; a `:light` block should apply.
-        if (compact.Contains("prefers-color-scheme:dark", StringComparison.Ordinal))
+        // Color-scheme (upstream c7ec60a): light unless dark is emulated. Every
+        // `prefers-color-scheme:` feature must name the emulated scheme, so the obsolete
+        // `no-preference` never matches, as in Chromium.
+        if (!ColorSchemeMatches(compact, mediaType.DarkColorScheme() ? "dark" : "light"))
         {
             return false;
         }
 
-        // Reduced-motion / high-contrast / inverted: default (no preference).
-        if (compact.Contains("prefers-reduced-motion:reduce", StringComparison.Ordinal)
+        // Reduced motion follows the emulated preference (upstream c9978c3); high-contrast
+        // and inverted colours keep the default (no preference).
+        if ((compact.Contains("prefers-reduced-motion:reduce", StringComparison.Ordinal) && !mediaType.ReducedMotion())
+            || (compact.Contains("prefers-reduced-motion:no-preference", StringComparison.Ordinal) && mediaType.ReducedMotion())
             || compact.Contains("prefers-contrast:more", StringComparison.Ordinal)
             || compact.Contains("prefers-contrast:less", StringComparison.Ordinal)
             || compact.Contains("inverted-colors:inverted", StringComparison.Ordinal)

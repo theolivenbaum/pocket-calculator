@@ -19,6 +19,79 @@ public sealed class EmulationDomainTests
         string method = "setDeviceMetricsOverride") =>
         Emulation.HandleAsync(method, CdpDomainFixtures.Json(parameters), ctx, sessionId);
 
+    /// <summary>
+    /// Upstream c7ec60a: a media override persists across navigation, an invalid call changes
+    /// nothing, and an empty or omitted feature list clears both preferences.
+    /// </summary>
+    [Fact]
+    public async Task ColorSchemeOverridePersistsAndResetsWithoutPartialInvalidUpdates()
+    {
+        (CdpContext ctx, string session) = CdpDomainFixtures.NewSession("media-session");
+        Task<DomainResult> Media(string parameters) => HandleAsync(ctx, session, parameters, "setEmulatedMedia");
+        const string Both = """
+            {"features": [
+                {"name": "prefers-color-scheme", "value": "dark"},
+                {"name": "prefers-reduced-motion", "value": "reduce"}
+            ]}
+            """;
+        const string Script =
+            "return [matchMedia('(prefers-color-scheme:dark)').matches, matchMedia('(prefers-reduced-motion:reduce)').matches];";
+        Assert.True((await Media(Both)).IsOk);
+        for (int i = 0; i < 2; i++)
+        {
+            var page = ctx.GetSessionPageMut(session)!;
+            await page.NavigateAsync("data:text/html,<body>probe</body>");
+            CdpDomainFixtures.AssertJson("[true, true]", page.Evaluate(Script));
+        }
+
+        foreach (string invalid in (string[])
+        [
+            """{"features": null}""",
+            """{"features": [{"name":"prefers-color-scheme", "value":false}]}""",
+            """{"features": [{"name":"prefers-color-scheme", "value":"light"}, {"name":"prefers-reduced-motion", "value":"invalid"}]}""",
+            """{"features": [{"name":"prefers-color-scheme", "value":"invalid"}]}""",
+            """{"media": 5}""",
+        ])
+        {
+            Assert.False((await Media(invalid)).IsOk, invalid);
+            CdpDomainFixtures.AssertJson("[true, true]", ctx.GetSessionPageMut(session)!.Evaluate(Script));
+        }
+
+        Assert.True((await Media("{}")).IsOk);
+        CdpDomainFixtures.AssertJson("[false, false]", ctx.GetSessionPageMut(session)!.Evaluate(Script));
+        Assert.True((await Media(Both)).IsOk);
+        foreach (string value in (string[])["light", "no-preference", ""])
+        {
+            Assert.True((await Media($$"""{"features":[{"name":"prefers-color-scheme", "value":"{{value}}"}]}""")).IsOk);
+            CdpDomainFixtures.AssertJson("[false, false]", ctx.GetSessionPageMut(session)!.Evaluate(Script));
+            Assert.True((await Media(Both)).IsOk);
+        }
+
+        Assert.True((await Media("""{"features":[]}""")).IsOk);
+        CdpDomainFixtures.AssertJson("[false, false]", ctx.GetSessionPageMut(session)!.Evaluate(Script));
+    }
+
+    /// <summary>
+    /// The port's addition: the <c>media</c> type, which upstream ignores. Chromium 157 keeps
+    /// it across navigation and clears it with a call that omits it.
+    /// </summary>
+    [Fact]
+    public async Task EmulatedMediaTypePersistsAcrossNavigation()
+    {
+        (CdpContext ctx, string session) = CdpDomainFixtures.NewSession("media-type-session");
+        const string Script = "return [matchMedia('print').matches, matchMedia('(prefers-color-scheme:dark)').matches];";
+        Assert.True((await HandleAsync(
+            ctx,
+            session,
+            """{"media": "print", "features": [{"name": "prefers-color-scheme", "value": "dark"}]}""",
+            "setEmulatedMedia")).IsOk);
+        var page = ctx.GetSessionPageMut(session)!;
+        await page.NavigateAsync("data:text/html,<p>x</p>");
+        CdpDomainFixtures.AssertJson("[true, true]", page.Evaluate(Script));
+        Assert.True((await HandleAsync(ctx, session, "{}", "setEmulatedMedia")).IsOk);
+        CdpDomainFixtures.AssertJson("[false, false]", page.Evaluate(Script));
+    }
+
     [Fact]
     public async Task DeviceMetricsOverrideUpdatesPageAndWindowViewport()
     {

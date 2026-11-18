@@ -303,6 +303,44 @@ public sealed class PdfTests
             "temporary print cascade must not poison retained screen geometry or stylesheet cache");
     }
 
+    /// <summary>
+    /// Upstream c7ec60a: the emulated color scheme and reduced motion reach screenshots, an
+    /// ad-hoc capture viewport, and print, and the print pass restores screen.
+    /// </summary>
+    [Fact]
+    public void RasterPdfPreservesEmulatedColorSchemeAndRestoresScreen()
+    {
+        using var page = new Page("pdf-color-page", BrowserContext.New("pdf-color"));
+        page.SetViewport((100.0f, 80.0f));
+        page.Js = PageFixtures.RuntimeFor(
+            "https://example.test/pdf-color",
+            """
+            <!doctype html><style>
+                html,body { margin:0 }
+                #probe { width:100px;height:80px;background:#ffffff }
+                @media (prefers-color-scheme:dark) { #probe { background:#e02020 } }
+                @media print and (prefers-color-scheme:dark) and (prefers-reduced-motion:reduce) {
+                    #probe { background:#2050e0 }
+                }
+            </style><body><div id="probe"></div></body>
+            """,
+            (100.0f, 80.0f));
+        page.SetMediaPreferences(true, true);
+        byte[] before = Assert.IsType<byte[]>(page.Screenshot((100.0f, 80.0f)));
+        Assert.Equal((224, 32, 32), ToInts(Assert.IsType<RgbImage>(RgbImage.Decode(before)).GetPixel(50, 60)));
+        RgbImage adHoc = Assert.IsType<RgbImage>(RgbImage.Decode(Assert.IsType<byte[]>(page.Screenshot((120.0f, 90.0f)))));
+        Assert.Equal((120u, 90u), (adHoc.Width, adHoc.Height));
+        Assert.Equal((224, 32, 32), ToInts(adHoc.GetPixel(50, 60)));
+
+        List<RgbImage> pages = PdfPageRasters(page.RasterPdf(ExactPageOptions()));
+        Assert.Single(pages);
+        Assert.True(ChannelNear(pages[0].GetPixel(50, 60), (32, 80, 224)), "print with the emulated preferences");
+        Assert.True(
+            Assert.IsType<byte[]>(page.Screenshot((100.0f, 80.0f))).AsSpan().SequenceEqual(before),
+            "print must restore the emulated screen media");
+        PageFixtures.AssertJson("true", page.Evaluate("return matchMedia('(prefers-color-scheme:dark)').matches;"));
+    }
+
     private static (int R, int G, int B) ToInts((byte R, byte G, byte B) pixel) =>
         (pixel.R, pixel.G, pixel.B);
 

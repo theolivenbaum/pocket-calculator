@@ -159,6 +159,63 @@ public static class Emulation
                 return DomainResult.Empty();
             }
 
+            // upstream c9978c3 / c7ec60a: the reduced-motion and color-scheme preferences, applied
+            // together and all or nothing. Every call replaces the whole emulation, so omitted
+            // or empty features clear both (Chromium 157 too). Chromium accepts an unsupported
+            // value and treats it as no override; upstream rejects it, and the port keeps
+            // upstream's errors (a wire surface). `media` is the port's addition: upstream
+            // ignores it, Chromium applies it to CSS and matchMedia().
+            case "setEmulatedMedia":
+            {
+                JsonArray? features = null;
+                if (DomainParams.Has(parameters, "features"))
+                {
+                    features = parameters.Get("features").AsJsonArray()
+                        ?? throw new DomainError("Emulation.setEmulatedMedia features must be an array");
+                }
+
+                string media = string.Empty;
+                if (DomainParams.Has(parameters, "media"))
+                {
+                    media = parameters.Get("media").AsString()
+                        ?? throw new DomainError("Emulation.setEmulatedMedia media must be a string");
+                }
+
+                bool reduce = false;
+                bool dark = false;
+                foreach (JsonNode? feature in features ?? [])
+                {
+                    string name = feature.Get("name").AsString()
+                        ?? throw new DomainError("Media feature requires a string name");
+                    string value = feature.Get("value").AsString()
+                        ?? throw new DomainError("Media feature requires a string value");
+                    switch (name)
+                    {
+                        case "prefers-reduced-motion":
+                            if (value is not ("" or "reduce" or "no-preference"))
+                            {
+                                throw new DomainError("Invalid prefers-reduced-motion value");
+                            }
+
+                            reduce = value == "reduce";
+                            break;
+                        case "prefers-color-scheme":
+                            if (value is not ("" or "dark" or "light" or "no-preference"))
+                            {
+                                throw new DomainError("Invalid prefers-color-scheme value");
+                            }
+
+                            dark = value == "dark";
+                            break;
+                    }
+                }
+
+                var page = ctx.GetSessionPageMut(sessionId)
+                    ?? throw new DomainError("No page for session");
+                page.SetMediaPreferences(reduce, dark, media);
+                return DomainResult.Empty();
+            }
+
             // Touch emulation does not affect layout yet, but acknowledging it is compatible with
             // clients that pair it with a metrics override.
             case "setTouchEmulationEnabled":

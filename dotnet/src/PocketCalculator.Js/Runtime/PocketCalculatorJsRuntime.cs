@@ -948,6 +948,10 @@ public sealed partial class PocketCalculatorJsRuntime
             + "}"
             + "if(typeof __obscura_host.vars.__obscura_recompute_resizes==='function'){"
             + "__obscura_host.vars.__obscura_recompute_resizes();"
+            + "}"
+            // upstream c9978c3: a viewport change can flip a media query.
+            + "if(typeof __obscura_host.vars.__obscura_recompute_media_queries==='function'){"
+            + "__obscura_host.vars.__obscura_recompute_media_queries();"
             + "}");
     }
 

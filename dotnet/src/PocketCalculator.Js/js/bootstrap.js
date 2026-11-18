@@ -2466,6 +2466,16 @@ function _runAbortAlgorithms(signal) {
   for (let i = 0; i < list.length; i++) { try { list[i](); } catch (_) {} }
 }
 // DOM "add an event listener". Returns the entry, or null when nothing was added.
+// upstream c9978c3: a document keeps a MediaQueryList that has change listeners alive even when
+// page script dropped it; matchMedia() lists are weakly held otherwise. Filled by
+// _makeMediaQueryList.
+const _mediaQueryListStates = _private(new WeakMap());
+const _activeMediaQueryLists = _private(new Map());
+function _noteMediaQueryListener(target, type) {
+  if (type === 'change' && _mediaQueryListStates.has(target)) {
+    _activeMediaQueryLists.set(target, true);
+  }
+}
 function _addListenerEntry(target, type, callback, capture, once, passive, signal) {
   const map = _listenerMap(target, true);
   let list = map[type];
@@ -2479,6 +2489,7 @@ function _addListenerEntry(target, type, callback, capture, once, passive, signa
   const entry = new _ListenerEntry(callback, capture, once,
     passive === null ? _defaultPassive(target, type) : passive);
   list[list.length] = entry;
+  _noteMediaQueryListener(target, type);
   if (signal !== null) _abortAlgorithmAdd(signal, () => _removeEntry(target, type, entry));
   return entry;
 }
@@ -2645,6 +2656,7 @@ function _activateHandler(target, record, first) {
   const entry = new _ListenerEntry(record, false, false, _defaultPassive(target, type));
   entry.handler = record;
   record.entry = entry;
+  _noteMediaQueryListener(target, type);
   const map = _listenerMap(target, true);
   const list = map[type];
   if (list === undefined) { map[type] = [entry]; return; }
@@ -12233,6 +12245,13 @@ function _evaluateMediaDimension(feature) {
   return null;
 }
 
+// upstream c9978c3 / c7ec60a: the emulated media preferences, read from the host by
+// _hostVars.__obscura_update_media_preferences. _emulatedMedium is the port's own: CDP's
+// `media` type, '' for none (screen).
+let _prefersDark = false;
+let _prefersReducedMotion = false;
+let _emulatedMedium = '';
+
 function _evaluateMediaFeature(raw) {
   let feature = raw.trim().toLowerCase();
   if (feature[0] !== '(' || feature[feature.length - 1] !== ')') return false;
@@ -12248,10 +12267,14 @@ function _evaluateMediaFeature(raw) {
     return match[1] === 'portrait' ? height >= width : width > height;
   }
 
+  // The boolean forms, as Chromium 157 answers them: a color scheme always applies, reduced
+  // motion only when emulated.
+  if (feature === 'prefers-color-scheme') return true;
+  if (feature === 'prefers-reduced-motion') return _prefersReducedMotion;
   match = feature.match(/^prefers-color-scheme\s*:\s*(dark|light|no-preference)$/);
-  if (match) return match[1] === 'light';
+  if (match) return match[1] === (_prefersDark ? 'dark' : 'light');
   match = feature.match(/^prefers-reduced-motion\s*:\s*(reduce|no-preference)$/);
-  if (match) return match[1] === 'no-preference';
+  if (match) return match[1] === (_prefersReducedMotion ? 'reduce' : 'no-preference');
 
   match = feature.match(/^(pointer|any-pointer)\s*:\s*(none|coarse|fine)$/);
   if (match) return match[2] === 'fine';
@@ -12279,9 +12302,10 @@ function _evaluateOneMediaQuery(raw) {
   if (query[0] !== '(') {
     const type = query.match(/^([a-z][a-z0-9-]*)\b/i);
     if (!type) return false;
-    typeMatches = type[1] === 'all' || type[1] === 'screen';
-    if (type[1] !== 'all' && type[1] !== 'screen' && type[1] !== 'print')
-      typeMatches = false;
+    // The emulated media type selects screen or print; another emulated name matches
+    // neither, as in Chromium 157.
+    const medium = _emulatedMedium || 'screen';
+    typeMatches = type[1] === 'all' || ((type[1] === 'screen' || type[1] === 'print') && type[1] === medium);
     query = query.slice(type[0].length).trim();
     if (query) {
       const conjunction = query.match(/^and\b\s*/);
@@ -22539,6 +22563,13 @@ function _pageInit() {
   // The host sets __obscura_frameId on a frame realm before calling this.
   _realmFrameId = _hostVars.__obscura_frameId >>> 0;
   _realmParentFrameId = _hostVars.__obscura_parentFrameId >>> 0;
+  // upstream c7ec60a: a frame realm starts with the page's emulated media.
+  if (_realmFrameId !== 0) {
+    _prefersDark = _domParse('prefers_dark') === true;
+    _prefersReducedMotion = _domParse('prefers_reduced_motion') === true;
+    const medium = _domParse('emulated_media');
+    _emulatedMedium = typeof medium === 'string' ? medium : '';
+  }
   _realmIsolatedWorld = _hostVars.__obscura_isolated_world === true;
   delete _hostVars.__obscura_isolated_world;
   _browserPostedTaskWakePending = false;
@@ -25302,8 +25333,10 @@ for (const [name, length, make] of [
 }
 
 // MediaQueryList: matchMedia()'s answer, an EventTarget whose addListener/removeListener
-// are its 'change' listeners. Change events are not fired (the viewport the media
-// queries see does not change under a page).
+// are its 'change' listeners. Upstream c9978c3: a viewport or emulated-media change that
+// flips a list's answer queues a 'change' MediaQueryListEvent with the answer at that change.
+// Upstream 6ba3613: onchange is an event handler (_handlerGet/_handlerSet), so it keeps its
+// place among the listeners and is independent of addEventListener with the same function.
 _ifaceIllegal('MediaQueryList', EventTarget);
 _ifaceAttrs(_ifaces.MediaQueryList, ['media', 'matches', 'onchange'], ['onchange']);
 _ifaceOp(_ifaces.MediaQueryList, 'addListener', 1, function (inner, args) {
@@ -25314,9 +25347,50 @@ _ifaceOp(_ifaces.MediaQueryList, 'removeListener', 1, function (inner, args) {
   if (args.length < 1) throw new TypeError("Failed to execute 'removeListener' on 'MediaQueryList': 1 argument required, but only 0 present.");
   if (args[0] != null) _reflectApply(EventTarget.prototype.removeEventListener, this, ['change', args[0]]);
 });
+const _mediaQueryListRefs = _private(new Set());
 function _makeMediaQueryList(media, matches) {
-  return _ifaceInstance(_ifaces.MediaQueryList, { __proto__: null, media, get matches() { return matches(); }, onchange: null });
+  const inner = {
+    __proto__: null,
+    media,
+    get matches() { return matches(); },
+    get onchange() { return _handlerGet(this, 'onchange'); },
+    set onchange(value) { _handlerSet(this, 'onchange', value); },
+  };
+  const list = _ifaceInstance(_ifaces.MediaQueryList, inner);
+  _mediaQueryListStates.set(list, { matches: matches(), evaluate: matches });
+  _mediaQueryListRefs.add(new _WeakRefAtBoot(list));
+  return list;
 }
+// Re-evaluate every live list after a viewport or emulated-media change. A list with no
+// change listener and no other reference is dropped.
+_hostVars.__obscura_recompute_media_queries = () => {
+  for (const [list] of _activeMediaQueryLists) {
+    const map = _listenerMap(list, false);
+    if (map === undefined || map.change === undefined) _activeMediaQueryLists.delete(list);
+  }
+  for (const ref of _mediaQueryListRefs) {
+    const list = _weakRefDeref(ref);
+    if (list === undefined) { _mediaQueryListRefs.delete(ref); continue; }
+    const state = _mediaQueryListStates.get(list);
+    const matches = !!state.evaluate();
+    if (matches === state.matches) continue;
+    state.matches = matches;
+    const media = _ifaceInner(list, _ifaces.MediaQueryList).media;
+    const deliver = () => _eventTargetDispatch(list,
+      _markTrusted(new _ifaces.MediaQueryListEvent('change', { matches, media })));
+    if (_scheduleAfter(0, deliver) === undefined) deliver();
+  }
+};
+// Read the page's emulated media from the host and report the lists it flipped. Live
+// computed-style snapshots are invalidated too.
+_hostVars.__obscura_update_media_preferences = () => {
+  _prefersDark = _domParse('prefers_dark') === true;
+  _prefersReducedMotion = _domParse('prefers_reduced_motion') === true;
+  const medium = _domParse('emulated_media');
+  _emulatedMedium = typeof medium === 'string' ? medium : '';
+  _domMutationEpoch++;
+  _hostVars.__obscura_recompute_media_queries();
+};
 
 // ---- Geometry: DOMRectReadOnly/DOMRect, DOMPointReadOnly/DOMPoint, DOMMatrixReadOnly/
 // DOMMatrix, DOMQuad. DEVIATION from crates/obscura-js/js/bootstrap.js, whose DOMRect,

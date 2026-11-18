@@ -127,7 +127,7 @@ internal static partial class LinkedStylesheetLoader
             var target = match.Groups[1].Success ? match.Groups[1].Value
                 : match.Groups[2].Success ? match.Groups[2].Value
                 : match.Groups[3].Value;
-            if (ImportApplies(match.Groups[4].Value, document.Viewport)
+            if (ImportApplies(match.Groups[4].Value, document.Viewport, document.RenderMedia)
                 && baseUrl?.Join(target) is { } resolved)
             {
                 imports.Add(resolved.Href);
@@ -198,17 +198,19 @@ internal static partial class LinkedStylesheetLoader
     }
 
     /// <summary>The shim's <c>_cssImportApplies</c>.</summary>
-    internal static bool ImportApplies(string media, (float Width, float Height) viewport)
+    /// <remarks>
+    /// Upstream c7ec60a drops the unconditional refusal of <c>prefers-color-scheme:dark</c>;
+    /// the media query evaluation answers it from the emulated preference.
+    /// </remarks>
+    internal static bool ImportApplies(
+        string media,
+        (float Width, float Height) viewport,
+        CssMediaType renderMedia = CssMediaType.Screen)
     {
         var compact = Whitespace().Replace(media, string.Empty).ToLowerInvariant();
         if (compact.Length == 0)
         {
             return true;
-        }
-
-        if (compact.Contains("prefers-color-scheme:dark", StringComparison.Ordinal))
-        {
-            return false;
         }
 
         if (compact.Contains("print", StringComparison.Ordinal)
@@ -222,7 +224,7 @@ internal static partial class LinkedStylesheetLoader
             || compact.Contains("max-width", StringComparison.Ordinal)
             || compact.Contains("prefers-", StringComparison.Ordinal))
         {
-            return CssMediaQuery.AppliesForViewport(media, viewport);
+            return CssMediaQuery.AppliesForViewportAndType(media, viewport, renderMedia.WithMedium(CssMediaType.Screen));
         }
 
         return true;

@@ -144,6 +144,18 @@ public static class DomOps
         ArgumentNullException.ThrowIfNull(gs);
         // Port addition (child-frame CDP contexts): the realm took focus. See
         // PocketCalculatorState.FocusStamp.
+        // upstream c7ec60a: the page's emulated media preferences, answered without a DOM.
+        // `emulated_media` is the port's own (the CDP media type upstream ignores).
+        switch (cmd)
+        {
+            case "prefers_reduced_motion":
+                return gs.MediaPreferences.ReducedMotion ? "true" : "false";
+            case "prefers_dark":
+                return gs.MediaPreferences.DarkColorScheme ? "true" : "false";
+            case "emulated_media":
+                return SerdeJson.String(gs.MediaPreferences.MediaType);
+        }
+
         if (cmd == "note_focus")
         {
             gs.FocusStamp = Interlocked.Increment(ref s_focusClock);

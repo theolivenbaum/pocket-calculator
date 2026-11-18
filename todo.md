@@ -425,6 +425,10 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       private-profile part of `e1acbe5` waits for `f661c2e`). `8a2f957` not ported
 - [ ] Media emulation: `c9978c3` + `c7ec60a` + `6ba3613` (setEmulatedMedia, reduced
       motion, color scheme, MediaQueryList change events)
+- [ ] CDP control plane: `1faf17f` (origin = endpoint authority, env allowlist),
+      `e1acbe5` + `31e1dfe`. Do not port `8a2f957`
+- [x] Media emulation: `c9978c3` + `c7ec60a` + `6ba3613` (setEmulatedMedia, reduced
+      motion, color scheme, MediaQueryList change events), plus CDP's `media` type
 - [x] Render text: `bf10c46` word-spacing; `f8a36a4` font size keywords and `<font size>`;
       `1fff1f7` native control text clip and centring; `9a3d12e` em scale; merge `8a4d745`
       real bold faces and `kern` pairs in `DomTextMeasure` / `PaintText.DrawText`, bold input
@@ -432,8 +436,9 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [ ] Render layout: tables `2b61abf` + `7bf782b`; floats `9f64ce9`, `6a7bbf3`, `423e58a`;
       inline `0e99b3a`, `a41696e`, `df5ee65`, `62e8e7f`; flex merges `fded066`/`322f46c`
       then `3155d6a`, `a04e024`, `b223a2c`, `6234ed3`; `contain: size` from `542df14`
-- [ ] Computed style and visibility: `c280615`, `d40f503`/`1b6f423`, `7b632d9`, `f019ebe`
-      `checkVisibility()`, `f32db47`, `2c81268` closed dialogs
+- [x] Computed style and visibility: `c280615`, `d40f503`/`1b6f423`, `7b632d9`, `f019ebe`
+      `checkVisibility()`, `f32db47` (viewport keying; not the cross-realm delegation),
+      `2c81268` closed dialogs (already in the port; tests added)
 - [x] `22eb6b4` + `335f929`: text/plain and text/markdown responses build Chromium's plain-text
       document (color-scheme meta, one pre-wrap `<pre>`, standards mode) and document.contentType
       reports the type; upstream's markup lacks the meta and the pre style
@@ -2501,6 +2506,19 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   a foreign frame's element to that frame's realm, and the two upstream iframe tests (skipped):
   the parent realm cannot hold a frame realm's objects ("Cross-realm objects cannot be
   shared"), so a blank iframe's `contentDocument` is the shim's stand-in.
+- Media emulation (`c9978c3`, `c7ec60a`, `6ba3613`): `CssMediaType` is a flags enum (medium
+  plus the reduced-motion and dark preferences), the same eight states as upstream's
+  variants. The page's `MediaPreferences` object is shared with every frame realm, and the
+  JS hooks are host helpers (`__obscura_host.vars.__obscura_update_media_preferences`,
+  `__obscura_recompute_media_queries`), not upstream's page-visible globals. Port additions:
+  CDP's `media` parameter (upstream ignores it), which Chromium 157 applies to CSS and
+  matchMedia() (`print`; another name matches neither screen nor print), persists across
+  navigation and clears on a call that omits it (op_dom `emulated_media`); the boolean
+  `(prefers-reduced-motion)` follows the preference. Kept from upstream although Chromium
+  differs: an unsupported `prefers-*` value is an error (Chromium accepts it as no override).
+  Change events are dispatched as trusted events at a zero-delay task. Still open:
+  `<picture><source media>` and `sizes` evaluate against plain screen, and a fetch-time
+  `@import` media filter is not re-run on a preference change (as upstream).
 
 ### Operator font directories load per render pass, not into a cached base database
 

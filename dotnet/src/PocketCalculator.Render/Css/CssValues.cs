@@ -15,11 +15,53 @@ namespace PocketCalculator.Render.Css;
 /// so <c>@media print</c> and media-gated stylesheet blocks can participate
 /// without mutating the document or changing JavaScript's live screen
 /// environment.
+/// <para>
+/// Upstream c9978c3 / c7ec60a add the emulated <c>prefers-reduced-motion</c> and
+/// <c>prefers-color-scheme</c> preferences as enum variants (ScreenReducedMotion, PrintDark,
+/// ...); the port carries them as flags on the medium, which is the same eight states.
+/// <see cref="OtherMedium"/> is the port's own: CDP's <c>media</c> parameter naming a type
+/// that is neither screen nor print, under which Chromium matches neither.
+/// </para>
 /// </remarks>
+[Flags]
 public enum CssMediaType
 {
     Screen = 0,
     Print = 1,
+
+    /// <summary>The emulated <c>prefers-reduced-motion: reduce</c>.</summary>
+    ReducedMotion = 2,
+
+    /// <summary>The emulated <c>prefers-color-scheme: dark</c>.</summary>
+    DarkColorScheme = 4,
+
+    /// <summary>An emulated media type other than screen and print.</summary>
+    OtherMedium = 8,
+}
+
+/// <summary>Reading and composing <see cref="CssMediaType"/>'s medium and preferences.</summary>
+public static class CssMediaTypes
+{
+    private const CssMediaType Preferences = CssMediaType.ReducedMotion | CssMediaType.DarkColorScheme;
+
+    public static bool IsPrint(this CssMediaType media) => (media & CssMediaType.Print) != 0;
+
+    public static bool IsScreen(this CssMediaType media) =>
+        (media & (CssMediaType.Print | CssMediaType.OtherMedium)) == 0;
+
+    public static bool ReducedMotion(this CssMediaType media) => (media & CssMediaType.ReducedMotion) != 0;
+
+    public static bool DarkColorScheme(this CssMediaType media) => (media & CssMediaType.DarkColorScheme) != 0;
+
+    /// <summary>The preferences of <paramref name="media"/> on another medium.</summary>
+    public static CssMediaType WithMedium(this CssMediaType media, CssMediaType medium) =>
+        (media & Preferences) | (medium & ~Preferences);
+
+    /// <summary>This medium with the given preferences.</summary>
+    public static CssMediaType WithPreferences(this CssMediaType media, bool reducedMotion, bool dark) =>
+        (media & ~Preferences)
+        | (reducedMotion ? CssMediaType.ReducedMotion : CssMediaType.Screen)
+        | (dark ? CssMediaType.DarkColorScheme : CssMediaType.Screen);
 }
 
 /// <summary>

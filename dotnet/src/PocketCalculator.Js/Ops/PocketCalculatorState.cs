@@ -397,6 +397,13 @@ public sealed class PocketCalculatorState
     public CssMediaType RenderMedia { get; set; } = CssMediaType.Screen;
 
     /// <summary>
+    /// The page's emulated media (upstream c9978c3 / c7ec60a), one object shared by the page's
+    /// document and its frames' (<see cref="Runtime.PocketCalculatorJsRuntime.ShareResourcesWith"/>).
+    /// <see cref="RenderMedia"/> carries the same preferences for CSS.
+    /// </summary>
+    public MediaPreferences MediaPreferences { get; set; } = new();
+
+    /// <summary>
     /// Explicit document-timeline sample used by the next style/layout flush.
     /// Captures set this to either deterministic T=0 or live document time.
     /// </summary>

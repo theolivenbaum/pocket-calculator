@@ -941,6 +941,41 @@ public sealed class CssTests
         Assert.True(CssMediaQuery.AppliesForViewport(LeftHeightCalc, (1280f, 705f)));
     }
 
+    /// <summary>Upstream c7ec60a. The port's flags carry the same eight states.</summary>
+    [Fact]
+    public void MediaColorSchemePreservesMotionAndMedium()
+    {
+        foreach (CssMediaType medium in (CssMediaType[])[CssMediaType.Screen, CssMediaType.Print])
+        {
+            foreach (bool reduce in (bool[])[false, true])
+            {
+                foreach (bool dark in (bool[])[false, true])
+                {
+                    CssMediaType media = medium.WithPreferences(reduce, dark);
+                    Assert.Equal(reduce, media.ReducedMotion());
+                    Assert.Equal(medium.IsPrint(), media.IsPrint());
+                    Assert.Equal(dark, media.DarkColorScheme());
+                    bool Applies(string query) => CssMediaQuery.AppliesForViewportAndType(query, (800f, 600f), media);
+                    Assert.Equal(dark, Applies("(prefers-color-scheme:dark)"));
+                    Assert.Equal(!dark, Applies("(prefers-color-scheme:light)"));
+                    Assert.False(Applies("(prefers-color-scheme:no-preference)"));
+                    Assert.False(Applies("(prefers-color-scheme:invalid)"));
+                    Assert.True(Applies("(prefers-color-scheme)"));
+                    Assert.Equal(!dark, Applies("not all and (prefers-color-scheme:dark)"));
+                    Assert.Equal(dark && reduce, Applies("(prefers-color-scheme:dark) and (prefers-reduced-motion:reduce)"));
+                    Assert.Equal(!reduce, Applies("(prefers-reduced-motion:no-preference)"));
+                    Assert.True(Applies("(prefers-color-scheme:light), (prefers-color-scheme:dark)"));
+                    Assert.Equal(medium.IsPrint(), media.WithPreferences(!reduce, !dark).IsPrint());
+                }
+            }
+        }
+
+        // An emulated medium that is neither screen nor print matches neither (Chromium 157).
+        Assert.False(CssMediaQuery.AppliesForViewportAndType("screen", (800f, 600f), CssMediaType.OtherMedium));
+        Assert.False(CssMediaQuery.AppliesForViewportAndType("print", (800f, 600f), CssMediaType.OtherMedium));
+        Assert.True(CssMediaQuery.AppliesForViewportAndType("all", (800f, 600f), CssMediaType.OtherMedium));
+    }
+
     [Fact]
     public void MediaTypeSelectsScreenPrintNegationAndQueryLists()
     {

@@ -170,7 +170,9 @@ public sealed partial class PocketCalculatorJsRuntime
         // records are loaded through the transport by the page afterwards.
         return WithSyncRenderLoadingDisabled(State, state => state.Dom is not { } dom
             ? null
-            : RenderPaint.ScreenshotPngScrolledAtAnimationTimeWithSurfaceColorAndResources(
+            : state.RenderMedia != PocketCalculator.Render.Css.CssMediaType.Screen
+                ? ScreenshotUnpreparedForMedia(state, dom, viewport, baseUrl, scroll, animationSampleTime, surfaceColor)
+                : RenderPaint.ScreenshotPngScrolledAtAnimationTimeWithSurfaceColorAndResources(
                 dom,
                 viewport,
                 baseUrl,
@@ -178,6 +180,39 @@ public sealed partial class PocketCalculatorJsRuntime
                 animationSampleTime,
                 surfaceColor,
                 state.RenderResources));
+    }
+
+    /// <summary>
+    /// An ad-hoc capture under emulated media (upstream c7ec60a): it selects the same
+    /// preference rules as CSSOM, with its own viewport-specific cascade kept apart from the
+    /// live stylesheet cache and animation timeline.
+    /// </summary>
+    private static byte[]? ScreenshotUnpreparedForMedia(
+        PocketCalculatorState state,
+        DomTree dom,
+        (float Width, float Height) viewport,
+        string? baseUrl,
+        (float X, float Y) scroll,
+        AnimationSampleTime animationSampleTime,
+        RgbaColor surfaceColor)
+    {
+        if (RenderPaint.PrepareDomWithDynamicFontsAndStylesheetCacheForMediaWithAnimationState(
+                dom,
+                viewport,
+                baseUrl,
+                state.RenderResources,
+                state.DynamicFonts,
+                new StylesheetCache(),
+                state.RenderMedia,
+                AnimationSample.LocalOverride(animationSampleTime.Milliseconds),
+                new AnimationTimelineState()) is not { } prepared)
+        {
+            return null;
+        }
+
+        var resolved = prepared.ResolveScrollState(dom, scroll, new Dictionary<NodeId, (float X, float Y)>());
+        return RenderPaint.ScreenshotPreparedWithScrollAndSurfaceColor(
+            dom, prepared, state.RenderResources, resolved, surfaceColor);
     }
 
     /// <summary>

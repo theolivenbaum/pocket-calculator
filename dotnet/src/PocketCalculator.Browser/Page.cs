@@ -475,6 +475,22 @@ public sealed partial class Page : IDisposable
     public void SetDefaultBackgroundColorOverride(RgbaColor? color) =>
         _defaultBackgroundColorOverride = color;
 
+    private (bool ReducedMotion, bool Dark, string MediaType) _mediaPreferences = (false, false, string.Empty);
+
+    /// <summary>
+    /// Emulate a media type and the reduced-motion and dark color-scheme preferences together
+    /// (upstream c9978c3 / c7ec60a <c>set_media_preferences</c>). They persist across
+    /// navigation and reach the page's frames.
+    /// </summary>
+    /// <param name="reducedMotion">Whether <c>prefers-reduced-motion: reduce</c> matches.</param>
+    /// <param name="dark">Whether <c>prefers-color-scheme: dark</c> matches.</param>
+    /// <param name="mediaType">The emulated media type; empty for none. The port's addition.</param>
+    public void SetMediaPreferences(bool reducedMotion, bool dark, string mediaType = "")
+    {
+        _mediaPreferences = (reducedMotion, dark, mediaType ?? string.Empty);
+        Js?.SetMediaPreferences(reducedMotion, dark, _mediaPreferences.MediaType);
+    }
+
     internal RgbaColor CaptureSurfaceColor() =>
         _defaultBackgroundColorOverride ?? new RgbaColor(255, 255, 255, 255);
 
@@ -568,6 +584,10 @@ public sealed partial class Page : IDisposable
         }
 
         rt.RunPageInit();
+        if (_mediaPreferences is not (false, false, ""))
+        {
+            rt.SetMediaPreferences(_mediaPreferences.ReducedMotion, _mediaPreferences.Dark, _mediaPreferences.MediaType);
+        }
         TryExecute(rt, "<device-metrics>", DevicePixelRatioScript());
 
         Js = rt;

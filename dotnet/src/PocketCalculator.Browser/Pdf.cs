@@ -486,7 +486,9 @@ public sealed partial class Page
         {
             throw new RasterPdfException(RasterPdfErrorKind.NoRenderableDocument);
         }
-        CssMediaType previousMedia = js.SetRenderMedia(CssMediaType.Print);
+        // upstream c9978c3 / c7ec60a: print keeps the emulated reduced-motion and dark
+        // color-scheme preferences.
+        CssMediaType previousMedia = js.SetRenderMedia(js.RenderMedia.WithMedium(CssMediaType.Print));
         try
         {
             if (js.PreparedContentSize() is not { } size)

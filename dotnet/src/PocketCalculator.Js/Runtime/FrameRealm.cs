@@ -334,6 +334,9 @@ public sealed class FrameRealm : IDisposable
         // VisualViewport attributes in bootstrap.js, as in Chromium).
         ExecuteScript(
             $"globalThis.innerWidth={Format(w)};globalThis.innerHeight={Format(h)};");
+        ExecuteHostScript(
+            "if(typeof __obscura_host.vars.__obscura_recompute_media_queries==='function'){"
+            + "__obscura_host.vars.__obscura_recompute_media_queries();}");
     }
 
     /// <summary>

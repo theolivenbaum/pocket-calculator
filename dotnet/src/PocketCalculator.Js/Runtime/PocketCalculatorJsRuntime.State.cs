@@ -4,6 +4,7 @@ using Microsoft.ClearScript;
 using PocketCalculator.Dom;
 using PocketCalculator.Js.Ops;
 using PocketCalculator.Net;
+using PocketCalculator.Render.Css;
 
 namespace PocketCalculator.Js.Runtime;
 
@@ -696,6 +697,9 @@ public sealed partial class PocketCalculatorJsRuntime
         frame.PageInFlight = State.PageInFlight;
         frame.IsolateLock = State.IsolateLock;
         frame.StealthClient = State.StealthClient;
+        // upstream c7ec60a: the emulated media preferences are the page's, for every frame.
+        frame.MediaPreferences = State.MediaPreferences;
+        frame.RenderMedia = State.MediaPreferences.Apply(frame.RenderMedia.WithMedium(State.MediaPreferences.Medium));
         // A frame realm shares the page transport, so its renderer cache must not open
         // synchronous requests either (upstream 97ff86d). Frame geometry resolves
         // against the main document's renderer state, so no frame-scoped loading.
@@ -722,6 +726,56 @@ public sealed partial class PocketCalculatorJsRuntime
     /// Changing media invalidates geometry and the compiled stylesheet key but
     /// leaves the live DOM, scroll offsets and resource bytes untouched.
     /// </summary>
+    /// <summary>The CSS media type the next render flush selects with.</summary>
+    public PocketCalculator.Render.Css.CssMediaType RenderMedia => State.RenderMedia;
+
+    /// <summary>
+    /// Emulate a media type and the reduced-motion and dark color-scheme preferences together,
+    /// so a compound query's listeners observe one change, in this document and in every frame
+    /// realm (upstream c9978c3 / c7ec60a <c>set_media_preferences</c>). CSS selection, live
+    /// computed styles and geometry follow, and <c>matchMedia()</c> lists whose answer changed
+    /// queue a <c>change</c> event.
+    /// </summary>
+    /// <param name="reducedMotion">Whether <c>prefers-reduced-motion: reduce</c> matches.</param>
+    /// <param name="dark">Whether <c>prefers-color-scheme: dark</c> matches (light otherwise).</param>
+    /// <param name="mediaType">
+    /// The emulated media type: empty for none (screen), <c>print</c>, or another name under
+    /// which neither screen nor print matches (Chromium 157). Upstream has no media type.
+    /// </param>
+    public void SetMediaPreferences(bool reducedMotion, bool dark, string mediaType = "")
+    {
+        var preferences = State.MediaPreferences;
+        preferences.ReducedMotion = reducedMotion;
+        preferences.DarkColorScheme = dark;
+        preferences.MediaType = (mediaType ?? string.Empty).ToLowerInvariant();
+        var medium = preferences.Medium;
+        SetRenderMedia(preferences.Apply(State.RenderMedia.WithMedium(medium)));
+        const string Update =
+            "if(typeof __obscura_host.vars.__obscura_update_media_preferences==='function'){"
+            + "__obscura_host.vars.__obscura_update_media_preferences();}";
+        RunSetter("<media-preferences>", Update);
+        foreach (var realm in _realms.ToArray())
+        {
+            var state = realm.State;
+            state.MediaPreferences = preferences;
+            var media = preferences.Apply(state.RenderMedia.WithMedium(medium));
+            if (state.RenderMedia != media)
+            {
+                state.RenderMedia = media;
+                state.PreparedRender = null;
+                state.ResolvedScroll = null;
+            }
+            try
+            {
+                realm.ExecuteHostScript(Update);
+            }
+            catch (JsRuntimeException)
+            {
+                // A frame whose realm is gone or wedged keeps its last answer.
+            }
+        }
+    }
+
     public PocketCalculator.Render.Css.CssMediaType SetRenderMedia(PocketCalculator.Render.Css.CssMediaType media)
     {
         var previous = State.RenderMedia;
