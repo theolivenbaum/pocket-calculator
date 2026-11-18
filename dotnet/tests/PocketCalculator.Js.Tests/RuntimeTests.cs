@@ -18146,6 +18146,35 @@ public sealed partial class RuntimeTests
                 """)!.GetValue<string>());
     }
 
+    /// Upstream 2c81268: the closed-dialog UA rule follows `open` mutations in retained styles.
+    [Fact]
+    public void ClosedDialogUaVisibilityTracksOpenMutationsInRetainedStyles()
+    {
+        using var fixture = RuntimeFixture.Setup(
+            """
+            <!doctype html><style>dialog{width:80px;height:30px}</style>
+            <dialog id=target><div>hidden content</div></dialog>
+            """);
+        var result = fixture.Runtime.Evaluate(
+            """
+            JSON.stringify((() => {
+              const dialog = document.getElementById('target');
+              const style = getComputedStyle(dialog);
+              const read = () => [style.display, dialog.getBoundingClientRect().height];
+              const result = [read()];
+              dialog.show(); result.push(read());
+              dialog.close(); result.push(read());
+              dialog.open = true; result.push(read());
+              dialog.removeAttribute('open'); result.push(read());
+              dialog.style.display = 'block'; result.push(read());
+              return result;
+            })())
+            """)!.GetValue<string>();
+        Assert.Equal(
+            """[["none",0],["block",30],["none",0],["block",30],["none",0],["block",30]]""",
+            result);
+    }
+
     /// Playwright's `getByRole` / `getByLabel` locators resolve via ARIA
     /// reflection properties. Without the getters those locators always
     /// fail. Reflect the underlying aria-* attributes.
