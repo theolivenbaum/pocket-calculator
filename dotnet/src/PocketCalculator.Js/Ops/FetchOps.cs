@@ -1123,6 +1123,8 @@ public static partial class FetchOps
                         Method = currentMethod.Method,
                         Status = finalStatus,
                         ResponseHeaders = respHeaders,
+                        // Port addition (see JsNetworkEvent.RequestHeaders): Rust reports none.
+                        RequestHeaders = new Dictionary<string, string>(currentHeaders, StringComparer.Ordinal),
                         BodySize = respBytes.Length,
                         Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
                     });

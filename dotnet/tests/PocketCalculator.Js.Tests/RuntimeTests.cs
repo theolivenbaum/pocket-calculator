@@ -15048,6 +15048,35 @@ public sealed partial class RuntimeTests
             $"network response event did not report the final URL: {events[0].Url}");
     }
 
+    [Fact]
+    public async Task FetchNetworkEventCarriesTheHeadersThePageSent()
+    {
+        // Port addition, no Rust counterpart: Rust records no request headers for a
+        // script-initiated request, so Network.requestWillBeSent reported an empty
+        // request.headers. Chromium reports what the page sent; a CDP client watching a
+        // page's API calls (curiosity-cli serve --browser-login) reads its Authorization there.
+        using var server = RedirectChainServer();
+        using var fixture = RedirectRuntimeForOrigin(server.Origin);
+        var rt = fixture.Runtime;
+        await rt.CallFunctionOnForCdpAsync(
+            """
+            async () => {
+                await fetch("/hop/0", { headers: { "Authorization": "Bearer page-token", "X-Custom-Auth": "custom" } });
+            }
+            """,
+            null,
+            [],
+            returnByValue: true,
+            awaitPromise: true);
+
+        var events = rt.TakeJsNetworkEvents();
+        var sent = Assert.Single(events).RequestHeaders
+            .ToDictionary(h => h.Key, h => h.Value, StringComparer.OrdinalIgnoreCase);
+        Assert.Equal("Bearer page-token", sent["authorization"]);
+        Assert.Equal("custom", sent["x-custom-auth"]);
+        Assert.False(sent.ContainsKey("cookie"), "the transport's Cookie belongs to requestWillBeSentExtraInfo, not request.headers");
+    }
+
     [Fact(Skip = "blocked: the stealth transport has no managed implementation, so PocketCalculator.Js never routes op_fetch_url through IStealthHttpClient and the only in-tree client (UnavailableStealthHttpClient) fails every request; see the TLS-impersonation gap in todo.md")]
     public async Task StealthFetchResponseReportsTheFinalRedirectUrl()
     {

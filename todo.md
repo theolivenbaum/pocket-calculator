@@ -2622,6 +2622,18 @@ document's runtime. Rust reads `Instant::now()` directly. Nothing in the engine 
 install a manual clock (`RenderCaptureSupport.FreezeAnimationTimeline`, `ManualAnimationClock`)
 so CSS animation births and screencast frames land at exact times on a loaded host.
 
+### A script-initiated request reports the headers it was sent with
+
+`Network.requestWillBeSent` for a `fetch()`/XHR now carries the page's request headers in
+`request.headers`: `JsNetworkEvent.RequestHeaders` (FetchOps, the last hop's headers after the
+forbidden-header filter and any interception rewrite) flows into `NetworkEvent.Headers` in
+`Page.SyncJsNetworkEvents`. Rust records none (`headers: HashMap::new()` in
+`sync_js_network_events`), so every such event had an empty map. Chromium reports what the page
+sent there and leaves the transport's `Cookie` to `requestWillBeSentExtraInfo`, which is what
+this matches. Test: `RuntimeTests.FetchNetworkEventCarriesTheHeadersThePageSent`. A CDP client
+watching a page's API calls (`curiosity-cli serve --browser-login`) reads the page's
+`Authorization` from it.
+
 ### Timing-sensitive tests wait on the engine, not the wall clock
 
 Not a behavioural deviation; recorded so the next port of a Rust test does not reintroduce the
