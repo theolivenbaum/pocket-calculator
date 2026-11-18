@@ -158,6 +158,7 @@ public static partial class RenderDom
                     }
 
                     inh.ContainerType = retainedStyle.ContainerType;
+                    inh.ContainmentFlags = retainedStyle.ContainmentFlags;
                     inh.ContainerNames = [.. retainedStyle.ContainerNames];
                     if (retainedStyle.TextAlignKeyword is { } align)
                     {
@@ -735,6 +736,18 @@ public static partial class RenderDom
         {
             style.ContainerType = inh.ContainerType;
         }
+
+        // upstream 542df14: `contain: inherit` takes the parent's computed flags.
+        if (style.ContainmentFlags == Containment.Inherit)
+        {
+            style.ContainmentFlags = inh.ContainmentFlags;
+            ComputedStyle.SetContainingBlockTrigger(
+                style,
+                ContainingBlockTrigger.Contain,
+                (style.ContainmentFlags & (Containment.Layout | Containment.Paint)) != 0);
+        }
+
+        inh.ContainmentFlags = style.ContainmentFlags;
 
         if (style.ContainerNamesInherit)
         {

@@ -1029,7 +1029,7 @@ internal static class DomPasses
             if (style.Display != Display.Flex
                 || style.InternalFlexContainer
                 || !style.Height.IsAuto
-                || DomStyleFixups.EffectiveContainerType(style) == ContainerType.Size
+                || DomStyleFixups.EffectiveSizeContainment(style) == ContainerType.Size
                 || style.FlexDirection
                     is not (TaffyFlexDirection.Column or TaffyFlexDirection.ColumnReverse))
             {

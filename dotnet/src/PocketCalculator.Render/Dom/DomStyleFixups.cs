@@ -1111,11 +1111,35 @@ internal static class DomStyleFixups
 
     /// <summary>Effective size-query containment for this generated box.</summary>
     internal static ContainerType EffectiveContainerType(LayoutStyle style) =>
-        style.InternalFlexContainer
-        || style.IsTableBox
-        || (style.Display == Display.Inline && !style.IsInlineBlock)
-            ? ContainerType.Normal
+        SizeContainmentApplies(style) ? style.ContainerType : ContainerType.Normal;
+
+    /// <summary>Whether size containment can apply to this generated box at all.</summary>
+    private static bool SizeContainmentApplies(LayoutStyle style) =>
+        !style.InternalFlexContainer
+        && !style.IsTableBox
+        && !(style.Display == Display.Inline && !style.IsInlineBlock);
+
+    /// <summary>
+    /// upstream 542df14 <c>effective_size_containment</c>: the used size containment from an
+    /// explicit <c>contain</c> or from <c>container-type</c>. Unlike
+    /// <see cref="EffectiveContainerType"/>, <c>contain</c> does not make a box a query container.
+    /// </summary>
+    internal static ContainerType EffectiveSizeContainment(LayoutStyle style)
+    {
+        if (!SizeContainmentApplies(style))
+        {
+            return ContainerType.Normal;
+        }
+
+        if ((style.ContainmentFlags & Containment.Size) != 0 || style.ContainerType == ContainerType.Size)
+        {
+            return ContainerType.Size;
+        }
+
+        return (style.ContainmentFlags & Containment.InlineSize) != 0
+            ? ContainerType.InlineSize
             : style.ContainerType;
+    }
 
     internal static TaffyAlignItems UsedFlexAlignment(
         TaffyAlignItems? value,
@@ -1323,7 +1347,9 @@ internal static class DomStyleFixups
                 : ContainerAutoBlockSize.Intrinsic;
     }
 
-    /// <summary>Apply the used-size part of <c>container-type</c>'s implicit size containment.</summary>
+    /// <summary>
+    /// Apply explicit <c>contain</c> and <c>container-type</c>'s implicit size containment.
+    /// </summary>
     internal static void ApplyContainerSizeContainment(
         DomTree tree,
         NodeId id,
@@ -1331,7 +1357,7 @@ internal static class DomStyleFixups
         IReadOnlyDictionary<NodeId, LayoutStyle> styles,
         Layout.Style taffyStyle)
     {
-        ContainerType kind = EffectiveContainerType(style);
+        ContainerType kind = EffectiveSizeContainment(style);
         if (kind == ContainerType.Normal)
         {
             return;

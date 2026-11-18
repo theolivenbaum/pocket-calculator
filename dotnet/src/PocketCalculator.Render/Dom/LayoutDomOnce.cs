@@ -59,6 +59,7 @@ public static partial class RenderDom
         internal float WordSpacing;
         internal bool LetterSpacingNonNormal;
         internal ContainerType ContainerType = ContainerType.Normal;
+        internal byte ContainmentFlags;
         internal List<string> ContainerNames = NoContainerNames;
         internal TextAlignKeyword? TextAlign;
         internal TextAlignKeyword? TextAlignLast;
@@ -213,6 +214,7 @@ public static partial class RenderDom
             WordSpacing = WordSpacing,
             LetterSpacingNonNormal = LetterSpacingNonNormal,
             ContainerType = ContainerType,
+            ContainmentFlags = ContainmentFlags,
             ContainerNames = ContainerNames,
             TextAlign = TextAlign,
             TextAlignLast = TextAlignLast,

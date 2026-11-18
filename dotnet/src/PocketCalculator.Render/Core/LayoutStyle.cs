@@ -449,6 +449,12 @@ public sealed class LayoutStyle
     /// </summary>
     internal bool ContainerTypeInherit;
 
+    /// <summary>
+    /// Explicit <c>contain</c> flags (<see cref="Containment"/>), independent of size-query
+    /// eligibility (upstream 542df14).
+    /// </summary>
+    internal byte ContainmentFlags;
+
     /// <summary>Computed CSS <c>container-name</c>; empty represents <c>none</c> (not inherited).</summary>
     public IReadOnlyList<string> ContainerNames
     {
@@ -2829,4 +2835,56 @@ internal static class ContainingBlockTrigger
     public const ushort Translate = 1 << 7;
     public const ushort Rotate = 1 << 8;
     public const ushort Scale = 1 << 9;
+}
+
+/// <summary>The <c>contain</c> keywords as <see cref="LayoutStyle.ContainmentFlags"/> bits.</summary>
+internal static class Containment
+{
+    internal const byte Size = 1 << 0;
+    internal const byte InlineSize = 1 << 1;
+    internal const byte Layout = 1 << 2;
+    internal const byte Style = 1 << 3;
+    internal const byte Paint = 1 << 4;
+
+    /// <summary>The specified value was <c>inherit</c>, resolved top-down.</summary>
+    internal const byte Inherit = 1 << 7;
+
+    /// <summary>Rust <c>parse_containment</c>; <c>null</c> for an invalid value.</summary>
+    internal static byte? Parse(string value)
+    {
+        string lower = Css.CssText.AsciiLower(value.Trim());
+        switch (lower)
+        {
+            case "none" or "initial" or "unset" or "revert" or "revert-layer":
+                return 0;
+            case "inherit":
+                return Inherit;
+            case "strict":
+                return Size | Layout | Style | Paint;
+            case "content":
+                return Layout | Style | Paint;
+        }
+
+        byte flags = 0;
+        foreach (string token in lower.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            byte flag = token switch
+            {
+                "size" => Size,
+                "inline-size" => InlineSize,
+                "layout" => Layout,
+                "style" => Style,
+                "paint" => Paint,
+                _ => 0,
+            };
+            if (flag == 0 || (flags & flag) != 0)
+            {
+                return null;
+            }
+
+            flags |= flag;
+        }
+
+        return flags != 0 && (flags & (Size | InlineSize)) != (Size | InlineSize) ? flags : null;
+    }
 }

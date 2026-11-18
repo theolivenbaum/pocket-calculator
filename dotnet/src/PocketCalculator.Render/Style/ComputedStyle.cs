@@ -3374,17 +3374,17 @@ public static partial class ComputedStyle
 
             case "contain":
             {
-                bool establishes = false;
-                foreach (string token in SplitWhitespace(value))
+                // upstream 542df14: the flags are recorded (size containment is laid out), and
+                // an invalid value keeps the cascade.
+                if (Containment.Parse(value) is { } flags)
                 {
-                    if (CssText.AsciiLower(token) is "layout" or "paint" or "strict" or "content")
-                    {
-                        establishes = true;
-                        break;
-                    }
+                    style.ContainmentFlags = flags;
+                    SetContainingBlockTrigger(
+                        style,
+                        ContainingBlockTrigger.Contain,
+                        (flags & (Containment.Layout | Containment.Paint)) != 0);
                 }
 
-                SetContainingBlockTrigger(style, ContainingBlockTrigger.Contain, establishes);
                 return true;
             }
 
