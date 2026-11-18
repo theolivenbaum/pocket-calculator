@@ -419,7 +419,7 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [ ] Computed style and visibility: `c280615`, `d40f503`/`1b6f423`, `7b632d9`, `f019ebe`
       `checkVisibility()`, `f32db47`, `2c81268` closed dialogs
 - [ ] History and navigation: `1a0773d` (+ `ba807f4`, `d01bc8d`), `0ecc417`, `8a7aa8c`,
-      `fb23f18`, `36e7987`, `0a14a4c`, `22eb6b4` + `335f929`, `721e40f` (with open
+      `fb23f18`, `0a14a4c`, `22eb6b4` + `335f929`, `721e40f` (with open
       `2b07b76`), `ee74973`, `60107d1`. Keep history helpers on `__obscura_host` and
       gate traversal through the `file://` check
 - [ ] Network fidelity: `359362f`, `3f37d91` + `73358fd` + `8440fe6`, `0155807`
@@ -472,6 +472,10 @@ whitespace; with `721e40f`, `ee74973`, `2b07b76`).
 
 Decisions:
 
+- [x] `36e7987` - declined (conflict with Chromium): upstream fails a navigation whose 4xx/5xx
+      response has an empty body with net::ERR_HTTP_RESPONSE_CODE_FAILURE. Measured 2026-11-18,
+      Chromium 1243 via Playwright: `page.goto` resolves with status 429 and commits
+      `<html><head></head><body></body></html>`, which is what the port does
 - [x] `05d7c13` (MCP keeps every tab's runtime) - declined (2026-11-18, maintainer decision):
       tab suspension is preferred, as for CDP (`d792bae`)
 - [x] `8a2f957` - declined (2026-11-18): any loopback Origin could drive CDP; `1faf17f` is the
