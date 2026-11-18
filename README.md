@@ -136,7 +136,7 @@ ReadyToRun precompiles the engine:
 dotnet publish -c Release src/PocketCalculator.Cli -r linux-x64 --self-contained true
 ```
 
-Packages are built, tested and pushed to NuGet by the Azure DevOps pipeline in
+Packages are built and pushed to NuGet by the Azure DevOps pipeline in
 [`.devops/build-nuget.yml`](.devops/build-nuget.yml) on every push to `main`,
 versioned `yy.M.<build>`.
 
