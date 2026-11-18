@@ -315,7 +315,8 @@ Found during the review, not from upstream:
       `SyncLivePageNetworkEvents` forwards only the first live page
 - [ ] Timing-sensitive tests under heavy host load (the two worst IntersectionObserver ones now wait for the event instead of a fixed window): the IntersectionObserver/ResizeObserver
       group in `RuntimeTests` (25/60 ms timer windows) and
-      `ConcurrentConnectionsHeavyPageDoNotAbortV8`; both pass alone and fail on the
+      `ConcurrentConnectionsHeavyPageDoNotAbortV8`, and `InlineImportsFetchInOrderAndMaterializeBeforeSourceStyle`
+      (Browser.Tests; fails in some full runs since 2026-11-18, passes alone); all pass alone and fail on the
       unmodified base under the same load. `ForwardWaapiSampleUpdatesRetainedStyleAndPaint`
       was reported failing on the base at low load once; it passes in full runs here
 
