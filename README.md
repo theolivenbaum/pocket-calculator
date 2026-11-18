@@ -123,6 +123,10 @@ DNS host name that reaches the balancer is accepted and advertised.
 A worker that exits is restarted, and new connections go only to workers that are up
 (HTTP 503 when none is); its open sessions close and clients must reconnect. Worker
 errors are written to the balancer's stderr.
+`--worker-max-connections N`, `--worker-max-rss MB` and `--worker-max-age SECS` recycle a
+worker past the limit: a fresh one takes its place and the old one serves its open
+sessions for up to `--worker-drain-timeout` seconds (120). SIGTERM or SIGINT to the
+balancer stops every worker before it exits.
 
 ## Build, test and publish
 

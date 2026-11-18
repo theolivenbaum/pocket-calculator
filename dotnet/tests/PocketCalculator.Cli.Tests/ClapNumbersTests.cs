@@ -55,6 +55,15 @@ public sealed class ClapNumbersTests
         "invalid value 'abc' for '--max-connections <MAX_CONNECTIONS>': invalid digit found in string")]
     [InlineData("serve", "--max-connections", "99999999999999999999",
         "invalid value '99999999999999999999' for '--max-connections <MAX_CONNECTIONS>': number too large to fit in target type")]
+    // Upstream 0f27e69's recycle options name their value_name in the message.
+    [InlineData("serve", "--worker-max-connections", "abc",
+        "invalid value 'abc' for '--worker-max-connections <N>': invalid digit found in string")]
+    [InlineData("serve", "--worker-max-rss", "1.5",
+        "invalid value '1.5' for '--worker-max-rss <MB>': invalid digit found in string")]
+    [InlineData("serve", "--worker-max-age", "abc",
+        "invalid value 'abc' for '--worker-max-age <SECS>': invalid digit found in string")]
+    [InlineData("serve", "--worker-drain-timeout", "99999999999999999999",
+        "invalid value '99999999999999999999' for '--worker-drain-timeout <SECS>': number too large to fit in target type")]
     public void Numeric_options_report_claps_message(
         string command, string flag, string value, string expected)
     {

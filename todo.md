@@ -517,7 +517,12 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] `4b14a76`: SIGTERM/SIGINT to the `serve --workers` balancer stops it accepting,
       SIGTERMs every worker (kill after 3 s, 5 s overall) and exits 0, instead of
       orphaning the workers. `--max-connections` already reached the workers (I5)
-- [ ] CLI and workers (serve worker pool): `0f27e69`
+- [x] `0f27e69`: `serve --worker-max-connections N`, `--worker-max-rss MB` (Linux, sampled
+      every 2 s), `--worker-max-age SECS` and `--worker-drain-timeout SECS` (120): a worker
+      past a limit is replaced by a fresh one on a new port, then drained and killed after
+      the timeout. `pool.rs` is `Commands/WorkerPool.cs` with its unit tests; a crashed
+      worker now also restarts on a fresh port. Upstream's three `serve_*.rs` tests are
+      ported (`ServeWorkerRecoveryTests`, `ServeShutdownTests`, `ServeWorkerRecycleTests`)
 - [x] `52d8ddd`: network errors from a send or a body read carry the inner exception chain
       (`ErrorChain`, each cause appended once), so a TLS failure names its certificate error
 - [ ] From merges: `61aa8fb` CDP URL pattern matcher (done, see CDP Fetch), `fded066` (`flex: 200px` sets grow 1, an
@@ -2459,6 +2464,15 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   SIGKILL); on Windows a worker is killed outright. The `--max-connections` help says the
   limit is per worker and server-wide, since the balancer also caps it (L3), where
   upstream's says the server-wide maximum is N times the value.
+- Serve worker recycling (`0f27e69`): upstream tells a session from a `/json` request by
+  peeking the first bytes on the accept loop, where a silent client stalls every other
+  client. The port classifies the first chunk it forwards on the connection's own task
+  (`ServeCommand.IsDiscoveryRequest`, upstream's test: `GET ` and `/json` in the first 256
+  bytes), and still hands a client that closes before sending to the worker uncounted.
+  Behind `--tls-cert` the balancer sees ciphertext, so discovery counts as a session too.
+  A replacement is verified like a restarted worker before it takes traffic. The RSS test
+  uses 400 MB and a 300 MB page where upstream uses 150 and 200, since an idle .NET worker
+  is already about 140 MB.
 
 ### Operator font directories load per render pass, not into a cached base database
 

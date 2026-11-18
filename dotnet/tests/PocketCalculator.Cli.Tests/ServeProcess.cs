@@ -14,6 +14,12 @@ namespace PocketCalculator.Cli.Tests;
 /// </summary>
 internal sealed class ServeProcess : IDisposable
 {
+    /// <summary>
+    /// The test collection these share, so the worker pools they start, each a few
+    /// .NET processes with V8, run one after another rather than side by side.
+    /// </summary>
+    public const string Collection = "serve worker pool";
+
     private readonly StringBuilder log = new();
 
     private ServeProcess(Process process, int port)

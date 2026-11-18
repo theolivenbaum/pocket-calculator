@@ -8,6 +8,7 @@ namespace PocketCalculator.Cli.Tests;
 /// (f2b9e99): the balancer reaps a worker that dies, restarts it, and routes
 /// discovery only to workers that are up.
 /// </summary>
+[Collection(ServeProcess.Collection)]
 public sealed class ServeWorkerRecoveryTests
 {
     [Fact]

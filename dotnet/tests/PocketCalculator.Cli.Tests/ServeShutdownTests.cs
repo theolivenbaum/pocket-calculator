@@ -9,6 +9,7 @@ namespace PocketCalculator.Cli.Tests;
 /// SIGTERM or SIGINT to the balancer stops its workers before it exits, and every
 /// worker is started with the balancer's <c>--max-connections</c>.
 /// </summary>
+[Collection(ServeProcess.Collection)]
 public sealed class ServeShutdownTests
 {
     [Theory]

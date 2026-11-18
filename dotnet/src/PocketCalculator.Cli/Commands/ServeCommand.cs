@@ -20,6 +20,17 @@ public static class ServeCommand
     /// <summary>Dispatch for the <c>serve</c> subcommand.</summary>
     public static async Task RunAsync(CliArgs args, CliCommand.Serve serve)
     {
+        // Upstream 0f27e69: worker recycling, off by default.
+        var policy = new RecyclePolicy(serve.WorkerMaxConnections, serve.WorkerMaxRss, serve.WorkerMaxAge);
+        if (policy.Enabled && serve.Workers <= 1)
+        {
+            throw new CliException("--worker-max-* options require --workers > 1");
+        }
+        if (policy.MaxRssMb is not null && !OperatingSystem.IsLinux())
+        {
+            Log.Warn("--worker-max-rss is only supported on Linux and is ignored");
+        }
+
         // Fall back to POCKETCALCULATOR_PROXY so a proxy can be supplied without putting
         // credentials on the command line. The multi-worker load balancer passes
         // the proxy to each worker this way.
@@ -82,7 +93,11 @@ public static class ServeCommand
                     TlsCert = serve.TlsCert,
                     TlsKey = serve.TlsKey,
                     Certificate = certificate,
-                })
+                },
+                policy,
+                // A u64 of seconds can exceed what a TimeSpan holds; such a timeout
+                // never ends either way.
+                TimeSpan.FromSeconds(Math.Min(serve.WorkerDrainTimeout, (long)TimeSpan.MaxValue.TotalSeconds - 1)))
                 .ConfigureAwait(false);
             return;
         }
@@ -128,7 +143,9 @@ public static class ServeCommand
         int port,
         string host,
         int workers,
-        WorkerSettings settings)
+        WorkerSettings settings,
+        RecyclePolicy? policy = null,
+        TimeSpan? drainTimeout = null)
     {
         // Deviation: upstream a156914 leaves this check to the workers, which see a
         // public forwarded authority, refuse to start without a token, and make the
@@ -218,19 +235,34 @@ public static class ServeCommand
             throw;
         }
 
-        // Upstream f2b9e99: a supervisor per worker reaps it when it exits, takes it
-        // out of the rotation and starts a replacement on the same port.
+        // Upstream f2b9e99 and 0f27e69: a supervisor per pool slot reaps its worker
+        // when it exits and starts a replacement, and replaces one that reaches a
+        // recycle limit, draining the old one.
+        policy ??= new RecyclePolicy();
+        var drain = drainTimeout ?? TimeSpan.FromSeconds(DefaultWorkerDrainTimeoutSeconds);
+        // At most a tenth of the pool (minimum one) starts a replacement at a time,
+        // so a fleet that reaches its limit together does not stampede the CPU with
+        // simultaneous V8 startups.
+        using var recycles = new SemaphoreSlim(Math.Max(workers / 10, 1));
         using var stopWorkers = new CancellationTokenSource();
-        var slots = new WorkerSlot[workers];
+        var slots = new PoolSlot[workers];
         var supervisors = new Task[workers];
         for (var i = 0; i < workers; i++)
         {
-            slots[i] = new WorkerSlot(workerPorts[i]);
-            supervisors[i] = SuperviseWorkerAsync(slots[i], children[i], factory, stopWorkers.Token);
+            var wake = new WakeSignal();
+            slots[i] = new PoolSlot(new PoolWorker(workerPorts[i], policy.MaxConnections, wake), wake);
+            supervisors[i] = SuperviseWorkerAsync(
+                slots[i], children[i], factory, policy, drain, recycles, stopWorkers.Token);
         }
 
         Log.Info(string.Create(
             CultureInfo.InvariantCulture, $"Load balancer on {host}:{port}, {workers} workers"));
+        if (policy.Enabled)
+        {
+            Log.Info(string.Create(
+                CultureInfo.InvariantCulture,
+                $"Worker recycling: {policy}, drain timeout {(long)drain.TotalSeconds}s"));
+        }
 
         // Rust advances a usize counter with wrapping_add; a ulong wraps the same
         // way for any count a process can accept.
@@ -295,17 +327,8 @@ public static class ServeCommand
                 Log.Warn($"client {client.Client.RemoteEndPoint} TCP_NODELAY failed: {error.Message}");
             }
             // Round robin over the workers that are up, skipping any being restarted.
-            int? picked = null;
-            for (var i = 0; i < slots.Length && picked is null; i++)
-            {
-                var slot = slots[(int)(nextWorker % (ulong)slots.Length)];
-                nextWorker = unchecked(nextWorker + 1);
-                if (slot.Ready)
-                {
-                    picked = slot.Port;
-                }
-            }
-            if (picked is not { } workerPort)
+            // The connection is held while it is proxied, so a draining worker waits for it.
+            if (WorkerPool.Pick(slots, ref nextWorker) is not { } connection)
             {
                 Interlocked.Decrement(ref live);
                 Refuse(client, NoWorkerRefusal);
@@ -313,18 +336,21 @@ public static class ServeCommand
             }
             Log.Debug(string.Create(
                 CultureInfo.InvariantCulture,
-                $"Routing {client.Client.RemoteEndPoint} to worker port {workerPort}"));
+                $"Routing {client.Client.RemoteEndPoint} to worker port {connection.Port}"));
             // Upstream peeks the first bytes of each request on the accept loop to
-            // tell `/json` from a WebSocket (both are then proxied the same way)
-            // and, since a156914, drops a client that closes before sending
-            // anything. The port has never peeked: it proxies from the first byte
-            // on its own task, so a silent or early-closed client cannot stall or
-            // end the accept loop, and it simply sees an empty exchange.
+            // tell `/json` from a WebSocket (both are then proxied the same way),
+            // and since 0f27e69 to count only the latter against
+            // --worker-max-connections. Since a156914 it also drops a client that
+            // closes before sending anything. The port never peeks on the accept
+            // loop: it proxies from the first byte on the connection's own task, so
+            // a silent or early-closed client cannot stall or end the accept loop
+            // (it simply sees an empty exchange), and classifies the request from
+            // the first bytes it forwards (ProxyClientAsync).
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    await ProxyAsync(client, workerPort).ConfigureAwait(false);
+                    await ProxyAsync(client, connection).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -393,19 +419,15 @@ public static class ServeCommand
     /// <summary>Upstream f2b9e99's reply when no worker is ready, byte for byte.</summary>
     private const string NoWorkerRefusal = "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n";
 
-    /// <summary>One worker position in the rotation: its port and whether it is up.</summary>
-    private sealed class WorkerSlot(int port)
-    {
-        private volatile bool ready = true;
+    /// <summary>Upstream's <c>--worker-drain-timeout</c> default, in seconds.</summary>
+    public const long DefaultWorkerDrainTimeoutSeconds = 120;
 
-        public int Port { get; } = port;
-
-        public bool Ready
-        {
-            get => ready;
-            set => ready = value;
-        }
-    }
+    /// <summary>
+    /// How often each supervisor re-checks its recycle policy (upstream
+    /// <c>RECYCLE_POLL</c>): RSS and age have no event to wait on; the connection
+    /// limit also wakes it directly.
+    /// </summary>
+    private static readonly TimeSpan RecyclePoll = TimeSpan.FromSeconds(2);
 
     /// <summary>
     /// Starts workers with the balancer's settings and keeps every worker process
@@ -457,45 +479,218 @@ public static class ServeCommand
     }
 
     /// <summary>
-    /// Wait for a worker to exit, then restart it on the same port until a
-    /// replacement is up (upstream f2b9e99). The worker is out of the rotation
-    /// from its exit until the replacement answers. On shutdown the worker is
-    /// stopped (upstream 4b14a76).
+    /// Supervise one pool slot (upstream 0f27e69 <c>supervise_worker</c>): restart
+    /// its worker when it exits (f2b9e99), replace it when it reaches a recycle
+    /// limit and drain the old one, and stop both on shutdown (4b14a76).
     /// </summary>
     private static async Task SuperviseWorkerAsync(
-        WorkerSlot slot, Process child, WorkerFactory factory, CancellationToken stop)
+        PoolSlot slot,
+        Process child,
+        WorkerFactory factory,
+        RecyclePolicy policy,
+        TimeSpan drainTimeout,
+        SemaphoreSlim recycles,
+        CancellationToken stop)
     {
         var stopping = WhenCancelled(stop);
+        // Replaced workers still draining; awaited at shutdown so they are stopped
+        // gracefully too.
+        var drains = new List<Task>();
+        var exited = child.WaitForExitAsync();
+        var tick = Task.Delay(RecyclePoll);
         while (true)
         {
-            var exited = child.WaitForExitAsync();
-            if (await Task.WhenAny(exited, stopping).ConfigureAwait(false) == stopping)
+            drains.RemoveAll(drained => drained.IsCompleted);
+            var worker = slot.Current;
+            if (tick.IsCompleted)
             {
-                await StopWorkerAsync(child).ConfigureAwait(false);
+                tick = Task.Delay(RecyclePoll);
+            }
+            await Task.WhenAny(stopping, exited, slot.Wake.Notified, tick).ConfigureAwait(false);
+            if (stop.IsCancellationRequested)
+            {
+                await Task.WhenAll(StopWorkerAsync(child), Task.WhenAll(drains)).ConfigureAwait(false);
                 factory.Forget(child);
                 return;
             }
-            slot.Ready = false;
-            Log.Warn(string.Create(
-                CultureInfo.InvariantCulture,
-                $"worker on port {slot.Port} exited: exit status: {child.ExitCode}"));
-            factory.Forget(child);
-            while (true)
+            if (exited.IsCompleted)
             {
-                // Upstream: a fixed retry interval bounds a crash loop; there is no backoff.
-                await Task.Delay(100).ConfigureAwait(false);
-                if (stop.IsCancellationRequested)
+                worker.Ready = false;
+                Log.Warn(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"worker on port {worker.Port} exited: exit status: {child.ExitCode}"));
+                factory.Forget(child);
+                if (await RespawnWorkerAsync(slot, factory, policy.MaxConnections, stop).ConfigureAwait(false)
+                    is not { } replacement)
                 {
+                    await Task.WhenAll(drains).ConfigureAwait(false);
                     return;
                 }
-                if (await StartWorkerAsync(factory, slot.Port, TimeSpan.FromSeconds(5)).ConfigureAwait(false)
-                    is { } replacement)
-                {
-                    child = replacement;
-                    slot.Ready = true;
-                    break;
-                }
+                child = replacement;
+                exited = child.WaitForExitAsync();
+                continue;
             }
+            // Taken before the policy is read: a session counted after this wakes
+            // the next wait, and one counted before it is in Served already.
+            slot.Wake.Consume();
+            if (!policy.Enabled)
+            {
+                continue;
+            }
+            var rss = policy.MaxRssMb is null ? null : WorkerPool.RssMb(child.Id);
+            if (policy.Reason(worker.Served, rss, worker.Age) is not { } reason)
+            {
+                continue;
+            }
+            // Bound concurrent replacement startups (not draining); if no permit is
+            // free, retry on the next tick and keep serving meanwhile.
+            if (!recycles.Wait(0))
+            {
+                continue;
+            }
+            PoolWorker old;
+            Process retired;
+            try
+            {
+                var started = Stopwatch.GetTimestamp();
+                int port;
+                Process next;
+                try
+                {
+                    port = FreePort();
+                    next = factory.Spawn(port);
+                }
+                catch (Exception error) when (error is SocketException or CliException
+                    or System.ComponentModel.Win32Exception or InvalidOperationException)
+                {
+                    Log.Warn(string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"recycle of worker on port {worker.Port} failed to spawn: {error.Message}"));
+                    await DelayUnlessStopped(TimeSpan.FromSeconds(5), stop).ConfigureAwait(false);
+                    continue;
+                }
+                if (await ReadyAsync(next, port, TimeSpan.FromSeconds(10), factory).ConfigureAwait(false)
+                    is { } failure)
+                {
+                    Log.Warn(string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"recycle of worker on port {worker.Port} aborted, replacement failed: {failure}"));
+                    await KillAsync(next).ConfigureAwait(false);
+                    factory.Forget(next);
+                    await DelayUnlessStopped(TimeSpan.FromSeconds(5), stop).ConfigureAwait(false);
+                    continue;
+                }
+                old = slot.Replace(new PoolWorker(port, policy.MaxConnections, slot.Wake));
+                Log.Info(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"recycling worker on port {old.Port} (pid Some({child.Id}), served {old.Served}, "
+                    + $"live {old.Active}, age {(long)old.Age.TotalSeconds}s): {reason}; replacement on port "
+                    + $"{port} ready in {(long)Stopwatch.GetElapsedTime(started).TotalMilliseconds} ms"));
+                retired = child;
+                child = next;
+                exited = child.WaitForExitAsync();
+            }
+            finally
+            {
+                recycles.Release();
+            }
+            drains.Add(DrainWorkerAsync(retired, old, drainTimeout, factory, stop));
+        }
+    }
+
+    /// <summary>
+    /// Replace a dead worker, retrying until one starts (upstream
+    /// <c>respawn_worker</c>). Always on a fresh port, since 0f27e69. Null once the
+    /// balancer is shutting down.
+    /// </summary>
+    private static async Task<Process?> RespawnWorkerAsync(
+        PoolSlot slot, WorkerFactory factory, int? maxConnections, CancellationToken stop)
+    {
+        while (true)
+        {
+            // Upstream: a fixed retry interval bounds a crash loop; there is no backoff.
+            await Task.Delay(100).ConfigureAwait(false);
+            if (stop.IsCancellationRequested)
+            {
+                return null;
+            }
+            int port;
+            try
+            {
+                port = FreePort();
+            }
+            catch (SocketException error)
+            {
+                Log.Warn($"worker port allocation failed: {error.Message}");
+                continue;
+            }
+            if (await StartWorkerAsync(factory, port, TimeSpan.FromSeconds(5)).ConfigureAwait(false)
+                is { } replacement)
+            {
+                slot.Replace(new PoolWorker(port, maxConnections, slot.Wake));
+                return replacement;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Let a replaced worker finish its live connections, then kill it (upstream
+    /// <c>drain_worker</c>). On shutdown it is stopped like the active workers.
+    /// </summary>
+    private static async Task DrainWorkerAsync(
+        Process child, PoolWorker old, TimeSpan timeout, WorkerFactory factory, CancellationToken stop)
+    {
+        var started = Stopwatch.GetTimestamp();
+        var exited = child.WaitForExitAsync();
+        var stopping = WhenCancelled(stop);
+        string outcome;
+        while (true)
+        {
+            if (old.Active == 0)
+            {
+                outcome = "drained";
+                break;
+            }
+            if (Stopwatch.GetElapsedTime(started) >= timeout)
+            {
+                outcome = string.Create(
+                    CultureInfo.InvariantCulture, $"drain timeout, dropping {old.Active} live connections");
+                break;
+            }
+            var woke = await Task.WhenAny(exited, stopping, Task.Delay(100)).ConfigureAwait(false);
+            if (woke == exited)
+            {
+                outcome = "exited while draining";
+                break;
+            }
+            if (woke == stopping)
+            {
+                await StopWorkerAsync(child).ConfigureAwait(false);
+                outcome = "stopped at shutdown";
+                break;
+            }
+        }
+        await KillAsync(child).ConfigureAwait(false);
+        factory.Forget(child);
+        Log.Info(string.Create(CultureInfo.InvariantCulture, $"worker on port {old.Port} retired: {outcome}"));
+    }
+
+    /// <summary>A free loopback port, as upstream's <c>free_port</c> asks the OS for one.</summary>
+    private static int FreePort()
+    {
+        using var probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        return ((IPEndPoint)probe.LocalEndpoint).Port;
+    }
+
+    private static async Task DelayUnlessStopped(TimeSpan delay, CancellationToken stop)
+    {
+        try
+        {
+            await Task.Delay(delay, stop).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
         }
     }
 
@@ -566,12 +761,12 @@ public static class ServeCommand
 
     /// <summary>
     /// Start one worker on <paramref name="workerPort"/> and wait up to
-    /// <paramref name="within"/> for it to listen. Null, with a warning logged and
+    /// <paramref name="within"/> for it to listen and verify. Null, with a warning logged and
     /// the process killed, when it does not come up.
     /// </summary>
     /// <remarks>
     /// Deviation: upstream only waits for the port to accept a connection. The
-    /// port also checks a replacement the way startup checks every worker
+    /// port also checks a restarted or recycled worker the way startup checks every worker
     /// (<see cref="VerifyWorkersAsync(IReadOnlyList{int}, string?, X509Certificate2?)"/>,
     /// SECURITY.md M1) before it gets a client, since it is put behind the public
     /// port just as the first one was.
@@ -590,20 +785,34 @@ public static class ServeCommand
                 CultureInfo.InvariantCulture, $"worker {workerPort} spawn failed: {error.Message}"));
             return null;
         }
+        if (await ReadyAsync(child, workerPort, within, factory).ConfigureAwait(false) is { } failure)
+        {
+            Log.Warn(string.Create(
+                CultureInfo.InvariantCulture, $"worker {workerPort} restart failed: {failure}"));
+            await KillAsync(child).ConfigureAwait(false);
+            factory.Forget(child);
+            return null;
+        }
+        return child;
+    }
+
+    /// <summary>
+    /// Wait up to <paramref name="within"/> for a new worker to listen, then verify
+    /// it. Null when it is ready; otherwise why not.
+    /// </summary>
+    private static async Task<string?> ReadyAsync(
+        Process child, int workerPort, TimeSpan within, WorkerFactory factory)
+    {
         try
         {
             var deadline = Stopwatch.GetTimestamp() + (long)(within.TotalSeconds * Stopwatch.Frequency);
             await WaitForWorkerAsync(child, workerPort, deadline).ConfigureAwait(false);
             await VerifyWorkersAsync([workerPort], factory.Token, factory.Certificate).ConfigureAwait(false);
-            return child;
+            return null;
         }
         catch (CliException error)
         {
-            Log.Warn(string.Create(
-                CultureInfo.InvariantCulture, $"worker {workerPort} restart failed: {error.Message}"));
-            await KillAsync(child).ConfigureAwait(false);
-            factory.Forget(child);
-            return null;
+            return error.Message;
         }
     }
 
@@ -1038,10 +1247,12 @@ public static class ServeCommand
             + (last is null ? ": no addresses resolved" : $": {last.Message}"));
     }
 
-    private static async Task ProxyAsync(TcpClient client, int workerPort)
+    private static async Task ProxyAsync(TcpClient client, PoolConnection connection)
     {
+        using (connection)
         using (client)
         {
+            var workerPort = connection.Port;
             var workerAddress = $"127.0.0.1:{workerPort.ToString(CultureInfo.InvariantCulture)}";
             TcpClient worker;
             try
@@ -1087,18 +1298,39 @@ public static class ServeCommand
                 // tear down a connection whose peer is still sending: a client
                 // that half-closes after its request would never get the reply.
                 await Task.WhenAll(
-                    PumpAsync(client, worker),
-                    PumpAsync(worker, client)).ConfigureAwait(false);
+                    PumpAsync(client, worker, connection),
+                    PumpAsync(worker, client, null)).ConfigureAwait(false);
             }
         }
     }
 
-    /// <summary>One direction of the bidirectional copy, with the half-close.</summary>
-    private static async Task PumpAsync(TcpClient from, TcpClient to)
+    /// <summary>
+    /// One direction of the bidirectional copy, with the half-close. On the client's
+    /// side, <paramref name="session"/> is counted as a CDP session from the first
+    /// bytes, unless they are a <c>/json</c> discovery request (upstream 0f27e69).
+    /// </summary>
+    private static async Task PumpAsync(TcpClient from, TcpClient to, PoolConnection? session)
     {
         try
         {
-            await from.GetStream().CopyToAsync(to.GetStream()).ConfigureAwait(false);
+            var source = from.GetStream();
+            var sink = to.GetStream();
+            if (session is not null)
+            {
+                var first = new byte[4096];
+                var read = await source.ReadAsync(first).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    // Closed before sending anything: upstream drops it uncounted.
+                    return;
+                }
+                if (!IsDiscoveryRequest(first.AsSpan(0, read)))
+                {
+                    session.CountSession();
+                }
+                await sink.WriteAsync(first.AsMemory(0, read)).ConfigureAwait(false);
+            }
+            await source.CopyToAsync(sink).ConfigureAwait(false);
         }
         catch (Exception error) when (error is IOException or ObjectDisposedException
             or InvalidOperationException or SocketException)
@@ -1117,6 +1349,19 @@ public static class ServeCommand
             }
         }
     }
+
+    /// <summary>
+    /// Upstream's test: the request starts with <c>GET </c> and <c>/json</c> appears
+    /// in its first 256 bytes. Upstream peeks whatever has arrived, as this reads
+    /// it, so a request split before those bytes counts as a session in both.
+    /// </summary>
+    /// <remarks>
+    /// Deviation: behind <c>--tls-cert</c> (SECURITY.md I1, which upstream lacks) the
+    /// balancer forwards ciphertext, so every connection, discovery included, counts
+    /// against <c>--worker-max-connections</c>.
+    /// </remarks>
+    public static bool IsDiscoveryRequest(ReadOnlySpan<byte> first) =>
+        first.StartsWith("GET "u8) && first[..Math.Min(first.Length, 256)].IndexOf("/json"u8) >= 0;
 
     private static string? EnvOrNull(string name)
     {

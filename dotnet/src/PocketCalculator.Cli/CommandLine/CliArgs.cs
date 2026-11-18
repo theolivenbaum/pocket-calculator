@@ -31,6 +31,18 @@ public abstract record CliCommand
         /// <summary><c>--max-connections</c>.</summary>
         public required int MaxConnections { get; init; }
 
+        /// <summary><c>--worker-max-connections</c>.</summary>
+        public int? WorkerMaxConnections { get; init; }
+
+        /// <summary><c>--worker-max-rss</c>, in MB.</summary>
+        public long? WorkerMaxRss { get; init; }
+
+        /// <summary><c>--worker-max-age</c>, in seconds.</summary>
+        public long? WorkerMaxAge { get; init; }
+
+        /// <summary><c>--worker-drain-timeout</c>, in seconds.</summary>
+        public long WorkerDrainTimeout { get; init; } = 120;
+
         /// <summary><c>--allow-file-access</c>.</summary>
         public bool AllowFileAccess { get; init; }
 
@@ -223,6 +235,10 @@ public sealed record CliArgs
                     UserAgent = result.GetValue(CliDefinition.Serve.UserAgent),
                     Workers = result.GetValue(CliDefinition.Serve.Workers),
                     MaxConnections = result.GetValue(CliDefinition.Serve.MaxConnections),
+                    WorkerMaxConnections = result.GetValue(CliDefinition.Serve.WorkerMaxConnections),
+                    WorkerMaxRss = result.GetValue(CliDefinition.Serve.WorkerMaxRss),
+                    WorkerMaxAge = result.GetValue(CliDefinition.Serve.WorkerMaxAge),
+                    WorkerDrainTimeout = result.GetValue(CliDefinition.Serve.WorkerDrainTimeout),
                     AllowFileAccess = result.GetValue(CliDefinition.Serve.AllowFileAccess),
                     StorageDir = Path(result.GetValue(CliDefinition.Serve.StorageDir)),
                     FontDirs = result.GetValue(CliDefinition.Serve.FontDirs) ?? [],

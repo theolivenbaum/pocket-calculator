@@ -77,6 +77,15 @@ internal static class ClapNumbers
         };
 
     /// <summary>
+    /// clap's <c>usize</c> parser for an optional value, used by
+    /// <c>--worker-max-connections</c>. Null when the flag was not passed.
+    /// </summary>
+    public static Func<ArgumentResult, int?> OptionalUSize(string flag, string placeholder) =>
+        result => result.Tokens.Count == 0
+            ? null
+            : (int)Parse(result, flag, placeholder, int.MaxValue, minimum: 0);
+
+    /// <summary>
     /// clap's <c>u64</c> parser with <c>value_parser!(u64).range(lo..)</c>, used
     /// by <c>--timeout</c>.
     /// </summary>

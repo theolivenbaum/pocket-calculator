@@ -142,6 +142,32 @@ public static class CliDefinition
             DefaultValueFactory = _ => DefaultMaxConnections,
             CustomParser = ClapNumbers.USize("--max-connections", "MAX_CONNECTIONS"),
         };
+        // Upstream 0f27e69: recycle workers by sessions served, RSS or age.
+        public static readonly Option<int?> WorkerMaxConnections = new("--worker-max-connections")
+        {
+            Description = "Recycle a worker after it has served this many CDP connections (/json discovery requests do not count). Needs --workers > 1. The worker drains and a replacement takes its place; off by default.",
+            HelpName = "N",
+            CustomParser = ClapNumbers.OptionalUSize("--worker-max-connections", "N"),
+        };
+        public static readonly Option<long?> WorkerMaxRss = new("--worker-max-rss")
+        {
+            Description = "Recycle a worker whose resident memory exceeds this many MB, sampled every 2s from /proc (Linux only). Needs --workers > 1.",
+            HelpName = "MB",
+            CustomParser = ClapNumbers.U64("--worker-max-rss", "MB"),
+        };
+        public static readonly Option<long?> WorkerMaxAge = new("--worker-max-age")
+        {
+            Description = "Recycle a worker after it has run this many seconds. Needs --workers > 1.",
+            HelpName = "SECS",
+            CustomParser = ClapNumbers.U64("--worker-max-age", "SECS"),
+        };
+        public static readonly Option<long> WorkerDrainTimeout = new("--worker-drain-timeout")
+        {
+            Description = "Seconds a replaced worker may keep serving its live connections before it is killed.",
+            HelpName = "SECS",
+            DefaultValueFactory = _ => 120,
+            CustomParser = ClapNumbers.U64Range("--worker-drain-timeout", "SECS", 0),
+        };
         public static readonly Option<bool> AllowFileAccess = new("--allow-file-access")
         {
             Description = "Allow CDP clients to navigate to file:// URLs. Off by default so a CDP connection cannot read arbitrary local files.",
@@ -267,7 +293,8 @@ public static class CliDefinition
     private static Command BuildServe() => new("serve", "Run the Chrome DevTools Protocol server")
     {
         Serve.Port, Serve.Host, Serve.Proxy, Serve.UserAgent, Serve.Workers,
-        Serve.MaxConnections, Serve.AllowFileAccess, Serve.StorageDir, Serve.FontDirs, Serve.Quiet,
+        Serve.MaxConnections, Serve.WorkerMaxConnections, Serve.WorkerMaxRss, Serve.WorkerMaxAge,
+        Serve.WorkerDrainTimeout, Serve.AllowFileAccess, Serve.StorageDir, Serve.FontDirs, Serve.Quiet,
         Serve.TlsCert, Serve.TlsKey,
     };
 
