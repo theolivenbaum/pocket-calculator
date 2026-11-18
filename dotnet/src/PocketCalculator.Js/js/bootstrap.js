@@ -12320,6 +12320,10 @@ const _computedStyleSnapshotCache = _private(new WeakMap());
 const _computedStyleLayoutNames = Object.create(null);
 globalThis.getComputedStyle = (el, pseudoElt) => {
   if (!el) el = document.body || {};
+  // Upstream f32db47 also delegates a foreign frame's element to its own realm's
+  // getComputedStyle here. Not ported: the parent realm cannot hold a frame realm's objects
+  // (todo.md, "Cross-realm objects cannot be shared"), and the blank-iframe stand-in window's
+  // getComputedStyle calls this one, so delegating to it would recurse.
   const style = el?.style || el?._style || new CSSStyleDeclaration();
   // DEVIATION from crates/obscura-js: its getComputedStyle takes one argument and ignores
   // pseudoElt, so every call answered with the originating element's own style. Chromium
@@ -12344,7 +12348,7 @@ globalThis.getComputedStyle = (el, pseudoElt) => {
   const snapshotKey = pseudo || '';
   let snapshot = perPseudo.get(snapshotKey);
   if (!snapshot) {
-    snapshot = { rendered: null, epoch: -1, names: [], omitted: null };
+    snapshot = { rendered: null, epoch: -1, viewportWidth: -1, viewportHeight: -1, names: [], omitted: null };
     perPseudo.set(snapshotKey, snapshot);
   }
   // DEVIATION from crates/obscura-js, whose snapshot always comes from op_computed_style, which
@@ -12354,11 +12358,17 @@ globalThis.getComputedStyle = (el, pseudoElt) => {
   // the used values (size, insets, margins, padding, transform, grid tracks) that still need
   // the full snapshot. Ad scripts poll display/position this way while the page mutates.
   const refreshRendered = (needsLayout) => {
+    // upstream f32db47: a viewport resize changes vw/vh lengths and media queries without a
+    // DOM mutation, so the snapshot is keyed on the viewport size too.
+    const viewportWidth = globalThis.innerWidth, viewportHeight = globalThis.innerHeight;
     const hasRunningAnimation = typeof _animationsForTarget === 'function'
       && _animationsForTarget(el).some(animation => animation.playState === 'running');
     if (snapshot.epoch === _domMutationEpoch && !hasRunningAnimation
+        && snapshot.viewportWidth === viewportWidth && snapshot.viewportHeight === viewportHeight
         && (!needsLayout || !snapshot.omitted)) return;
     snapshot.epoch = _domMutationEpoch;
+    snapshot.viewportWidth = viewportWidth;
+    snapshot.viewportHeight = viewportHeight;
     snapshot.rendered = null;
     snapshot.omitted = null;
     if (el?._nid != null && !pseudo && !needsLayout && !hasRunningAnimation) {

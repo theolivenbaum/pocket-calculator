@@ -2495,6 +2495,12 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
 - checkVisibility (`f019ebe`): `op_check_visibility` is also bound per frame document, so a
   frame realm answers about its own nodes. Inherited computed visibility was already in the
   port (`ComputedVisibilityHidden`). As upstream, `content-visibility: hidden` is not consulted.
+- Frame CSSOM state (`f32db47`): the computed-style snapshot is keyed on the viewport size as
+  well as the mutation epoch, so a retained declaration refreshes after a resize. Per-frame
+  render ops were already bound per document. Not ported: delegating `getComputedStyle()` of
+  a foreign frame's element to that frame's realm, and the two upstream iframe tests (skipped):
+  the parent realm cannot hold a frame realm's objects ("Cross-realm objects cannot be
+  shared"), so a blank iframe's `contentDocument` is the shim's stand-in.
 
 ### Operator font directories load per render pass, not into a cached base database
 

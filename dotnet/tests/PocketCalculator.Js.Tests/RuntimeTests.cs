@@ -18059,6 +18059,93 @@ public sealed partial class RuntimeTests
             result);
     }
 
+    /// Upstream f32db47: geometry read synchronously from an iframe's document answers about
+    /// that document, not the parent's.
+    [Fact(Skip = "A frame realm's objects cannot reach the parent realm (todo.md, Cross-realm objects cannot be shared); contentDocument of a blank iframe is the shim's stand-in")]
+    public void SynchronousIframeGeometryUsesTheOwningDocument()
+    {
+        using var fixture = RuntimeFixture.Setup(
+            "<html><head><style>body{margin:4px}#parent{width:45px;height:30px}</style></head><body><div id='parent'></div></body></html>");
+        var result = fixture.Runtime.Evaluate(
+            """
+            JSON.stringify((() => {
+              const iframe = document.createElement('iframe');
+              document.body.appendChild(iframe);
+              const d = iframe.contentDocument;
+              d.body.innerHTML = '<style>body{margin:8px}div{width:100px;height:20px}</style><div id="child"></div>';
+              const element = d.getElementById('child');
+              const range = d.createRange(); range.selectNode(element);
+              return [[...element.getClientRects()].map(r => [r.width, r.height, r.bottom]),
+                [...range.getClientRects()].map(r => r.bottom),
+                [element.clientWidth, element.clientHeight, element.offsetWidth, element.offsetHeight],
+                d.elementFromPoint(10, 10) === element,
+                document.getElementById('parent').getBoundingClientRect().width];
+            })())
+            """)!.GetValue<string>();
+        Assert.Equal("[[[100,20,28]],[28],[100,20,100,20],true,45]", result);
+    }
+
+    /// Upstream f32db47: the parent's getComputedStyle() on a frame's element answers from the
+    /// frame's document and follows its mutations.
+    [Fact(Skip = "A frame realm's objects cannot reach the parent realm (todo.md, Cross-realm objects cannot be shared); contentDocument of a blank iframe is the shim's stand-in")]
+    public void ComputedStyleOnAForeignFrameElementTracksItsDocument()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
+        var result = fixture.Runtime.Evaluate(
+            """
+            JSON.stringify((() => {
+              const iframe = document.createElement('iframe');
+              document.body.appendChild(iframe);
+              const d = iframe.contentDocument;
+              d.body.innerHTML = '<style>#child{width:100px;height:20px;color:rgb(12,34,56)}</style><div id="child"></div>';
+              const element = d.getElementById('child');
+              const style = getComputedStyle(element);
+              const before = [style.width, style.color];
+              element.style.width = '120px';
+              element.style.color = 'rgb(78,90,12)';
+              return [before, [style.width, style.color], getComputedStyle(element).color];
+            })())
+            """)!.GetValue<string>();
+        Assert.Equal("""[["100px","rgb(12, 34, 56)"],["120px","rgb(78, 90, 12)"],"rgb(78, 90, 12)"]""", result);
+    }
+
+    /// Upstream f32db47: a retained computed style refreshes after a viewport change that
+    /// mutates nothing (vw/vh lengths and a media query).
+    [Fact]
+    public void ComputedStyleRefreshesAfterViewportChangesWithoutDomMutation()
+    {
+        using var fixture = RuntimeFixture.Setup(
+            """
+            <style>
+              body { margin:0 }
+              #box { width:50vw; height:25vh; color:rgb(12,34,56) }
+              @media(max-width:250px) { #box { color:rgb(78,90,12) } }
+            </style><div id=box></div>
+            """);
+        var rt = fixture.Runtime;
+        rt.SetViewport(300.0, 80.0);
+        Assert.Equal(
+            """["150px","20px","rgb(12, 34, 56)"]""",
+            rt.Evaluate(
+                """
+                JSON.stringify((() => {
+                  globalThis.savedStyle = getComputedStyle(document.getElementById('box'));
+                  return [savedStyle.width, savedStyle.height, savedStyle.color];
+                })())
+                """)!.GetValue<string>());
+        rt.SetViewport(200.0, 120.0);
+        Assert.Equal(
+            """[["100px","30px","rgb(78, 90, 12)"],["100px","30px","rgb(78, 90, 12)"]]""",
+            rt.Evaluate(
+                """
+                JSON.stringify((() => {
+                  const fresh = getComputedStyle(document.getElementById('box'));
+                  return [[savedStyle.width, savedStyle.height, savedStyle.color],
+                    [fresh.width, fresh.height, fresh.color]];
+                })())
+                """)!.GetValue<string>());
+    }
+
     /// Playwright's `getByRole` / `getByLabel` locators resolve via ARIA
     /// reflection properties. Without the getters those locators always
     /// fail. Reflect the underlying aria-* attributes.
