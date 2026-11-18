@@ -147,6 +147,11 @@ public static partial class RenderDom
                         inh.LetterSpacing = spacing;
                     }
 
+                    if (retainedStyle.WordSpacing is { } wordSpacing)
+                    {
+                        inh.WordSpacing = wordSpacing;
+                    }
+
                     if (retainedStyle.LetterSpacingNonNormal is { } nonNormal)
                     {
                         inh.LetterSpacingNonNormal = nonNormal;
@@ -693,6 +698,28 @@ public static partial class RenderDom
         else
         {
             style.LetterSpacing = inh.LetterSpacing;
+        }
+
+        if (style.WordSpacingExpression is { } wordSpacingExpression)
+        {
+            style.WordSpacing = ComputedStyle.ResolveContextualLength(
+                wordSpacingExpression, ownUnits, rootFs, vw, vh, emPx);
+        }
+        else if (style.WordSpacingRaw is { } wordSpacingRaw)
+        {
+            Dimension resolved = wordSpacingRaw.Resolve(ownUnits, rootFs, vw, vh);
+            style.WordSpacing = resolved.Kind == DimensionKind.Px && float.IsFinite(resolved.Value)
+                ? resolved.Value
+                : null;
+        }
+
+        if (style.WordSpacing is { } wordSpacing && float.IsFinite(wordSpacing))
+        {
+            inh.WordSpacing = wordSpacing;
+        }
+        else
+        {
+            style.WordSpacing = inh.WordSpacing;
         }
 
         if (style.LetterSpacingNonNormal is { } nonNormal)
@@ -1540,6 +1567,7 @@ public static partial class RenderDom
         RgbaColor? hostColor = style.Color;
         float hostFontSize = style.FontSize ?? parentFs;
         float hostLetterSpacing = style.LetterSpacing ?? 0f;
+        float hostWordSpacing = style.WordSpacing ?? 0f;
         bool hostLetterSpacingNonNormal = style.LetterSpacingNonNormal ?? false;
         ushort hostWeight = ComputedStyle.UsedFontWeight(style);
         string? hostFamily = style.FontFamily;
@@ -1684,6 +1712,24 @@ public static partial class RenderDom
             }
 
             pseudo.LetterSpacingNonNormal ??= hostLetterSpacingNonNormal;
+            if (pseudo.WordSpacingExpression is { } wordSpacingExpression)
+            {
+                pseudo.WordSpacing = ComputedStyle.ResolveContextualLength(
+                    wordSpacingExpression, pseudoUnits, rootFs, vw, vh, pseudoEm);
+            }
+            else if (pseudo.WordSpacingRaw is { } wordSpacingRaw)
+            {
+                Dimension resolved = wordSpacingRaw.Resolve(pseudoUnits, rootFs, vw, vh);
+                pseudo.WordSpacing =
+                    resolved.Kind == DimensionKind.Px && float.IsFinite(resolved.Value)
+                        ? resolved.Value
+                        : null;
+            }
+            else
+            {
+                pseudo.WordSpacing ??= hostWordSpacing;
+            }
+
 
             for (int index = 0; index < 6; index++)
             {

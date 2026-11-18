@@ -22,7 +22,8 @@ internal static class DomTextMeasure
         float size,
         bool isBold,
         string? family,
-        float letterSpacing)
+        float letterSpacing,
+        float wordSpacing = 0f)
     {
         // Rust counts Unicode scalar values (`str::chars`). C# strings are UTF-16, so a
         // non-BMP character is two `char` values; enumerate runes to keep letter-spacing
@@ -36,7 +37,32 @@ internal static class DomTextMeasure
             }
         }
 
-        return MeasureText(text, size, isBold, family) + (glyphCount * letterSpacing);
+        return MeasureText(text, size, isBold, family)
+            + (glyphCount * letterSpacing)
+            + WordSpacingAdvance(text, wordSpacing);
+    }
+
+    /// <summary>
+    /// Rust <c>word_spacing_advance</c> (upstream bf10c46): the extra advance of every word
+    /// separator (U+0020 and U+00A0) in <paramref name="text"/>.
+    /// </summary>
+    internal static float WordSpacingAdvance(string text, float spacing)
+    {
+        if (spacing == 0f)
+        {
+            return 0f;
+        }
+
+        int separators = 0;
+        foreach (char character in text)
+        {
+            if (character is ' ' or '\u00a0')
+            {
+                separators++;
+            }
+        }
+
+        return separators * spacing;
     }
 
     internal static float MeasureText(string text, float size, bool isBold, string? family)

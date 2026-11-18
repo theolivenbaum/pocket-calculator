@@ -422,7 +422,7 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `e1acbe5` + `31e1dfe`. Do not port `8a2f957`
 - [ ] Media emulation: `c9978c3` + `c7ec60a` + `6ba3613` (setEmulatedMedia, reduced
       motion, color scheme, MediaQueryList change events)
-- [ ] Render text: `bf10c46` word-spacing, `f8a36a4` font size keywords, `1fff1f7`
+- [ ] Render text: [x] `bf10c46` word-spacing; [ ] `f8a36a4` font size keywords; [ ] `1fff1f7`
       (`9a3d12e` is done; the kerning and real bold faces of merge `8a4d745` are not)
 - [ ] Render layout: tables `2b61abf` + `7bf782b`; floats `9f64ce9`, `6a7bbf3`, `423e58a`;
       inline `0e99b3a`, `a41696e`, `df5ee65`, `62e8e7f`; flex merges `fded066`/`322f46c`
@@ -2365,6 +2365,12 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   control is not focusable; `<label>` (LabelText) has an empty name; `<p>` is `paragraph`. MCP
   snapshot lines keep upstream's format (`checked=false` unquoted). Still different: Chromium
   lists a select's options and its internal `MenuListPopup` / `ListMarker` nodes.
+- word-spacing (`bf10c46`): the port also accepts `calc()`, `min()`, `max()` and `clamp()`
+  lengths, type-checked (`CssMathTypes`) and resolved against the element's own font, as
+  Chromium does; upstream drops every function. Both still drop percentages and lengths that
+  overflow f32 (Chromium accepts `10%` and clamps `1e99px`), and neither reports
+  `word-spacing` in getComputedStyle. Shaping adds the spacing in `TextShaper.ReadShapedGlyphs`
+  (HarfBuzz) at the same place upstream's vendored cosmic-text `shape_fallback` does.
 
 - Fetch main-document interception (`b76d966`, with the Continue profile part of `7341597`): a
   continued navigation keeps the navigation's own `ResourceRequest` (initiator, referrer, cookie

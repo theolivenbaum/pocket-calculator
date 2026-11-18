@@ -300,6 +300,10 @@ internal sealed class LayoutStyleRare
 
     public Dimension? LetterSpacingRaw;
 
+    public Dimension? WordSpacingRaw;
+
+    public string? WordSpacingExpression;
+
     public ClipRect? Clip;
 
     public string? MarkerText;
@@ -1354,6 +1358,35 @@ public sealed class LayoutStyle
 
     /// <summary>Deferred functional <c>letter-spacing</c> (<c>calc()</c>, <c>min()</c>, <c>clamp()</c>).</summary>
     public string? LetterSpacingExpression;
+
+    /// <summary>Computed <c>word-spacing</c> in CSS pixels, resolved before inheritance.</summary>
+    public float? WordSpacing;
+
+    /// <summary>Relative <c>word-spacing</c> retained until the element's font size is resolved.</summary>
+    public Dimension? WordSpacingRaw
+    {
+        get => m_rare?.WordSpacingRaw;
+        set
+        {
+            if (m_rare is not null || value is not null)
+            {
+                Rare.WordSpacingRaw = value;
+            }
+        }
+    }
+
+    /// <summary>Deferred functional <c>word-spacing</c> (<c>calc()</c>, <c>min()</c>, <c>clamp()</c>).</summary>
+    public string? WordSpacingExpression
+    {
+        get => m_rare?.WordSpacingExpression;
+        set
+        {
+            if (m_rare is not null || value is not null)
+            {
+                Rare.WordSpacingExpression = value;
+            }
+        }
+    }
 
     /// <summary>
     /// Whether the computed value came from a non-<c>normal</c> declaration. Keeping this

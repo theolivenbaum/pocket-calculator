@@ -51,6 +51,12 @@ public sealed record TextAttrs
     /// <summary>Letter spacing (tracking) in em.</summary>
     public float? LetterSpacingEm { get; init; }
 
+    /// <summary>
+    /// Additional advance of each word separator (U+0020, U+00A0) in em: the vendored
+    /// cosmic-text <c>word_spacing_opt</c> (upstream bf10c46).
+    /// </summary>
+    public float? WordSpacingEm { get; init; }
+
     public ShapingFeature[] Features { get; init; } = [];
 
     public FontVariations? Variations { get; init; }

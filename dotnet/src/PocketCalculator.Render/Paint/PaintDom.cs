@@ -1294,6 +1294,7 @@ internal static class PaintDomPainter
                             false,
                             null,
                             0f,
+                            0f,
                             boxClip,
                             elementClipMask,
                             rasterScale);
@@ -1455,6 +1456,7 @@ internal static class PaintDomPainter
                         runBold,
                         style.FontFamily,
                         style.LetterSpacing ?? 0f,
+                        style.WordSpacing ?? 0f,
                         boxClip,
                         elementClipMask,
                         rasterScale);
@@ -1480,6 +1482,7 @@ internal static class PaintDomPainter
                         ComputedStyle.UsedFontWeight(style) >= 600,
                         style.FontFamily,
                         style.LetterSpacing ?? 0f,
+                        style.WordSpacing ?? 0f,
                         visibleRect,
                         elementClipMask,
                         rasterScale);
@@ -1575,6 +1578,7 @@ internal static class PaintDomPainter
                                 false,
                                 style.FontFamily,
                                 style.LetterSpacing ?? 0f,
+                                style.WordSpacing ?? 0f,
                                 boxClip,
                                 elementClipMask,
                                 rasterScale);
@@ -1600,6 +1604,7 @@ internal static class PaintDomPainter
                                 false,
                                 style.FontFamily,
                                 style.LetterSpacing ?? 0f,
+                                style.WordSpacing ?? 0f,
                                 boxClip,
                                 elementClipMask,
                                 rasterScale);

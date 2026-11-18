@@ -1060,6 +1060,94 @@ public static partial class ComputedStyle
         }
     }
 
+    /// <summary>Rust <c>apply_word_spacing</c> (upstream bf10c46).</summary>
+    /// <remarks>
+    /// DEVIATION: Rust accepts a single length token only and drops <c>calc()</c>,
+    /// <c>min()</c>, <c>max()</c> and <c>clamp()</c>. Chromium accepts them, so a valid
+    /// function is kept as an expression and resolved against the element's own font in the
+    /// inheritance pass, the way <c>letter-spacing</c> already is. Percentages stay rejected
+    /// on both sides (Chromium resolves them against the space advance).
+    /// </remarks>
+    internal static void ApplyWordSpacing(LayoutStyle style, string value)
+    {
+        string trimmed = value.Trim();
+        string lower = CssText.AsciiLower(trimmed);
+        if (lower is "inherit" or "unset" or "revert" or "revert-layer")
+        {
+            style.WordSpacing = null;
+            style.WordSpacingRaw = null;
+            style.WordSpacingExpression = null;
+            return;
+        }
+
+        if (lower is "normal" or "initial")
+        {
+            style.WordSpacing = 0f;
+            style.WordSpacingRaw = null;
+            style.WordSpacingExpression = null;
+            return;
+        }
+
+        // Invalid declarations must not replace an earlier cascade winner.
+        if (WordSpacingExpressionValid(trimmed))
+        {
+            style.WordSpacing = null;
+            style.WordSpacingRaw = null;
+            style.WordSpacingExpression = trimmed;
+            return;
+        }
+
+        switch (ParseWordSpacingLength(trimmed))
+        {
+            case { Kind: DimensionKind.Px } pixels:
+                style.WordSpacing = pixels.Value;
+                style.WordSpacingRaw = null;
+                style.WordSpacingExpression = null;
+                break;
+            case { } relative:
+                style.WordSpacing = null;
+                style.WordSpacingRaw = relative;
+                style.WordSpacingExpression = null;
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Rust <c>parse_word_spacing_length</c>: one finite length token, or a unitless zero.
+    /// </summary>
+    internal static Dimension? ParseWordSpacingLength(string value)
+    {
+        string trimmed = value.Trim();
+        if (trimmed.Length == 0 || trimmed.Contains('%') || trimmed.Contains('('))
+        {
+            return null;
+        }
+
+        foreach (char character in trimmed)
+        {
+            if (char.IsWhiteSpace(character))
+            {
+                return null;
+            }
+        }
+
+        Dimension dimension = DimensionValue(trimmed);
+        if (dimension.Kind is DimensionKind.Auto or DimensionKind.Percent)
+        {
+            return null;
+        }
+
+        Dimension probe = dimension.Resolve(16f, 16f, 1f, 1f);
+        return probe.Kind == DimensionKind.Px && float.IsFinite(probe.Value) ? dimension : null;
+    }
+
+    /// <summary>Whether a <c>word-spacing</c> value is a resolvable length function.</summary>
+    internal static bool WordSpacingExpressionValid(string value) =>
+        value.Contains('(')
+        && Css.CssMathTypes.IsLengthFunction(value)
+        && ResolveContextualLength(value, 16f, 16f, 1f, 1f, 100f) is { } probe
+        && float.IsFinite(probe);
+
     /// <summary>Rust <c>apply_text_indent</c>.</summary>
     /// <summary>A <c>text-align</c> / <c>text-align-last</c> keyword other than <c>auto</c>.</summary>
     internal static TextAlignKeyword? ParseTextAlignKeyword(string value) => value switch
@@ -1996,6 +2084,9 @@ public static partial class ComputedStyle
                 return true;
             case "letter-spacing":
                 ApplyLetterSpacing(style, value);
+                return true;
+            case "word-spacing":
+                ApplyWordSpacing(style, value);
                 return true;
             case "font":
                 ApplyFontShorthand(style, value);

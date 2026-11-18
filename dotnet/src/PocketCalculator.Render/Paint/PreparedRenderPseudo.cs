@@ -131,6 +131,7 @@ public sealed partial class PreparedRender
             : [.. host.FontVariationSettings];
         style.LineHeight = host.LineHeight;
         style.LetterSpacing = host.LetterSpacing;
+        style.WordSpacing = host.WordSpacing;
         style.LetterSpacingNonNormal = host.LetterSpacingNonNormal;
         style.Color = host.Color;
         style.Cursor = host.Cursor;

@@ -770,6 +770,7 @@ internal static partial class DomBuild
         float lineHeight = fsize * 1.2f;
         TextTransform transform = TextTransform.None;
         float letterSpacing = 0f;
+        float wordSpacing = 0f;
         NodeId? parentId = DomTraversal.RenderedParent(tree, id);
         if (parentId is { } parent && context.Styles.TryGetValue(parent, out LayoutStyle? parentStyle))
         {
@@ -779,6 +780,7 @@ internal static partial class DomBuild
             lineHeight = FontResolution.UsedLineHeight(parentStyle);
             transform = parentStyle.TextTransform ?? TextTransform.None;
             letterSpacing = parentStyle.LetterSpacing ?? 0f;
+            wordSpacing = parentStyle.WordSpacing ?? 0f;
 
             List<TaffyNodeId> shaped = BuildShapedWordLeaves(context, id, displayText, parentStyle);
             if (shaped.Count != 0)
@@ -788,7 +790,8 @@ internal static partial class DomBuild
         }
 
         displayText = TransformWordLeafText(displayText, transform);
-        return BuildWordLeaves(context, id, displayText, fsize, lineHeight, isBold, family, letterSpacing);
+        return BuildWordLeaves(
+            context, id, displayText, fsize, lineHeight, isBold, family, letterSpacing, wordSpacing);
     }
 
     /// <summary>Webfont-aware counterpart to <see cref="BuildWordLeaves"/>.</summary>
@@ -894,12 +897,14 @@ internal static partial class DomBuild
         float lineHeight,
         bool isBold,
         string? family,
-        float letterSpacing)
+        float letterSpacing,
+        float wordSpacing)
     {
         List<TaffyNodeId> leaves = [];
         foreach (string token in TokenizeWithSpaces(text))
         {
-            float width = DomTextMeasure.TextWidth(token, fsize, isBold, family, letterSpacing);
+            float width = DomTextMeasure.TextWidth(
+                token, fsize, isBold, family, letterSpacing, wordSpacing);
 
             // A pure-whitespace token keeps its width so adjacent inline content stays visually
             // separated, but contributes no height.
@@ -942,7 +947,8 @@ internal static partial class DomBuild
             FontResolution.UsedLineHeight(style),
             isBold,
             style.FontFamily,
-            style.LetterSpacing ?? 0f);
+            style.LetterSpacing ?? 0f,
+            style.WordSpacing ?? 0f);
     }
 
     internal static bool PseudoRequiresGeneratedBox(LayoutStyle style, string? content)

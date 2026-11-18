@@ -19,6 +19,9 @@ public sealed record SpanAttrs
 
     public required float LetterSpacing { get; init; }
 
+    /// <summary>Computed <c>word-spacing</c> in CSS pixels (upstream bf10c46).</summary>
+    public float WordSpacing { get; init; }
+
     public required bool LetterSpacingNonNormal { get; init; }
 
     public required ushort Weight { get; init; }
@@ -143,6 +146,9 @@ public sealed record SpanAttrs
             LetterSpacingEm = float.IsFinite(LetterSpacing) && LetterSpacing != 0f
                 ? LetterSpacing / F32.Max(FontSize, 1f)
                 : null,
+            WordSpacingEm = float.IsFinite(WordSpacing) && WordSpacing != 0f
+                ? WordSpacing / F32.Max(FontSize, 1f)
+                : null,
             Features = features,
             Color = color,
             Variations = Variations,
@@ -165,6 +171,9 @@ internal sealed record SpanCtx
     public bool LineHeightNormal { get; init; }
 
     public required float LetterSpacing { get; init; }
+
+    /// <summary>Computed <c>word-spacing</c> in CSS pixels (upstream bf10c46).</summary>
+    public float WordSpacing { get; init; }
 
     public required bool LetterSpacingNonNormal { get; init; }
 
@@ -218,6 +227,7 @@ internal sealed record SpanCtx
         LineHeight = LineHeight,
         LineHeightNormal = LineHeightNormal,
         LetterSpacing = LetterSpacing,
+        WordSpacing = WordSpacing,
         LetterSpacingNonNormal = LetterSpacingNonNormal,
         Weight = Weight,
         OpticalSizing = OpticalSizing,

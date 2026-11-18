@@ -158,7 +158,12 @@ public static partial class RenderDom
                     labelWidth = F32.Max(
                         labelWidth,
                         DomTextMeasure.TextWidth(
-                            label, fontSize, bold, style.FontFamily, style.LetterSpacing ?? 0f));
+                            label,
+                            fontSize,
+                            bold,
+                            style.FontFamily,
+                            style.LetterSpacing ?? 0f,
+                            style.WordSpacing ?? 0f));
                 }
 
                 float horizontalEdges = style.Padding.Left

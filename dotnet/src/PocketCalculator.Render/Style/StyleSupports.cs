@@ -1086,6 +1086,10 @@ public static partial class ComputedStyle
             case "height":
             case "block-size":
                 return lower == "fit-content" || DimensionSupported(value, true);
+            case "word-spacing":
+                return lower == "normal"
+                    || ParseWordSpacingLength(value) is not null
+                    || WordSpacingExpressionValid(value.Trim());
             case "min-width":
             case "min-inline-size":
             case "min-height":
@@ -1448,7 +1452,7 @@ public static partial class ComputedStyle
         "mask-image", "-webkit-mask-image", "mask-size", "-webkit-mask-size", "mask-repeat",
         "-webkit-mask-repeat", "color", "content", "-webkit-text-fill-color", "fill", "stroke",
         "stroke-width", "text-anchor", "border-color", "outline", "outline-width", "outline-style", "outline-color",
-        "outline-offset", "color-scheme", "font-size", "letter-spacing", "font", "font-weight",
+        "outline-offset", "color-scheme", "font-size", "letter-spacing", "word-spacing", "font", "font-weight",
         "font-family", "font-style", "font-optical-sizing", "font-variation-settings", "text-align",
         "text-align-last", "text-indent", "text-transform", "text-decoration", "text-decoration-line", "line-height",
         "white-space", "text-overflow", "-webkit-line-clamp", "-webkit-box-orient", "overflow-wrap",

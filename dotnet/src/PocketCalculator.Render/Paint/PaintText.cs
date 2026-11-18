@@ -53,6 +53,7 @@ internal static class PaintText
         bool isBold,
         string? family,
         float letterSpacing,
+        float wordSpacing,
         Rect? clip,
         Mask? clipMask,
         float rasterScale)
@@ -137,6 +138,11 @@ internal static class PaintText
             }
 
             caretX += advance + (isBold ? rasterScale : 0f) + (letterSpacing * rasterScale);
+            if (rune.Value is ' ' or 0xA0)
+            {
+                // Upstream bf10c46: word separators advance by `word-spacing` as well.
+                caretX += wordSpacing * rasterScale;
+            }
         }
     }
 
@@ -368,6 +374,7 @@ internal static class PaintText
                 isBold,
                 style.FontFamily,
                 style.LetterSpacing ?? 0f,
+                style.WordSpacing ?? 0f,
                 clip,
                 clipMask,
                 rasterScale);

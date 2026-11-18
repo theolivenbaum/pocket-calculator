@@ -238,6 +238,7 @@ internal static class PaintNativeControls
             isBold: false,
             style.FontFamily,
             style.LetterSpacing ?? 0f,
+            style.WordSpacing ?? 0f,
             clip,
             clipMask,
             rasterScale);

@@ -1097,6 +1097,17 @@ public sealed class TextShaper(FontDatabase database)
                 }
             }
 
+            // Upstream bf10c46 (vendored cosmic-text shape_fallback): word-spacing is added
+            // once, after the last glyph of a cluster that starts with a word separator.
+            if (glyphAttrs.WordSpacingEm is { } wordSpacing
+                && wordSpacing != 0f
+                && startGlyph < line.Length
+                && line[startGlyph] is ' ' or '\u00a0'
+                && (index + 1 >= infos.Length || infos[index + 1].Cluster != info.Cluster))
+            {
+                letterSpacing += wordSpacing;
+            }
+
             // DEVIATION from crates/obscura-render/src/inline.rs (cosmic-text), which treats a
             // fallback face like the primary one. Chromium on Linux does not, in two ways that
             // CJK text makes visible on every line (measured on Chromium 141 with Liberation

@@ -56,6 +56,7 @@ public static partial class RenderDom
         internal FontOpticalSizing FontOpticalSizing = Render.FontOpticalSizing.Auto;
         internal List<FontVariationSetting> FontVariationSettings = NoVariations;
         internal float LetterSpacing;
+        internal float WordSpacing;
         internal bool LetterSpacingNonNormal;
         internal ContainerType ContainerType = ContainerType.Normal;
         internal List<string> ContainerNames = NoContainerNames;
@@ -154,6 +155,7 @@ public static partial class RenderDom
             && (ReferenceEquals(FontVariationSettings, other.FontVariationSettings)
                 || FontVariationSettings.SequenceEqual(other.FontVariationSettings))
             && LetterSpacing.Equals(other.LetterSpacing)
+            && WordSpacing.Equals(other.WordSpacing)
             && LetterSpacingNonNormal == other.LetterSpacingNonNormal
             && ContainerType == other.ContainerType
             && (ReferenceEquals(ContainerNames, other.ContainerNames)
@@ -208,6 +210,7 @@ public static partial class RenderDom
             FontOpticalSizing = FontOpticalSizing,
             FontVariationSettings = FontVariationSettings,
             LetterSpacing = LetterSpacing,
+            WordSpacing = WordSpacing,
             LetterSpacingNonNormal = LetterSpacingNonNormal,
             ContainerType = ContainerType,
             ContainerNames = ContainerNames,
