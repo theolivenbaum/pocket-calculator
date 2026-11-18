@@ -12548,6 +12548,40 @@ public sealed partial class RuntimeTests
         Assert.NotNull(info.ObjectId);
     }
 
+    // upstream daac810: test_style_set_property_without_change_queues_no_mutation. An unchanged
+    // style.setProperty rewrote the style attribute and queued a mutation record, so an observer
+    // that re-applies the same style re-triggered itself forever.
+    [Fact]
+    public async Task TestStyleSetPropertyWithoutChangeQueuesNoMutation()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body><p>x</p></body></html>");
+        var info = await fixture.Runtime.CallFunctionOnForCdpAsync(
+            """
+            async () => {
+                const body = document.body;
+                let calls = 0, records = 0;
+                const observer = new MutationObserver((mutations) => {
+                    calls++;
+                    records += mutations.length;
+                    if (calls < 50) body.style.setProperty("top", "0px", "important");
+                });
+                observer.observe(document.documentElement, {
+                    subtree: true, attributes: true, attributeFilter: ["style"],
+                });
+                body.style.setProperty("top", "0px", "important");
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                body.style.removeProperty("left");
+                body.style.top = "0px";
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                observer.disconnect();
+                return { calls, records, style: body.getAttribute("style") };
+            }
+            """,
+            null, [], returnByValue: true, awaitPromise: true);
+        Assert.False(info.Thrown, info.Description);
+        Assert.Equal("{\"calls\":1,\"records\":1,\"style\":\"top: 0px;\"}", info.Value!.ToJsonString());
+    }
+
     [Fact]
     public async Task CallFunctionOnMarksARejectionInsteadOfReturningIt()
     {

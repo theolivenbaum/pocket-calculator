@@ -344,7 +344,7 @@ Security (exposed today unless noted):
 - [x] `5bfac24` - fetch SSRF gate fails open when `UrlRecord.Parse` rejects the URL
       (`FetchOps.cs`, initial URL and intercept rewrite)
 - [x] `1ee3ac1` - markdown extraction is 2^depth on nested tables, unbounded recursion
-- [ ] `daac810` (+ merge `4724f4b`) - `setProperty`/`removeProperty` of an unchanged
+- [x] `daac810` (+ merge `4724f4b`) - `setProperty`/`removeProperty` of an unchanged
       value must not rewrite `style`
 - [ ] `a449a80` - MCP refs must be checked against the recorded node
 - [ ] `74ac75f`, `a3171f3`, `0d11d55`, `5efc4a1` - failed/evicted images refetched on
