@@ -312,6 +312,9 @@ public sealed partial class PocketCalculatorJsRuntime
     /// </summary>
     public void NoteUserActivation() => State.UserActivationTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
 
+    /// <summary>True when the page queued a navigation nobody has taken yet.</summary>
+    public bool HasPendingNavigation => State.PendingNavigation is not null;
+
     public PendingNavigation? TakePendingNavigation()
     {
         var pending = State.PendingNavigation;

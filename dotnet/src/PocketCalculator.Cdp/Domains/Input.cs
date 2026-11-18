@@ -244,11 +244,16 @@ public static class Input
                         (uint frameId, double fx, double fy) = page.FrameAtPoint(x, y);
                         page.EvaluateHostIn(frameId, MouseReleasedJs(
                             fx, fy, buttonCode, clickCount, altKey, ctrlKey, metaKey, shiftKey));
-                        PocketCalculator.Browser.PageNavigationOutcome moved;
+                        PocketCalculator.Browser.PageNavigationOutcome moved = PocketCalculator.Browser.PageNavigationOutcome.None;
                         try
                         {
-                            moved = await page.ProcessPendingNavigationOutcomeAsync()
-                                .ConfigureAwait(false);
+                            // Under Fetch interception the connection processor performs the
+                            // navigation, where its paused document request can be answered.
+                            if (!page.PendingNavigationNeedsInterception)
+                            {
+                                moved = await page.ProcessPendingNavigationOutcomeAsync()
+                                    .ConfigureAwait(false);
+                            }
                         }
                         catch (PocketCalculator.Browser.PageException error)
                         {

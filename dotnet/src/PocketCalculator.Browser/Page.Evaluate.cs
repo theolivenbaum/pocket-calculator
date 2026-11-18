@@ -371,6 +371,16 @@ public sealed partial class Page
 
     public PendingNavigation? TakePendingNavigation() => Js?.TakePendingNavigation();
 
+    /// <summary>True when the page queued a navigation nobody has taken yet.</summary>
+    public bool HasPendingNavigation => Js?.HasPendingNavigation ?? false;
+
+    /// <summary>
+    /// A queued document navigation of this page must run where Fetch pauses can be answered
+    /// (upstream b76d966): the CDP connection processor, not an inline dispatch, which would
+    /// wait on a pause nobody reads. True while Fetch interception is on and one is queued.
+    /// </summary>
+    public bool PendingNavigationNeedsInterception => InterceptEnabled && _interceptTx is not null && HasPendingNavigation;
+
     /// <summary>
     /// Discard a queued document navigation and cancel the document's pending resource
     /// loads (upstream 361f15d, <c>Page.stopLoading</c>). The CDP processor separately

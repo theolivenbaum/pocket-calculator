@@ -468,6 +468,21 @@ public sealed class PocketCalculatorHttpClient : IDisposable
         FetchWithProfileAsync(method, url, body, callbacks, request, cancellationToken);
 
     /// <summary>
+    /// A navigation an interceptor continued (upstream b76d966): <paramref name="requestHeaders"/>,
+    /// when given, replace the client's extra headers for this request only, so a header a
+    /// client set on one page's navigation never reaches another page's requests. Never cached.
+    /// </summary>
+    public Task<Response> FetchNavigationAsync(
+        HttpMethod method,
+        Uri url,
+        byte[]? body,
+        ResourceRequest request,
+        IReadOnlyDictionary<string, string>? requestHeaders,
+        CallbackRegistry? callbacks,
+        CancellationToken cancellationToken = default) =>
+        FetchWithProfileUncachedAsync(method, url, body, callbacks, request, cancellationToken, requestHeaders);
+
+    /// <summary>
     /// Fetch a non-navigation resource through the same validated client, cookie jar,
     /// proxy, connection pool, interception and callback path as the owning page. The
     /// renderer can seed its byte cache from this result instead of opening a second
@@ -691,8 +706,14 @@ public sealed class PocketCalculatorHttpClient : IDisposable
         byte[]? initialBody,
         CallbackRegistry? callbacks,
         ResourceRequest request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, string>? requestHeaders = null)
     {
+        // Request-local headers (an intercepted navigation's Continue) replace the extra
+        // headers and are edited per hop below; the client-wide set is never touched.
+        Dictionary<string, string>? localHeaders = requestHeaders is null
+            ? null
+            : new Dictionary<string, string>(requestHeaders, StringComparer.Ordinal);
         // file: is served only to an initiator that may read local files (C4); the gate
         // runs before the file system is touched, so a refusal leaks nothing.
         SsrfGuard.ValidateUrl(url, AllowPrivateNetwork, SsrfGuard.FileAccessAllowed(request));
@@ -757,7 +778,9 @@ public sealed class PocketCalculatorHttpClient : IDisposable
             {
                 Url = currentUrl,
                 Method = method.Method,
-                Headers = ExtraHeaders,
+                Headers = localHeaders is null
+                    ? ExtraHeaders
+                    : new Dictionary<string, string>(localHeaders, StringComparer.Ordinal),
                 ResourceType = request.ResourceType,
             };
 
@@ -792,7 +815,8 @@ public sealed class PocketCalculatorHttpClient : IDisposable
             }
 
             var requestOrigin = SerializedRequestOrigin(request, redirectTainted);
-            using var message = BuildRequest(method, currentUrl, body, request, requestOrigin, redirects, hopHeaders);
+            using var message = BuildRequest(
+                method, currentUrl, body, request, requestOrigin, redirects, hopHeaders, localHeaders);
 
             // Deviation (SECURITY.md M3): HttpClient.Timeout stops at the response
             // headers under ResponseHeadersRead, so a server trickling the body held a
@@ -867,13 +891,31 @@ public sealed class PocketCalculatorHttpClient : IDisposable
                         }
 
                         redirectTainted |= RedirectTaintsOrigin(request, currentUrl, nextUrl);
+                        if (localHeaders is not null && !UrlOrigin.SameOrigin(currentUrl, nextUrl))
+                        {
+                            // Fetch: a cross-origin redirect drops Authorization.
+                            RemoveHeaders(localHeaders, static name =>
+                                name.Equals("authorization", StringComparison.OrdinalIgnoreCase));
+                        }
+
                         redirects.Add(currentUrl);
                         redirectChain.Add(new RedirectHop(currentUrl, status, responseHeaders));
                         currentUrl = nextUrl;
-                        if (status is 301 or 302 or 303)
+                        // upstream b76d966, the Fetch redirect rule Chromium follows: 301/302
+                        // turn only a POST into a GET, 303 turns anything but GET/HEAD into a
+                        // GET; any other method and its body survive the hop. The port used to
+                        // turn every 301/302/303 into a GET.
+                        if ((status is 301 or 302 && method == HttpMethod.Post)
+                            || (status == 303 && method != HttpMethod.Get && method != HttpMethod.Head))
                         {
                             method = HttpMethod.Get;
                             body = null;
+                            if (localHeaders is not null)
+                            {
+                                RemoveHeaders(localHeaders, static name => name.ToLowerInvariant() is
+                                    "content-type" or "content-encoding" or "content-language"
+                                    or "content-location" or "content-length");
+                            }
                         }
 
                         continue;
@@ -937,7 +979,8 @@ public sealed class PocketCalculatorHttpClient : IDisposable
         ResourceRequest request,
         string requestOrigin,
         IReadOnlyList<Uri> redirects,
-        IReadOnlyDictionary<string, string>? hopHeaders)
+        IReadOnlyDictionary<string, string>? hopHeaders,
+        IReadOnlyDictionary<string, string>? requestHeaders = null)
     {
         var message = new HttpRequestMessage(method, currentUrl);
         var headers = message.Headers;
@@ -1001,8 +1044,17 @@ public sealed class PocketCalculatorHttpClient : IDisposable
             }
         }
 
-        foreach (var (name, value) in ExtraHeaders)
+        // Content headers a caller supplied (a continued navigation's Content-Type) belong on
+        // the body; HttpRequestHeaders refuses them.
+        List<(string Name, string Value)>? contentHeaders = null;
+        foreach (var (name, value) in requestHeaders ?? ExtraHeaders)
         {
+            if (name.StartsWith("content-", StringComparison.OrdinalIgnoreCase))
+            {
+                (contentHeaders ??= []).Add((name, value));
+                continue;
+            }
+
             headers.Remove(name);
             headers.TryAddWithoutValidation(name, value);
         }
@@ -1024,10 +1076,26 @@ public sealed class PocketCalculatorHttpClient : IDisposable
             headers.TryAddWithoutValidation("Origin", requestOrigin);
         }
 
-        if (body is not null)
+        // A caller's content headers go out even without a body (a continued HEAD keeps its
+        // Content-Type, as upstream's transport sends it).
+        if (body is not null || contentHeaders is not null)
         {
-            var content = new ByteArrayContent(body);
-            if (method == HttpMethod.Post)
+            var content = new ByteArrayContent(body ?? []);
+            var suppliedType = false;
+            if (contentHeaders is not null)
+            {
+                foreach (var (name, value) in contentHeaders)
+                {
+                    content.Headers.Remove(name);
+                    if (content.Headers.TryAddWithoutValidation(name, value)
+                        && name.Equals("content-type", StringComparison.OrdinalIgnoreCase))
+                    {
+                        suppliedType = true;
+                    }
+                }
+            }
+
+            if (body is not null && method == HttpMethod.Post && !suppliedType)
             {
                 content.Headers.TryAddWithoutValidation(
                     "Content-Type",
@@ -1038,6 +1106,14 @@ public sealed class PocketCalculatorHttpClient : IDisposable
         }
 
         return message;
+    }
+
+    private static void RemoveHeaders(Dictionary<string, string> headers, Func<string, bool> drop)
+    {
+        foreach (var name in headers.Keys.Where(drop).ToList())
+        {
+            headers.Remove(name);
+        }
     }
 
     private static bool IsValidHeaderValue(string value)

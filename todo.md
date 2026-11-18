@@ -386,8 +386,12 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] `2d323dd` + merge `61aa8fb`: only requests matching the Fetch.enable patterns pause
       (scripted fetch/XHR and post-navigation pauses), with Chromium's `*`/`?`/`\\` pattern
       dialect and backtracking; Network.setBlockedURLs keeps its star-only matcher
-- [ ] CDP Fetch: `b76d966`
-      (main-document interception), `5e58c86`; with open `dfc546d`
+- [x] CDP Fetch `b76d966` (main-document interception): an HTTP(S) document request matching
+      the Fetch.enable patterns pauses before transport under its own request id, which is the
+      navigation's loader; fulfill (exact bytes, repeated Set-Cookie), continue (request-local
+      URL/method/headers/body) and fail; see Known deviations. Page.stopLoading of a paused
+      document is not ported
+- [ ] CDP Fetch: `5e58c86`; with open `dfc546d`
 - [x] `939086a`/`e70183d` setBypassCSP (validated ack), `e5bcd75` Page.close and stopLoading
       (stopLoading drops a queued navigation; cancelling loads is `361f15d`),
       `192561c` removeScriptToEvaluateOnNewDocument errors on an unknown id (preload scripts
@@ -2356,6 +2360,19 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   control is not focusable; `<label>` (LabelText) has an empty name; `<p>` is `paragraph`. MCP
   snapshot lines keep upstream's format (`checked=false` unquoted). Still different: Chromium
   lists a select's options and its internal `MenuListPopup` / `ListMarker` nodes.
+
+- Fetch main-document interception (`b76d966`, with the Continue profile part of `7341597`): a
+  continued navigation keeps the navigation's own `ResourceRequest` (initiator, referrer, cookie
+  context); the port has no stealth transport, so only the plain client takes request-local
+  headers. Under interception a navigation a command queues (Runtime.evaluate, an Input click, a
+  form submit) runs from the connection processor instead of inline in dispatch, but only while
+  the page has interception on; upstream does so whenever the server owns an intercept channel.
+  The committed document is the last `IsNavigation` event, not the last same-URL one. Not ported:
+  the `Page.stopLoading` cancellation of a paused document (`emit_aborted_navigation` with
+  `request_started`); the port has no in-flight navigation cancellation. Content-* headers from
+  extra or request-local headers now go on the request body (they used to throw), and the
+  Fetch redirect rule (301/302 rewrite only POST, 303 anything but GET/HEAD) applies to every
+  navigation, as upstream.
 
 ### Operator font directories load per render pass, not into a cached base database
 

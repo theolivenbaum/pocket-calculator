@@ -647,10 +647,16 @@ public abstract record InterceptResolution
         IReadOnlyDictionary<string, string>? Headers,
         byte[]? Body) : InterceptResolution;
 
+    /// <summary>
+    /// Mock the response. <paramref name="BodyBytes"/>, when set, is the exact body (upstream
+    /// b76d966 keeps a fulfilled document's bytes, which a UTF-8 <paramref name="Body"/> cannot
+    /// carry); <paramref name="Body"/> is its UTF-8 reading for the script-facing paths.
+    /// </summary>
     public sealed record Fulfill(
         int Status,
         IReadOnlyDictionary<string, string> Headers,
-        string Body) : InterceptResolution;
+        string Body,
+        byte[]? BodyBytes = null) : InterceptResolution;
 
     public sealed record Fail(string Reason) : InterceptResolution;
 }
@@ -667,6 +673,13 @@ public sealed class InterceptedRequest
     public required IReadOnlyDictionary<string, string> Headers { get; init; }
 
     public required string ResourceType { get; init; }
+
+    /// <summary>
+    /// The page the request belongs to. Set for a page's own document request (upstream
+    /// b76d966), whose id is <c>{PageId}.{n}</c> in the page's network-event namespace; empty
+    /// for a script-initiated request, which the CDP layer routes to the live page.
+    /// </summary>
+    public string PageId { get; init; } = string.Empty;
 
     /// <summary>The consumer completes this with its decision (Rust's oneshot sender).</summary>
     public TaskCompletionSource<InterceptResolution> Resolver { get; } =

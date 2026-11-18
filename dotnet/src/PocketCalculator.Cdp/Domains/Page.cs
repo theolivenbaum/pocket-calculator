@@ -274,7 +274,8 @@ public static partial class Page
 
         // Playwright needs `Network.requestWillBeSent` for the main document to arrive
         // BEFORE `Page.frameNavigated` (issue #190).
-        if (navIndex is { } mainIndex)
+        // An intercepted document was announced when it paused (upstream b76d966).
+        if (navIndex is { } mainIndex && !networkEvents[mainIndex].Intercepted)
         {
             EmitDocumentRequests(ctx, es, loaderId, frameId, networkEvents[mainIndex]);
         }
@@ -331,8 +332,10 @@ public static partial class Page
                 string rid = navRequestIds[i];
                 // upstream 2d323dd: only requests matching the Fetch.enable patterns pause, as in
                 // Chrome; no patterns means every request. Network reporting below is unaffected.
+                // An intercepted request already paused for real (upstream b76d966).
                 string pausedUrl = networkEvent.Redirects.Count != 0 ? networkEvent.Redirects[0].Url : networkEvent.Url;
-                if (!PocketCalculator.Js.Ops.FetchOps.ShouldIntercept(true, ctx.FetchIntercept.Patterns, pausedUrl))
+                if (networkEvent.Intercepted
+                    || !PocketCalculator.Js.Ops.FetchOps.ShouldIntercept(true, ctx.FetchIntercept.Patterns, pausedUrl))
                 {
                     continue;
                 }
@@ -365,7 +368,7 @@ public static partial class Page
         {
             NetworkEvent networkEvent = networkEvents[i];
             string rid = navRequestIds[i];
-            if (navIndex != i)
+            if (navIndex != i && !networkEvent.Intercepted)
             {
                 ctx.PendingEvents.Add(new CdpEvent
                 {
@@ -375,10 +378,15 @@ public static partial class Page
                 });
             }
 
+            // An intercepted document of this page (one a script navigated away from, or the
+            // committed one) is its own loader (upstream b76d966).
+            bool ownLoader = networkEvent.Intercepted
+                && string.Equals(networkEvent.ResourceType, "Document", StringComparison.Ordinal)
+                && networkEvent.RequestId.StartsWith(pageId + ".", StringComparison.Ordinal);
             ctx.PendingEvents.Add(new CdpEvent
             {
                 Method = "Network.responseReceived",
-                Params = ResponseReceived(rid, loaderId, networkEvent, frameId),
+                Params = ResponseReceived(rid, ownLoader ? rid : loaderId, networkEvent, frameId),
                 SessionId = es,
             });
             ctx.PendingEvents.Add(new CdpEvent
@@ -647,6 +655,32 @@ public static partial class Page
     }
 
     /// <summary>
+    /// <c>Network.loadingFailed</c> for a paused document request that never got a response
+    /// (upstream b76d966 <c>emit_navigation_failure</c>).
+    /// </summary>
+    internal static void EmitNavigationFailure(
+        CdpContext ctx,
+        string? sessionId,
+        string requestId,
+        string errorText)
+    {
+        ArgumentNullException.ThrowIfNull(ctx);
+        ctx.PendingEvents.Add(new CdpEvent
+        {
+            Method = "Network.loadingFailed",
+            Params = new JsonObject
+            {
+                ["requestId"] = requestId,
+                ["timestamp"] = JsonValue.Create(Timestamp()),
+                ["type"] = "Document",
+                ["errorText"] = errorText,
+                ["canceled"] = string.Equals(errorText, "net::ERR_ABORTED", StringComparison.Ordinal),
+            },
+            SessionId = sessionId,
+        });
+    }
+
+    /// <summary>
     /// The index of the navigation's own document among <paramref name="networkEvents"/>,
     /// or null when it is not there.
     /// </summary>
@@ -660,7 +694,9 @@ public static partial class Page
     /// </remarks>
     internal static int? MainDocumentIndex(IReadOnlyList<NetworkEvent> networkEvents, string pageUrl)
     {
-        for (int i = 0; i < networkEvents.Count; i++)
+        // The last one: a navigation keeps the intercepted documents a script navigated away
+        // from (upstream b76d966), and the committed document is the one recorded last.
+        for (int i = networkEvents.Count - 1; i >= 0; i--)
         {
             if (networkEvents[i].IsNavigation)
             {

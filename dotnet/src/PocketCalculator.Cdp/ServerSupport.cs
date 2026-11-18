@@ -253,12 +253,18 @@ internal static class ServerSupport
     /// Turn one intercepted request into the <c>Network.requestWillBeSent</c> +
     /// <c>Fetch.requestPaused</c> pair the client resolves, and park its resolver.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="loader"/> is set for the navigating page's own document request
+    /// (upstream b76d966): it is announced under that loader with its URL as the document URL,
+    /// and parked as a main-document pause, whose failure the navigation reports itself.
+    /// </remarks>
     internal static void EmitInterceptedRequest(
         InterceptedRequest intercepted,
         string frameId,
         string? sessionId,
         ChannelWriter<string> replyTx,
-        Dictionary<string, TaskCompletionSource<InterceptResolution>> interceptedPaused)
+        Dictionary<string, PausedIntercept> interceptedPaused,
+        string? loader = null)
     {
         CdpLog.Info(
             $"INTERCEPTION: requestPaused for {intercepted.Method} {intercepted.Url} (sending to client)");
@@ -278,8 +284,8 @@ internal static class ServerSupport
             ["params"] = new JsonObject
             {
                 ["requestId"] = intercepted.RequestId,
-                ["loaderId"] = "",
-                ["documentURL"] = "",
+                ["loaderId"] = loader ?? "",
+                ["documentURL"] = loader is null ? "" : intercepted.Url,
                 ["request"] = Request(),
                 ["timestamp"] = now,
                 ["wallTime"] = now,
@@ -308,8 +314,17 @@ internal static class ServerSupport
             ["sessionId"] = sessionId,
         };
         replyTx.TryWrite(CdpJson.Serialize(requestPaused));
-        interceptedPaused[intercepted.RequestId] = intercepted.Resolver;
+        interceptedPaused[intercepted.RequestId] = new PausedIntercept(intercepted.Resolver, loader is not null);
     }
+
+    /// <summary>
+    /// A page's own document request, as opposed to a frame document a script fetched: the
+    /// page's <c>{pageId}.{n}</c> network-event namespace, not <c>intercept-N</c> (upstream b76d966).
+    /// </summary>
+    internal static bool IsMainDocumentIntercept(InterceptedRequest request, string pageId) =>
+        string.Equals(request.PageId, pageId, StringComparison.Ordinal)
+        && string.Equals(request.ResourceType, "Document", StringComparison.Ordinal)
+        && request.RequestId.StartsWith(pageId + ".", StringComparison.Ordinal);
 
     internal static JsonObject HeadersObject(IReadOnlyDictionary<string, string> headers)
     {
@@ -331,7 +346,7 @@ internal static class ServerSupport
         string text,
         CdpContext ctx,
         ChannelWriter<string> replyTx,
-        Dictionary<string, TaskCompletionSource<InterceptResolution>> interceptedPaused)
+        Dictionary<string, PausedIntercept> interceptedPaused)
     {
         _ = ctx;
         if (CdpRequest.TryParse(text) is not { } req)
@@ -382,13 +397,28 @@ internal static class ServerSupport
                         if (header.Get("name").AsString() is { } name &&
                             header.Get("value").AsString() is { } value)
                         {
-                            headers[name] = value;
+                            // upstream b76d966: repeated Set-Cookie headers all survive, joined
+                            // by newlines under "set-cookie"; the last of any other name wins.
+                            if (name.Equals("set-cookie", StringComparison.OrdinalIgnoreCase))
+                            {
+                                headers["set-cookie"] = headers.TryGetValue("set-cookie", out var cookies)
+                                    ? cookies + "\n" + value
+                                    : value;
+                            }
+                            else
+                            {
+                                headers[name] = value;
+                            }
                         }
                     }
                 }
 
+                // The exact bytes go with the UTF-8 reading, for a fulfilled document.
                 resolution = new InterceptResolution.Fulfill(
-                    status, headers, bytes is null ? string.Empty : Encoding.UTF8.GetString(bytes));
+                    status,
+                    headers,
+                    bytes is null ? string.Empty : Encoding.UTF8.GetString(bytes),
+                    bytes ?? []);
                 break;
             }
 
@@ -404,8 +434,8 @@ internal static class ServerSupport
             return true;
         }
 
-        interceptedPaused.Remove(requestId, out var resolver);
-        resolver!.TrySetResult(resolution);
+        interceptedPaused.Remove(requestId, out var paused);
+        paused!.Resolver.TrySetResult(resolution);
         replyTx.TryWrite(
             CdpResponse.Success(req.Id, new JsonObject(), req.SessionId).ToJson());
         return true;
@@ -460,3 +490,11 @@ internal static class ServerSupport
 
     internal static string FormatPort(int port) => port.ToString(CultureInfo.InvariantCulture);
 }
+
+/// <summary>A request the client was shown paused, waiting on its resolution.</summary>
+/// <param name="Resolver">Completes the waiting fetch or navigation.</param>
+/// <param name="MainDocument">
+/// The navigating page's own document request (upstream b76d966). Its failure is reported by
+/// the navigation, under the navigation's loader, not by <c>Fetch.failRequest</c>.
+/// </param>
+internal sealed record PausedIntercept(TaskCompletionSource<InterceptResolution> Resolver, bool MainDocument = false);

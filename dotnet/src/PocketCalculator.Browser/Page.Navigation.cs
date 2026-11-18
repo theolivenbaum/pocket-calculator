@@ -297,6 +297,9 @@ public sealed partial class Page
         string documentReferrer = initialReferrer;
         ResourceRequest profile = initialProfile;
         int chainLimit = NavigationChainLimit;
+        // upstream b76d966: cleared once per navigation, not per document, so an intercepted
+        // document a script navigated away from keeps the event its paused request completes on.
+        NetworkEvents.Clear();
         for (int chain = 0; chain < chainLimit; chain++)
         {
             try
@@ -349,6 +352,157 @@ public sealed partial class Page
         }
     }
 
+    /// <summary>
+    /// Pause an HTTP(S) document request matching the Fetch.enable patterns before it reaches
+    /// the transport, and apply the consumer's decision (upstream b76d966): Fulfill supplies
+    /// the document without contacting the server, Continue sends it with request-local
+    /// URL/method/header/body overrides, Fail ends the navigation with <c>net::ERR_*</c>.
+    /// Null when the request is not intercepted.
+    /// </summary>
+    /// <remarks>
+    /// A Continue keeps the navigation's own fetch profile, so its initiator, referrer and
+    /// cookie context survive (the document-identity part of upstream 7341597), and a URL
+    /// rewrite passes the same SSRF gate as any other request. The document URL stays the one
+    /// asked for: a network rewrite does not rewrite the document.
+    /// </remarks>
+    private async Task<Response?> InterceptNavigationAsync(
+        UrlRecord url,
+        string method,
+        string body,
+        ResourceRequest profile,
+        CancellationToken cancellationToken)
+    {
+        if (url.Scheme is not ("http" or "https")
+            || _interceptTx is not { } sink
+            || !FetchOps.ShouldIntercept(InterceptEnabled, InterceptBlockPatterns, url.Href))
+        {
+            return null;
+        }
+
+        string requestMethod = method.Length == 0 ? "GET" : method;
+        IReadOnlyDictionary<string, string> requestHeaders = HttpClient.ExtraHeaders;
+        var request = new InterceptedRequest
+        {
+            RequestId = $"{Id}.{(_networkEventCounter + 1).ToString(CultureInfo.InvariantCulture)}",
+            PageId = Id,
+            Url = url.Href,
+            Method = requestMethod,
+            Headers = requestHeaders,
+            ResourceType = "Document",
+        };
+        if (!sink.TrySend(request))
+        {
+            return null;
+        }
+
+        InterceptResolution resolution = await request.Resolver.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        Uri requestUri = NetUrl.From(url);
+        switch (resolution)
+        {
+            case InterceptResolution.Fulfill fulfill:
+            {
+                byte[] bytes = fulfill.BodyBytes ?? System.Text.Encoding.UTF8.GetBytes(fulfill.Body);
+                if (bytes.Length > ResourceRequest.Navigation().MaxResponseBytes)
+                {
+                    throw PageException.Network("Fulfilled document exceeds the response body limit");
+                }
+
+                var headers = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach ((string name, string value) in fulfill.Headers)
+                {
+                    string lower = name.ToLowerInvariant();
+                    headers[lower] = lower == "set-cookie" && headers.TryGetValue(lower, out string? earlier)
+                        ? earlier + "\n" + value
+                        : value;
+                }
+
+                if (headers.TryGetValue("set-cookie", out string? cookies))
+                {
+                    foreach (string cookie in cookies.Split('\n'))
+                    {
+                        Context.CookieJar.SetCookie(cookie, requestUri);
+                    }
+                }
+
+                var response = new Response
+                {
+                    Url = requestUri,
+                    Status = fulfill.Status,
+                    Headers = headers,
+                    Body = bytes,
+                    RedirectedFrom = [],
+                };
+                var info = new RequestInfo
+                {
+                    Url = requestUri,
+                    Method = requestMethod,
+                    Headers = requestHeaders,
+                    ResourceType = ResourceType.Document,
+                };
+                _callbacks.FireRequest(info);
+                _callbacks.FireResponse(info, response);
+                return response;
+            }
+
+            case InterceptResolution.Continue continued:
+            {
+                Uri target = requestUri;
+                if (continued.Url is { } rewrite)
+                {
+                    UrlRecord rewritten = PageUrl.TryParse(rewrite, out UrlParseError rewriteError)
+                        ?? throw PageException.InvalidUrl(rewriteError.Message());
+                    if (!string.Equals(rewritten.Scheme, url.Scheme, StringComparison.Ordinal))
+                    {
+                        throw PageException.Network("Interception cannot change a navigation's URL scheme");
+                    }
+
+                    target = NetUrl.From(rewritten);
+                }
+
+                string continuedMethod = continued.Method ?? requestMethod;
+                byte[]? continuedBody = continued.Body
+                    ?? (string.Equals(continuedMethod, "POST", StringComparison.Ordinal) || body.Length != 0
+                        ? System.Text.Encoding.UTF8.GetBytes(body)
+                        : null);
+                return await HttpClient
+                    .FetchNavigationAsync(
+                        new HttpMethod(continuedMethod),
+                        target,
+                        continuedBody,
+                        profile,
+                        continued.Headers,
+                        _callbacks,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            case InterceptResolution.Fail fail:
+                throw PageException.Network(NetErrorName(fail.Reason));
+
+            default:
+                throw PageException.Network("net::ERR_ABORTED");
+        }
+    }
+
+    /// <summary>A CDP <c>ErrorReason</c> as Chromium's error name: <c>ConnectionRefused</c> is <c>net::ERR_CONNECTION_REFUSED</c>.</summary>
+    public static string NetErrorName(string reason)
+    {
+        ArgumentNullException.ThrowIfNull(reason);
+        var error = new System.Text.StringBuilder("net::ERR_", reason.Length + 16);
+        for (int i = 0; i < reason.Length; i++)
+        {
+            char c = reason[i];
+            if (i > 0 && char.IsAsciiLetterUpper(c))
+            {
+                error.Append('_');
+            }
+
+            error.Append(char.ToUpperInvariant(c));
+        }
+
+        return error.ToString();
+    }
+
     private async Task NavigateSingleAsync(
         string urlString,
         WaitUntil waitUntil,
@@ -375,7 +529,12 @@ public sealed partial class Page
         Referrer = referrer;
         ReferrerPolicyHeader = null;
         Url = url;
-        NetworkEvents.Clear();
+        // The navigation's earlier intercepted documents stay (upstream b76d966): the CDP client
+        // was shown their paused requests, and each must finish. Everything else is this one's.
+        string documentPrefix = Id + ".";
+        NetworkEvents.RemoveAll(e => !(e.Intercepted
+            && string.Equals(e.ResourceType, "Document", StringComparison.Ordinal)
+            && e.RequestId.StartsWith(documentPrefix, StringComparison.Ordinal)));
 
         // The request ids of the outgoing document go with the events that named
         // them, so a body still held for one can never be asked for again. Chromium
@@ -445,9 +604,16 @@ public sealed partial class Page
         }
 
         Response response;
+        bool wasIntercepted = false;
         try
         {
-            if (string.Equals(url.Scheme, "data", StringComparison.Ordinal))
+            if (await InterceptNavigationAsync(url, method, body, profile, cancellationToken)
+                    .ConfigureAwait(false) is { } intercepted)
+            {
+                response = intercepted;
+                wasIntercepted = true;
+            }
+            else if (string.Equals(url.Scheme, "data", StringComparison.Ordinal))
             {
                 string meta = urlString["data:".Length..];
                 int comma = meta.IndexOf(',', StringComparison.Ordinal);
@@ -488,6 +654,12 @@ public sealed partial class Page
                     .ConfigureAwait(false);
             }
         }
+        catch (PageException)
+        {
+            // An interception decision (InterceptNavigationAsync), already in the page's terms.
+            Lifecycle = LifecycleState.Failed;
+            throw;
+        }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             Lifecycle = LifecycleState.Failed;
@@ -522,7 +694,10 @@ public sealed partial class Page
             response.Headers,
             response.Body,
             mainIsBinary,
-            redirects);
+            redirects,
+            // upstream b76d966 records the method the document was requested with.
+            method.Length == 0 ? "GET" : method,
+            wasIntercepted);
 
         ReferrerPolicyHeader = ReferrerPolicies.ParseHeader(response.Header("referrer-policy"));
 

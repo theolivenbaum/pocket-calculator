@@ -86,6 +86,16 @@ public static class Runtime
     private static async Task EmitPostEvalNavAsync(CdpContext ctx, string? sessionId)
     {
         BrowserPage page = ctx.GetSessionPageMut(sessionId) ?? throw new DomainError("No page");
+        // upstream b76d966: under Fetch interception the connection processor performs the
+        // navigation outside dispatch, so its paused document request can be answered.
+        // Deviation: upstream defers every queued navigation whenever the server owns an
+        // intercept channel; the port defers only while the page has interception on, and
+        // keeps the inline path (and its event order) otherwise.
+        if (page.PendingNavigationNeedsInterception)
+        {
+            return;
+        }
+
         PageNavigationOutcome navigation;
         try
         {

@@ -40,8 +40,7 @@ public static partial class CdpServer
         var intercepted = Channel.CreateUnbounded<InterceptedRequest>();
         ctx.InterceptSink = new ChannelInterceptSink(intercepted.Writer);
         var interceptRx = intercepted.Reader;
-        Dictionary<string, TaskCompletionSource<InterceptResolution>> interceptedPaused =
-            new(StringComparer.Ordinal);
+        Dictionary<string, PausedIntercept> interceptedPaused = new(StringComparer.Ordinal);
 
         // Issue #19 follow-up: messages deferred from inside the interception path
         // because routing them through dispatch while a navigation was in flight
@@ -309,6 +308,25 @@ public static partial class CdpServer
                     }
                 }
 
+                // A navigation the command queued on a page under Fetch interception
+                // (CheckPendingNavigation leaves those): its document request can pause.
+                if (connectionReplyTx is { } queuedReply &&
+                    LiveJsPage(ctx) is { InterceptEnabled: true } &&
+                    TakeLivePendingNavigation(ctx) is { } queued)
+                {
+                    var (queuedSession, queuedPending) = queued;
+                    await ProcessWithInterceptionAsync(
+                        CdpJson.Serialize(new JsonObject
+                        {
+                            ["id"] = 0,
+                            ["method"] = "Page.navigate",
+                            ["params"] = Domains.Page.JsNavigationParams(queuedPending),
+                            ["sessionId"] = queuedSession,
+                        }),
+                        ctx, queuedReply, rx, interceptRx, interceptedPaused,
+                        deferred, false, hostInitiated: true).ConfigureAwait(false);
+                }
+
                 // Dispatch may have created a page or scheduled new asynchronous
                 // work. A single live isolate is the connection's current active
                 // target; the pump will park cheaply if its next task is a distant
@@ -333,7 +351,7 @@ public static partial class CdpServer
         CdpContext ctx,
         InterceptedRequest request,
         ChannelWriter<string>? replyTx,
-        Dictionary<string, TaskCompletionSource<InterceptResolution>> interceptedPaused)
+        Dictionary<string, PausedIntercept> interceptedPaused)
     {
         var route = LivePageRoute(ctx);
         if (route is { } live && replyTx is { } reply)

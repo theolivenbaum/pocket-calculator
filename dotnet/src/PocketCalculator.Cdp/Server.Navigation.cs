@@ -35,7 +35,7 @@ public static partial class CdpServer
         ChannelWriter<string> replyTx,
         ChannelReader<ServerMessage> rx,
         ChannelReader<InterceptedRequest> interceptRx,
-        Dictionary<string, TaskCompletionSource<InterceptResolution>> interceptedPaused,
+        Dictionary<string, PausedIntercept> interceptedPaused,
         Queue<ServerMessage> deferred,
         bool sendCommandResponse,
         bool hostInitiated = false)
@@ -140,7 +140,11 @@ public static partial class CdpServer
 
         var sessionForEvents = req.SessionId;
         var frameId = page.FrameId;
-        var loaderId = $"loader-{Guid.NewGuid()}";
+        var initialLoaderId = $"loader-{Guid.NewGuid()}";
+        var loaderId = initialLoaderId;
+        // upstream b76d966: an intercepted document request is announced (and paused) before
+        // the transport, under its own request id, which becomes the navigation's loader.
+        var documentRequestStarted = false;
 
         // A Page.navigate whose target names the loaded document and differs from it in
         // nothing but the fragment is what a user does by clicking an in-page link:
@@ -239,8 +243,16 @@ public static partial class CdpServer
 
             if (interceptRx.TryRead(out var request))
             {
+                string? loader = null;
+                if (ServerSupport.IsMainDocumentIntercept(request, pageId))
+                {
+                    loaderId = request.RequestId;
+                    loader = loaderId;
+                    documentRequestStarted = true;
+                }
+
                 ServerSupport.EmitInterceptedRequest(
-                    request, frameId, sessionForEvents, replyTx, interceptedPaused);
+                    request, frameId, sessionForEvents, replyTx, interceptedPaused, loader);
                 await Task.Delay(50).ConfigureAwait(false);
                 continue;
             }
@@ -341,6 +353,22 @@ public static partial class CdpServer
         page.NetworkEvents.Clear();
         var pageUrl = page.UrlString();
         var pageIdForEvents = page.Id;
+
+        // upstream b76d966: a paused document request that never produced a response (Fail, or a
+        // transport error after Continue) finishes with Network.loadingFailed under its own id.
+        // The loader is the intercepted document's request id when the committed document was
+        // intercepted, else the navigation's own.
+        string? failedDocument = null;
+        if (documentRequestStarted && navigateError is not null
+            && !networkEvents.Exists(e => string.Equals(e.RequestId, loaderId, StringComparison.Ordinal)
+                && string.Equals(e.ResourceType, "Document", StringComparison.Ordinal)))
+        {
+            failedDocument = loaderId;
+        }
+
+        loaderId = Domains.Page.MainDocumentIndex(networkEvents, pageUrl) is { } mainDocument
+            ? networkEvents[mainDocument].Intercepted ? networkEvents[mainDocument].RequestId : initialLoaderId
+            : failedDocument ?? initialLoaderId;
         var reachedNetworkIdle = page.Lifecycle.IsNetworkIdle();
 
         ctx.Pages.Add(page);
@@ -371,6 +399,19 @@ public static partial class CdpServer
         if (sendCommandResponse)
         {
             replyTx.TryWrite(response.ToJson());
+        }
+
+        if (failedDocument is not null)
+        {
+            const string NetworkErrorPrefix = "Network error: ";
+            var error = navigateError!.StartsWith(NetworkErrorPrefix, StringComparison.Ordinal)
+                ? navigateError[NetworkErrorPrefix.Length..]
+                : navigateError;
+            Domains.Page.EmitNavigationFailure(
+                ctx,
+                sessionForEvents,
+                failedDocument,
+                error.StartsWith("net::ERR_", StringComparison.Ordinal) ? error : "net::ERR_FAILED");
         }
 
         // Shared event emission: includes the post-#190 Network.requestWillBeSent
@@ -657,6 +698,12 @@ public static partial class CdpServer
             return null;
         }
 
-        return ctx.GetPage(pageId)?.TakePendingNavigation();
+        // A page under Fetch interception pauses its document requests (upstream b76d966), and a
+        // pause is answered only while the processor is reading the wire, which an inline
+        // dispatch here does not. The processor loop runs it through ProcessWithInterceptionAsync
+        // instead, as upstream runs every queued navigation.
+        return ctx.GetPage(pageId) is { } page && !page.InterceptEnabled
+            ? page.TakePendingNavigation()
+            : null;
     }
 }

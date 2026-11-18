@@ -569,8 +569,8 @@ public sealed class ServerTests
     public void FetchResolutionIsHandledOnceByTheOuterProcessor()
     {
         var resolution = new TaskCompletionSource<InterceptResolution>();
-        Dictionary<string, TaskCompletionSource<InterceptResolution>> paused =
-            new(StringComparer.Ordinal) { ["request-1"] = resolution };
+        Dictionary<string, PausedIntercept> paused =
+            new(StringComparer.Ordinal) { ["request-1"] = new(resolution) };
         var replies = Channel.CreateUnbounded<string>();
         var ctx = CdpContext.New();
 
@@ -588,11 +588,11 @@ public sealed class ServerTests
         Assert.False(replies.Reader.TryRead(out _), "must not emit a duplicate response");
     }
 
-    private static (TaskCompletionSource<InterceptResolution> Resolution, Dictionary<string, TaskCompletionSource<InterceptResolution>> Paused, Channel<string> Replies) PausedRequest()
+    private static (TaskCompletionSource<InterceptResolution> Resolution, Dictionary<string, PausedIntercept> Paused, Channel<string> Replies) PausedRequest()
     {
         var resolution = new TaskCompletionSource<InterceptResolution>();
-        Dictionary<string, TaskCompletionSource<InterceptResolution>> paused =
-            new(StringComparer.Ordinal) { ["request-1"] = resolution };
+        Dictionary<string, PausedIntercept> paused =
+            new(StringComparer.Ordinal) { ["request-1"] = new(resolution) };
         return (resolution, paused, Channel.CreateUnbounded<string>());
     }
 
@@ -658,8 +658,8 @@ public sealed class ServerTests
     public void NonResolutionFetchFrameLeavesTheRequestParked()
     {
         var resolution = new TaskCompletionSource<InterceptResolution>();
-        Dictionary<string, TaskCompletionSource<InterceptResolution>> paused =
-            new(StringComparer.Ordinal) { ["request-1"] = resolution };
+        Dictionary<string, PausedIntercept> paused =
+            new(StringComparer.Ordinal) { ["request-1"] = new(resolution) };
         var replies = Channel.CreateUnbounded<string>();
         var ctx = CdpContext.New();
 

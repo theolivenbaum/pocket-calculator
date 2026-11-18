@@ -46,6 +46,13 @@ public sealed class NetworkEvent
 
     /// <summary>The redirects the document request followed, in order.</summary>
     public IReadOnlyList<NetworkRedirect> Redirects { get; init; } = [];
+
+    /// <summary>
+    /// The request was paused through Fetch interception, which already announced it
+    /// (<c>Network.requestWillBeSent</c> and <c>Fetch.requestPaused</c>) under this
+    /// <see cref="RequestId"/>; the CDP layer must not announce it again.
+    /// </summary>
+    public bool Intercepted { get; init; }
 }
 
 /// <summary>One redirect a request followed: the URL it asked for and the response that sent it on.</summary>

@@ -47,17 +47,20 @@ public sealed partial class Page
         IReadOnlyDictionary<string, string> responseHeaders,
         byte[] body,
         bool base64Encoded,
-        IReadOnlyList<NetworkRedirect> redirects)
+        IReadOnlyList<NetworkRedirect> redirects,
+        string method = "GET",
+        bool intercepted = false)
     {
         string requestId = RecordNetworkEventInner(
             url,
-            "GET",
+            method,
             "Document",
             status,
             responseHeaders,
             body.Length,
             isNavigation: true,
-            redirects);
+            redirects,
+            intercepted);
         StoreResponseBody(requestId, body, base64Encoded);
     }
 
@@ -103,7 +106,8 @@ public sealed partial class Page
         IReadOnlyDictionary<string, string> responseHeaders,
         int bodySize,
         bool isNavigation = false,
-        IReadOnlyList<NetworkRedirect>? redirects = null)
+        IReadOnlyList<NetworkRedirect>? redirects = null,
+        bool intercepted = false)
     {
         _networkEventCounter += 1;
         string requestId =
@@ -122,6 +126,7 @@ public sealed partial class Page
             Timestamp = timestamp,
             IsNavigation = isNavigation,
             Redirects = redirects ?? [],
+            Intercepted = intercepted,
         });
         return requestId;
     }
@@ -303,7 +308,8 @@ public sealed partial class Page
     public void AddPreloadScript(string script) => _preloadScripts.Add(script);
 
     /// <summary>
-    /// Enable CDP-Fetch-style interception of JS-initiated <c>fetch()</c>/XHR.
+    /// Enable CDP-Fetch-style interception of HTTP(S) document navigation and JS-initiated
+    /// <c>fetch()</c>/XHR (navigation since upstream b76d966).
     /// </summary>
     /// <remarks>
     /// Returns a reader yielding every such request; resolve each through its
