@@ -4690,6 +4690,47 @@ function _isActuallyDisabled(el) {
 const _forwardingHas = _uncurry(WeakSet.prototype.has);
 const _forwardingAdd = _uncurry(WeakSet.prototype.add);
 const _forwardingDelete = _uncurry(WeakSet.prototype.delete);
+// upstream 8fe6d99 + 2e0b63f: a change of a <details> element's open attribute queues one
+// toggle task; changes before it runs only move its newState, so several in one task
+// coalesce into one event (Chromium 1243: open, close, open, close in one task -> one
+// "open>closed" toggle).
+const _pendingDetailsToggles = new WeakMap();
+function _detailsOpenBefore(el, ns, n) {
+  return ns === '' && n === 'open' && _elGet('localName', el) === 'details'
+    ? _hostDom.getAttribute(el, 'open') !== null
+    : null;
+}
+function _queueDetailsToggle(details, oldOpen) {
+  if (oldOpen === null) return;
+  const newOpen = _hostDom.getAttribute(details, 'open') !== null;
+  if (oldOpen === newOpen) return;
+  const newState = newOpen ? 'open' : 'closed';
+  const pending = _pendingDetailsToggles.get(details);
+  if (pending) { pending.newState = newState; return; }
+  const states = { oldState: oldOpen ? 'open' : 'closed', newState };
+  _pendingDetailsToggles.set(details, states);
+  setTimeout(() => {
+    _pendingDetailsToggles.delete(details);
+    try { _dispatch(details, new ToggleEvent('toggle', { oldState: states.oldState, newState: states.newState })); } catch (e) {}
+  }, 0);
+}
+// Summary activation behaviour (HTML spec): activating a details element's first summary
+// child toggles the details, unless the click landed on interactive content inside it.
+function _activateSummary(target) {
+  if (!target || typeof target._nid !== 'number') return false;
+  const summary = _elGet('localName', target) === 'summary' ? target : _elCall('closest', target, ['summary']);
+  if (!summary) return false;
+  const details = _elGet('parentElement', summary);
+  if (!details || _elGet('localName', details) !== 'details') return false;
+  const interactive = _elCall('closest', target, [_INTERACTIVE]);
+  if (interactive && interactive !== summary && _elCall('contains', summary, [interactive])) return false;
+  let first = _elGet('firstElementChild', details);
+  while (first && _elGet('localName', first) !== 'summary') first = _elGet('nextElementSibling', first);
+  if (first !== summary) return false;
+  if (_hostDom.getAttribute(details, 'open') !== null) _elCall('removeAttribute', details, ['open']);
+  else _elCall('setAttribute', details, ['open', '']);
+  return true;
+}
 function _activateLabel(label, control, trusted) {
   if (!label || !control || _forwardingHas(_forwardingLabels, label)) return false;
   if (_isActuallyDisabled(control)) return false;
@@ -5451,6 +5492,7 @@ class Element extends Node {
   }
   setAttribute(n, v) {
     n = _htmlAttrName(this, n);
+    const detailsWasOpen = _detailsOpenBefore(this, '', n);
     const popoverPrev = (n === "popover") ? this.popover : undefined;
     const previousWindowName = (n === "id" || n === "name")
       ? this.getAttribute(n)
@@ -5493,12 +5535,14 @@ class Element extends Node {
       }
     }
     if (_ceDefCount !== 0) _ceAttributeChanged(this, n, ceOld, value, null);
+    _queueDetailsToggle(this, detailsWasOpen);
   }
   setAttributeNS(ns, n, v) {
     ns = ns == null || ns === '' ? '' : String(ns);
     n = String(n);
     const value = String(v);
     _ns_validateQualifiedName(ns, n);
+    const detailsWasOpen = _detailsOpenBefore(this, ns, n);
     const ceLocal = _ceDefCount !== 0 ? n.slice(n.indexOf(":") + 1) : "";
     const ceOld = _ceDefCount !== 0 ? _ceObservedOld(this, ceLocal, ns) : undefined;
     _dom("set_attribute_ns", this._nid, ns + "\0" + n + "\0" + value);
@@ -5508,9 +5552,11 @@ class Element extends Node {
     this._nullNamespaceAttrs = null;
     if (ns === "" && n === "style") this._style._replaceFromAttribute(value);
     if (_ceDefCount !== 0) _ceAttributeChanged(this, ceLocal, ceOld, value, ns === "" ? null : ns);
+    _queueDetailsToggle(this, detailsWasOpen);
   }
   removeAttribute(n) {
     n = _htmlAttrName(this, n);
+    const detailsWasOpen = _detailsOpenBefore(this, '', n);
     const popoverPrev = (n === "popover") ? this.popover : undefined;
     const previousWindowName = (n === "id" || n === "name")
       ? this.getAttribute(n)
@@ -5546,10 +5592,12 @@ class Element extends Node {
     if (_ceDefCount !== 0) {
       _ceAttributeChanged(this, n, ceOld === null ? undefined : ceOld, null, null);
     }
+    _queueDetailsToggle(this, detailsWasOpen);
   }
   removeAttributeNS(ns, n) {
     ns = String(ns == null ? "" : ns);
     n = String(n);
+    const detailsWasOpen = _detailsOpenBefore(this, ns, n);
     const ceOld = _ceDefCount !== 0 ? _ceObservedOld(this, n, ns) : undefined;
     _dom("remove_attribute_ns", this._nid, ns + "\0" + n);
     this._nullNamespaceAttrs = null;
@@ -5557,6 +5605,7 @@ class Element extends Node {
     if (_ceDefCount !== 0) {
       _ceAttributeChanged(this, n, ceOld === null ? undefined : ceOld, null, ns === "" ? null : ns);
     }
+    _queueDetailsToggle(this, detailsWasOpen);
   }
   hasAttribute(n) { return _elCall('getAttribute', this, [n]) !== null; }
   hasAttributes() { return this.attributes.length > 0; }
@@ -5764,6 +5813,7 @@ class Element extends Node {
         return;
       }
     }
+    if (_activateSummary(this)) return;
     if (!cancelled) {
       const link = _tag === 'A' ? this : _elCall('closest', this, ['a[href]']);
       if (link) {
@@ -26704,6 +26754,7 @@ globalThis.__obscura_host_handoff = Object.freeze({
   setInputFiles: _setInputFiles,
   deliverMessage: _deliverMessage,
   activateLabel: _activateLabel,
+  activateSummary: _activateSummary,
   isDisabled: _isActuallyDisabled,
   labeledControl: _labeledControl,
   interactiveHost: _interactiveHost,

@@ -400,8 +400,9 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] `aa4b4e7` canceled keydown suppresses editing defaults; `d132880` beforeinput (cancelable,
       disabled/readonly guards, InputEvent input, IME caret on Input.insertText); `3f7cccd`
       readonly Backspace and textarea Enter. (Delete-key editing is not in the port at all.)
-- [ ] CDP input editing: `d88df74`, `8fe6d99` + `2e0b63f`, `c714042`; with open `ec62004` /
-      `a156914`
+- [x] `8fe6d99` + `2e0b63f`: a click on a details element's first summary toggles it (el.click()
+      and CDP mouse), open changes queue one coalescing toggle event (matches Chromium 1243)
+- [ ] CDP input editing: `d88df74`, `c714042`; with open `ec62004` / `a156914`
 - [ ] CDP lifecycle and sessions: `3f8a8d1` + `de227e9`, `1959c5e`, `a74e050`, `b8586de` +
       `34346af`, `875c531`, `7034ad6`
 - [ ] CDP DOM domain and evaluation: `eb2b515`, `717dd92` + `229d1ed`, `579e1cb` (`let`

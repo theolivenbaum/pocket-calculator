@@ -12648,6 +12648,35 @@ public sealed partial class RuntimeTests
         Assert.NotNull(info.ObjectId);
     }
 
+    // upstream 8fe6d99 + 2e0b63f: a click on a details element's first summary toggles it (not
+    // a click on interactive content inside it, not a second summary), and open changes in one
+    // task coalesce into one toggle event. Expected values measured on Chromium 1243.
+    [Fact]
+    public async Task SummaryClicksToggleDetailsAndToggleEventsCoalesce()
+    {
+        using var fixture = RuntimeFixture.Setup(
+            "<html><body><details id=d><summary id=s>S <a id=a href='#x'>link</a></summary>body</details>"
+            + "<details id=e><summary>A</summary><summary id=s2>B</summary></details></body></html>");
+        var info = await fixture.Runtime.CallFunctionOnForCdpAsync(
+            """
+            async () => {
+                const log = [];
+                for (const id of ['d', 'e']) document.getElementById(id).addEventListener('toggle', (e) => log.push(id + ':' + e.oldState + '-' + e.newState));
+                document.getElementById('s').click();
+                document.getElementById('a').click();
+                document.getElementById('s2').click();
+                await new Promise((r) => setTimeout(r, 20));
+                const d = document.getElementById('d');
+                d.removeAttribute('open'); d.setAttribute('open', ''); d.open = false;
+                await new Promise((r) => setTimeout(r, 20));
+                return [d.open, document.getElementById('e').open, log];
+            }
+            """,
+            null, [], returnByValue: true, awaitPromise: true);
+        Assert.False(info.Thrown, info.Description);
+        Assert.Equal("""[false,false,["d:closed-open","d:open-closed"]]""", info.Value!.ToJsonString());
+    }
+
     // upstream 33aeb3f: noninteractive dialogs dismiss: confirm() is false, prompt() null,
     // alert() returns undefined without blocking.
     [Fact]

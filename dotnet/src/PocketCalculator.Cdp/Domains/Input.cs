@@ -565,6 +565,8 @@ public static class Input
             + "var ctl = __obscura_host.labeledControl(labelHost);"
             + "if (ctl && ctl !== clickTarget && __obscura_host.activateLabel(labelHost, ctl, true)) { return; }"
             + "}"
+            // upstream 8fe6d99: a click on a details element's first summary toggles it.
+            + "if (__obscura_host.activateSummary(clickTarget)) { return; }"
             + "var link = h.closest(clickTarget, 'a[href]');"
             + "if (!link && tag === 'A' && h.getAttribute(clickTarget, 'href')) link = clickTarget;"
             + "if (link) {"
