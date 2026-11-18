@@ -47,15 +47,26 @@ public static class Input
     /// inserted. obscura-mcp already builds its typing snippet this way.
     /// </para>
     /// </remarks>
-    private static string InsertTextJs(string text)
+    private static string InsertTextJs(string text, bool imeCommit = false)
     {
         string literal = JsStr(text);
+        string ime = imeCommit ? "true" : "false";
+        // upstream d132880: a disabled field takes nothing, a readonly one takes no keyboard
+        // text, and a canceled beforeinput stops the insertion; input is an InputEvent with
+        // data and inputType. An IME commit (Input.insertText) snapshots the caret first.
         return "(function() {"
             + "var h = __obscura_host.dom;"
             + "var t = h.activeElement();"
             + "var tag = h.localName(t);"
             + "if (!t || (tag !== 'input' && tag !== 'textarea')) return;"
+            + "if (__obscura_host.isDisabled(t)) return;"
+            + "if (!" + ime + " && h.getAttribute(t, 'readonly') !== null) return;"
             + "var ins = " + literal + ";"
+            + "var commitStart = " + ime + " ? h.get(t, 'selectionStart') : null;"
+            + "if (" + ime + " && commitStart == null) commitStart = (h.get(t, 'value') || '').length;"
+            + "var before = h.event('InputEvent', 'beforeinput', {__proto__:null,bubbles:true,composed:true,cancelable:true,data:ins,inputType:'insertText'}, true);"
+            + "if (!h.dispatch(t, before)) return;"
+            + "if (h.getAttribute(t, 'readonly') !== null || __obscura_host.isDisabled(t)) return;"
             + "var v = h.get(t, 'value') || '';"
             + "var s = h.get(t, 'selectionStart'), e = h.get(t, 'selectionEnd');"
             + "if (s == null) {"
@@ -65,10 +76,10 @@ public static class Input
             + "e = (e == null) ? s : h.max(0, h.min(e, v.length));"
             + "var lo = h.min(s, e), hi = h.max(s, e);"
             + "__obscura_host.setFieldValue(t, 'value', h.slice(v, 0, lo) + ins + h.slice(v, hi));"
-            + "var caret = lo + ins.length;"
+            + "var caret = h.max(0, h.min((commitStart == null ? lo : commitStart) + ins.length, (h.get(t, 'value') || '').length));"
             + "h.call(t, 'setSelectionRange', [caret, caret]);"
             + "}"
-            + "h.dispatch(t, h.event('Event', 'input', {__proto__:null,bubbles:true}, true));"
+            + "h.dispatch(t, h.event('InputEvent', 'input', {__proto__:null,bubbles:true,composed:true,data:ins,inputType:'insertText'}, true));"
             + "})()";
     }
 
@@ -85,6 +96,8 @@ public static class Input
         + "var t = h.activeElement();"
         + "var tag = h.localName(t);"
         + "if (!t || (tag !== 'input' && tag !== 'textarea')) return;"
+        // upstream 3f7cccd: a readonly field is not edited.
+        + "if (h.getAttribute(t, 'readonly') !== null) return;"
         + "var v = h.get(t, 'value') || '';"
         + "var s = h.get(t, 'selectionStart'), e = h.get(t, 'selectionEnd');"
         + "if (s == null) {"
@@ -111,6 +124,8 @@ public static class Input
         + "h.dispatch(target, h.event('KeyboardEvent', 'keypress', "
         + "{__proto__:null,bubbles:true,key:'Enter',code:'Enter'}, true));"
         + "if (h.localName(target) === 'textarea') {"
+        // upstream 3f7cccd: a readonly textarea takes no newline.
+        + "if (h.getAttribute(target, 'readonly') !== null) return;"
         + "__obscura_host.setFieldValue(target, 'value', (h.get(target, 'value') || '') + '\\n');"
         + "h.dispatch(target, h.event('Event', 'input', {__proto__:null,bubbles:true}, true));"
         + "} else {"
@@ -312,7 +327,7 @@ public static class Input
                 // (port addition, child-frame contexts); the page's without child frames.
                 if (ctx.GetSessionPageMut(sessionId) is { } focusPage)
                 {
-                    focusPage.EvaluateHostIn(focusPage.FocusedFrameId(), InsertTextJs(text));
+                    focusPage.EvaluateHostIn(focusPage.FocusedFrameId(), InsertTextJs(text, imeCommit: true));
                 }
 
                 return DomainResult.Empty();
@@ -342,14 +357,21 @@ public static class Input
                             // Escape backslash BEFORE single-quote (as the text path below does) so
                             // a key like "\" - Chrome's backslash key - doesn't escape the closing
                             // quote and produce a syntax error that drops the event.
-                            page.EvaluateHostIn(focused, "(function() {"
+                            JsonNode? dispatched = page.EvaluateHostIn(focused, "(function() {"
                                 + "var h = __obscura_host.dom;"
                                 + "var target = h.activeElement() || h.body();"
                                 + "var evt = h.event('KeyboardEvent', 'keydown', "
                                 + "{__proto__:null,bubbles:true,cancelable:true,key:" + JsStr(key)
                                 + ",code:" + JsStr(code) + "}, true);"
-                                + "h.dispatch(target, evt);"
+                                + "return h.dispatch(target, evt);"
                                 + "})()");
+
+                            // upstream aa4b4e7: a canceled keydown suppresses the editing default
+                            // (text insertion, Enter, Backspace), as in Chromium.
+                            if (dispatched.AsBool() == false)
+                            {
+                                break;
+                            }
 
                             if (text.Length != 0 && text != "\r" && text != "\n")
                             {

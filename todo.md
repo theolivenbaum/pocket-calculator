@@ -397,8 +397,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `c05cf3b` (part) DOM.getOuterHTML accepts objectId, a child frame's handle read in its
       own document
 - [ ] `361f15d` beforeunload on Page.close; the rest of `f66ac0a` (native function invocation)
-- [ ] CDP input editing: `aa4b4e7`, `d132880`, `3f7cccd`, `d88df74`, `8fe6d99` + `2e0b63f`,
-      `c714042`; with open `ec62004` / `a156914`
+- [x] `aa4b4e7` canceled keydown suppresses editing defaults; `d132880` beforeinput (cancelable,
+      disabled/readonly guards, InputEvent input, IME caret on Input.insertText); `3f7cccd`
+      readonly Backspace and textarea Enter. (Delete-key editing is not in the port at all.)
+- [ ] CDP input editing: `d88df74`, `8fe6d99` + `2e0b63f`, `c714042`; with open `ec62004` /
+      `a156914`
 - [ ] CDP lifecycle and sessions: `3f8a8d1` + `de227e9`, `1959c5e`, `a74e050`, `b8586de` +
       `34346af`, `875c531`, `7034ad6`
 - [ ] CDP DOM domain and evaluation: `eb2b515`, `717dd92` + `229d1ed`, `579e1cb` (`let`
