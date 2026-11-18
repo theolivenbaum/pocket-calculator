@@ -355,7 +355,7 @@ Security (exposed today unless noted):
 - [ ] `677f6d2` budgets - Web Storage total and per-origin caps
 - [x] `b3475a5`, `7a8c0e3`, `fd5c729` - cookie prefix rules on the import path; a
       public-suffix import is kept host-only instead of dropped
-- [ ] `1922f4a` - loopback counts as a secure cookie context
+- [x] `1922f4a` - loopback counts as a secure cookie context
 - [ ] `33aeb3f` - `confirm()` returns true; measure Chromium headless first
 - [ ] `9b05070`, `0d8a200`, `c8e5b9e`, `d853a73`, `2f448c3` - frame-realm script ops,
       upload validation, link by node id, wrapKey usages, detached-frame timers

@@ -228,7 +228,7 @@ public sealed class CookieJar
 
         // RFC 6265bis: an insecure origin cannot set a Secure cookie, and
         // SameSite=None is only accepted together with Secure.
-        var sourceIsSecure = string.Equals(url.Scheme, "https", StringComparison.Ordinal);
+        var sourceIsSecure = IsSecureCookieContext(url);
         if ((secure && !sourceIsSecure) || (sameSite == "None" && !secure))
         {
             return;
@@ -558,7 +558,7 @@ public sealed class CookieJar
     {
         var host = HostOf(url);
         var path = url.AbsolutePath;
-        var isSecure = string.Equals(url.Scheme, "https", StringComparison.Ordinal);
+        var isSecure = IsSecureCookieContext(url);
         var now = Now();
 
         var matching = new List<string>();
@@ -636,7 +636,7 @@ public sealed class CookieJar
         ArgumentNullException.ThrowIfNull(url);
         var result = new List<CookieInfo>();
         var scheme = url.Scheme;
-        var isSecure = scheme is "https" or "wss";
+        var isSecure = IsSecureCookieContext(url);
         if (!isSecure && scheme is not ("http" or "ws"))
         {
             return result;
@@ -1121,6 +1121,36 @@ public sealed class CookieJar
     };
 
     private static long Now() => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+    /// <summary>
+    /// upstream 1922f4a: Chromium treats HTTP loopback origins (<c>localhost</c>,
+    /// <c>*.localhost</c>, 127.0.0.0/8, ::1) as secure for cookie purposes. The exception is
+    /// host-scoped, so ordinary cleartext origins still cannot set, read or send Secure
+    /// cookies. WebSocket URLs (CDP's cookie listing) follow their HTTP counterparts.
+    /// </summary>
+    internal static bool IsSecureCookieContext(Uri url)
+    {
+        var scheme = url.Scheme;
+        if (scheme is "https" or "wss")
+        {
+            return true;
+        }
+
+        if (scheme is not ("http" or "ws"))
+        {
+            return false;
+        }
+
+        if (url.HostNameType is UriHostNameType.IPv4 or UriHostNameType.IPv6)
+        {
+            return System.Net.IPAddress.TryParse(url.IdnHost.Trim('[', ']'), out var address)
+                && System.Net.IPAddress.IsLoopback(address);
+        }
+
+        var host = url.IdnHost;
+        return host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            || host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// Chromium caps a cookie's lifetime at 400 days (RFC 6265bis 5.6.1/5.6.2, Chromium 104),

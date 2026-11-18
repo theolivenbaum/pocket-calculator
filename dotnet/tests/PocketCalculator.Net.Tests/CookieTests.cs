@@ -1180,4 +1180,36 @@ public class CookieTests
         Assert.Equal(accepted, reloaded.GetCookieHeaderSameSite(new Uri("https://httpbin.org/")).Contains("__Host-session=restored", StringComparison.Ordinal));
         Assert.Equal(string.Empty, reloaded.GetCookieHeaderSameSite(new Uri("https://sub.httpbin.org/")));
     }
+
+    // upstream 1922f4a: secure_cookies_work_on_http_loopback_origins
+    [Theory]
+    [InlineData("http://localhost/")]
+    [InlineData("http://app.localhost/")]
+    [InlineData("http://127.0.0.1/")]
+    [InlineData("http://[::1]/")]
+    public void SecureCookiesWorkOnHttpLoopbackOrigins(string origin)
+    {
+        var url = new Uri(origin);
+        var response = new CookieJar();
+        response.SetCookie("server=1; Secure; Path=/", url);
+        Assert.Equal("server=1", response.GetCookieHeaderSameSite(url));
+        Assert.Equal("server=1", response.GetJsVisibleCookies(url));
+
+        var script = new CookieJar();
+        script.SetCookieFromJs("script=1; Secure; Path=/", url);
+        Assert.Equal("script=1", script.GetCookieHeaderSameSite(url));
+        Assert.Equal("script=1", script.GetJsVisibleCookies(url));
+    }
+
+    [Theory]
+    [InlineData("http://example.com/")]
+    [InlineData("http://localhost.example.com/")]
+    [InlineData("http://10.0.0.1/")]
+    public void SecureCookiesStayRefusedOnOtherCleartextOrigins(string origin)
+    {
+        var url = new Uri(origin);
+        var jar = new CookieJar();
+        jar.SetCookie("server=1; Secure; Path=/", url);
+        Assert.Equal(string.Empty, jar.GetCookieHeaderSameSite(url));
+    }
 }
