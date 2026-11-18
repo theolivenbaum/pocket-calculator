@@ -175,13 +175,15 @@ public sealed class BrowserState : IDisposable
     /// location/form/click navigations while the transport waits on stdin.
     /// </summary>
     /// <returns>True when the event loop reached idle and nothing navigated.</returns>
-    internal async Task<bool> AdvanceActivePageTasksAsync()
+    internal async Task<bool> AdvanceActivePageTasksAsync(Func<bool>? yieldTo = null)
     {
         var page = PageMut();
         bool reachedIdle;
         try
         {
-            reachedIdle = await page.RunAutonomousEventLoopTurnAsync().ConfigureAwait(false);
+            // yieldTo ends the turn early when the transport has a request waiting; the
+            // Rust loops get the same by dropping the turn's future in their select.
+            reachedIdle = await page.RunAutonomousEventLoopTurnAsync(yieldTo: yieldTo).ConfigureAwait(false);
         }
         catch (Exception error) when (error is not ToolException)
         {

@@ -70,7 +70,9 @@ public static class McpServer
             {
                 try
                 {
-                    var reachedIdle = await state.AdvanceActivePageTasksAsync().ConfigureAwait(false);
+                    var read = pendingRead;
+                    var reachedIdle = await state.AdvanceActivePageTasksAsync(() => read.IsCompleted)
+                        .ConfigureAwait(false);
                     runtimePumpArmed = !reachedIdle;
                 }
                 catch (ToolException error)

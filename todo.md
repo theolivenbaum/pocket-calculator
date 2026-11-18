@@ -481,7 +481,9 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] `cbc2f97`: `browser_search` folds case the way Rust does (U+0130 to `i` U+0307, a
       word-final sigma in the query) and maps a match back to its UTF-8 offset in the body
 - [x] `5171717`: `mcp --font-dir DIR` (repeatable), validated before either transport starts
-- [ ] MCP: `5c27e76`, `a3aea0a` (fill_form submit);
+- [x] `5c27e76`: the MCP HTTP dispatcher drives the active page between requests, as stdio
+      does; both transports pass `yieldTo` so a waiting request ends a turn early
+- [ ] MCP: `a3aea0a` (fill_form submit);
       `9855ef4` web_search stays opt-in
 - [x] `9a6dd86`: CLI fetch and stdio MCP navigation errors from an SSRF denial of a loopback,
       private or localhost target carry the --allow-private-network hint (metadata and special

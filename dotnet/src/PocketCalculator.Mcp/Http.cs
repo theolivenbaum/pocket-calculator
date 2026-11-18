@@ -673,16 +673,48 @@ public static class Http
         BrowserState state,
         CancellationToken cancellationToken)
     {
-        await foreach (var request in requests.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        // Upstream 5c27e76: between requests the active page keeps running its timers,
+        // fetches and queued navigations, as the stdio loop does. A queued request always
+        // wins over a pump turn, and the pump parks once the page reaches idle.
+        var runtimePumpArmed = false;
+        while (true)
         {
-            try
+            if (requests.TryRead(out var request))
             {
-                request.Reply.TrySetResult(await ProcessBodyAsync(request.Body, state).ConfigureAwait(false));
+                try
+                {
+                    request.Reply.TrySetResult(await ProcessBodyAsync(request.Body, state).ConfigureAwait(false));
+                }
+                catch (Exception error)
+                {
+                    // The connection that asked closes; the dispatcher keeps serving.
+                    request.Reply.TrySetException(error);
+                }
+                runtimePumpArmed = state.HasActivePageRuntime();
+                continue;
             }
-            catch (Exception error)
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (runtimePumpArmed)
             {
-                // The connection that asked closes; the dispatcher keeps serving.
-                request.Reply.TrySetException(error);
+                try
+                {
+                    runtimePumpArmed = !await state
+                        .AdvanceActivePageTasksAsync(() => requests.TryPeek(out _))
+                        .ConfigureAwait(false);
+                }
+                catch (ToolException error)
+                {
+                    runtimePumpArmed = false;
+                    await Console.Error.WriteLineAsync($"MCP page task failed: {error.Message}")
+                        .ConfigureAwait(false);
+                }
+                continue;
+            }
+
+            if (!await requests.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                return;
             }
         }
     }
