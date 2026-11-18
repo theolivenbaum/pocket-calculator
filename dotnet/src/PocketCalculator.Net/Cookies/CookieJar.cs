@@ -944,8 +944,22 @@ public sealed class CookieJar
         }
         else
         {
-            Directory.CreateDirectory(
-                directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            // Directory.CreateDirectory(path, mode) applies the mode to the leaf only and
+            // creates missing parents with the umask default, so walk up to the first
+            // existing ancestor and create each missing level owner-only (upstream
+            // 1b259b9, `DirBuilder::mode(0o700)` with `recursive(true)`).
+            var missing = new Stack<string>();
+            for (var current = Path.GetFullPath(directory);
+                 !string.IsNullOrEmpty(current) && !Directory.Exists(current);
+                 current = Path.GetDirectoryName(current))
+            {
+                missing.Push(current);
+            }
+            while (missing.TryPop(out var level))
+            {
+                Directory.CreateDirectory(
+                    level, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
         }
     }
 

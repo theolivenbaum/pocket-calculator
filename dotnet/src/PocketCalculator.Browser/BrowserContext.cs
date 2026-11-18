@@ -190,22 +190,44 @@ public sealed class BrowserContext
         return copy;
     }
 
-    /// <summary>Persist cookies to disk when a storage directory is configured.</summary>
-    public void SaveCookies()
+    /// <summary>
+    /// Persist cookies to disk when a storage directory is configured. Returns the error
+    /// message when the save failed, after writing it to stderr, or null.
+    /// </summary>
+    /// <remarks>
+    /// Upstream 1b259b9: a failed save used to be dropped silently here (Rust logged it at
+    /// warn); it is now reported at error level and says the cookies will not be kept. The
+    /// directory and file modes it also added were already the port's (SECURITY.md I4).
+    /// </remarks>
+    public string? SaveCookies()
     {
         if (StorageDir is null)
         {
-            return;
+            return null;
         }
+        var cookiePath = Path.Combine(StorageDir, "cookies.json");
         try
         {
             // Owner-only when this creates it (SECURITY.md I4).
             PocketCalculator.Net.CookieJar.CreateOwnerOnlyDirectory(StorageDir);
-            CookieJar.SaveToFile(Path.Combine(StorageDir, "cookies.json"));
+            CookieJar.SaveToFile(cookiePath);
+            return null;
         }
-        catch (Exception)
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException
+            or System.Security.SecurityException or NotSupportedException or ArgumentException)
         {
-            // Shutdown must not fail because the cookie file could not be written.
+            // Shutdown must not fail because the cookie file could not be written, but
+            // the operator has to hear about it.
+            var message = $"Could not save cookies to {cookiePath}: {error.Message}. "
+                + "They will not be persisted, so the next run starts without them.";
+            try
+            {
+                Console.Error.WriteLine($"ERROR {message}");
+            }
+            catch (IOException)
+            {
+            }
+            return message;
         }
     }
 }

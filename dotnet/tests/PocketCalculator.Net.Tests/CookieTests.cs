@@ -481,6 +481,86 @@ public class CookieTests
         }
     }
 
+    // Upstream 1b259b9: the rest of its private-storage cases.
+    private static CookieJar JarWithSession()
+    {
+        var jar = new CookieJar();
+        jar.SetCookie("session=abc123; Path=/", new Uri("https://example.com/"));
+        return jar;
+    }
+
+    private const UnixFileMode Owner0700 = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+    [Fact]
+    public void Save_to_file_reports_an_uncreatable_directory()
+    {
+        var directory = Directory.CreateTempSubdirectory("obscura-cookies");
+        try
+        {
+            var blocker = Path.Combine(directory.FullName, "not-a-dir");
+            File.WriteAllText(blocker, "x");
+            Assert.ThrowsAny<IOException>(
+                () => JarWithSession().SaveToFile(Path.Combine(blocker, "profile", "cookies.json")));
+            Assert.False(Directory.Exists(Path.Combine(blocker, "profile")));
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Save_creates_nested_directories_0700_and_leaves_existing_ones_alone()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var directory = Directory.CreateTempSubdirectory("obscura-cookies");
+        try
+        {
+            var profile = Path.Combine(directory.FullName, "profile");
+            var path = Path.Combine(profile, "nested", "cookies.json");
+            JarWithSession().SaveToFile(path);
+            Assert.Equal(Owner0700, File.GetUnixFileMode(profile));
+            Assert.Equal(Owner0700, File.GetUnixFileMode(Path.Combine(profile, "nested")));
+
+            var existing = Path.Combine(directory.FullName, "existing");
+            Directory.CreateDirectory(existing);
+            var mode0750 = Owner0700 | UnixFileMode.GroupRead | UnixFileMode.GroupExecute;
+            File.SetUnixFileMode(existing, mode0750);
+            JarWithSession().SaveToFile(Path.Combine(existing, "cookies.json"));
+            Assert.Equal(mode0750, File.GetUnixFileMode(existing));
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Save_tightens_a_cookie_file_left_world_readable()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var directory = Directory.CreateTempSubdirectory("obscura-cookies");
+        try
+        {
+            var path = Path.Combine(directory.FullName, "cookies.json");
+            File.WriteAllText(path, "[]");
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite
+                | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+            JarWithSession().SaveToFile(path);
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
     [Fact]
     public void TestLoadNonexistentFileReturnsZero()
     {

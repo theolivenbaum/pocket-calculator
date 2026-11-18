@@ -487,8 +487,10 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `networkidle0`, `networkidle2`); anything else is an error that does not navigate
 - [x] `1949e9b`: `--user-agent` is global (a subcommand's own value wins) and `scrape`
       forwards it to its workers as `POCKETCALCULATOR_USER_AGENT`
-- [ ] CLI and workers: `f2b9e99`, `4b14a76`,
-      `0f27e69`, `1b259b9` failed-save log
+- [x] `1b259b9`: a failed cookie save is reported on stderr (and returned by
+      `SaveCookies`) instead of swallowed; every storage directory level the save creates
+      is now 0700, where only the leaf was (the file was already 0600)
+- [ ] CLI and workers (serve worker pool): `f2b9e99`, `4b14a76`, `0f27e69`
 - [x] `52d8ddd`: network errors from a send or a body read carry the inner exception chain
       (`ErrorChain`, each cause appended once), so a TLS failure names its certificate error
 - [ ] From merges: `61aa8fb` CDP URL pattern matcher (done, see CDP Fetch), `fded066` (`flex: 200px` sets grow 1, an
