@@ -16,6 +16,7 @@ internal static partial class DomBuild
         Run,
         Block,
         Float,
+        OutOfFlow,
     }
 
     private sealed class Seg
@@ -47,6 +48,27 @@ internal static partial class DomBuild
         }
 
         return style;
+    }
+
+    /// <summary>The first and last segments that are not out of flow (-1 when none is).</summary>
+    private static (int First, int Last) FlowSegmentBounds(List<Seg> segs)
+    {
+        int first = -1;
+        int last = -1;
+        for (int index = 0; index < segs.Count; index++)
+        {
+            if (segs[index].Kind != SegKind.OutOfFlow)
+            {
+                if (first < 0)
+                {
+                    first = index;
+                }
+
+                last = index;
+            }
+        }
+
+        return (first, last);
     }
 
     /// <summary>
@@ -98,6 +120,7 @@ internal static partial class DomBuild
             return false;
         }
 
+        (int firstFlow, int lastFlow) = FlowSegmentBounds(segs);
         List<Seg> expanded = new(segs.Count);
         for (int index = 0; index < segs.Count; index++)
         {
@@ -106,7 +129,7 @@ internal static partial class DomBuild
             {
                 if (seg.Kind == SegKind.Run
                     && seg.Run.Exists(cid => HasNestedFloat(cid, 0))
-                    && !((beforePending && index == 0) || (afterPending && index + 1 == segs.Count))
+                    && !((beforePending && index == firstFlow) || (afterPending && index == lastFlow))
                     && TextEngine.CanFoldRun(tree, parent, seg.Run, context.Styles, allowAtomics: true))
                 {
                     expanded.Add(new Seg { Kind = SegKind.Run, Run = seg.Run, Anchored = true });
@@ -118,7 +141,7 @@ internal static partial class DomBuild
             }
 
             bool onlyFloats = seg.Run.TrueForAll(cid => IsFloat(cid) || IsWhitespace(cid));
-            bool joinsPseudo = (beforePending && index == 0) || (afterPending && index + 1 == segs.Count);
+            bool joinsPseudo = (beforePending && index == firstFlow) || (afterPending && index == lastFlow);
             if (!onlyFloats && !joinsPseudo && TextEngine.CanFoldRun(tree, parent, seg.Run, context.Styles, allowAtomics: true))
             {
                 expanded.Add(new Seg { Kind = SegKind.Run, Run = seg.Run, Anchored = true });
@@ -206,6 +229,9 @@ internal static partial class DomBuild
 
         List<Seg> segs = [];
         List<NodeId> outOfFlow = [];
+
+        // The run inline content joins. An out-of-flow box built in place does not close it.
+        int? openRun = null;
         foreach (NodeId cid in flat)
         {
             if (tree.GetNode(cid) is not { } node)
@@ -236,7 +262,34 @@ internal static partial class DomBuild
 
                 if (childStyle.Position == TaffyPosition.Absolute)
                 {
-                    outOfFlow.Add(cid);
+                    // upstream a41696e: an out-of-flow box keeps its source position, so its
+                    // static position is where it would have been in flow. A block-level one
+                    // is built in place, after the run that is open. An inline-level one with
+                    // an auto inset axis is built in place only while nothing in flow precedes
+                    // it on its line (it then sits at the start of the run's first line).
+                    // DEVIATION from upstream, which builds the run as atoms around a
+                    // zero-size placeholder: that refuses the folded inline formatting context
+                    // for any run holding such a box (every `.sr-only` span in a link), so an
+                    // inline-level box after inline content keeps the old static position,
+                    // below the run. See "Known deviations" in todo.md.
+                    bool autoInset = (childStyle.Inset[0] is null && childStyle.Inset[2] is null)
+                        || (childStyle.Inset[1] is null && childStyle.Inset[3] is null);
+                    bool inPlace = !childStyle.StaticPositionInline
+                        || !autoInset
+                        || (style.BeforePseudo is null
+                            && (openRun is not { } open || segs[open].Run.TrueForAll(IsWhitespaceText)));
+                    if (!inPlace)
+                    {
+                        outOfFlow.Add(cid);
+                        continue;
+                    }
+
+                    if (childStyle.StaticPositionInline && autoInset)
+                    {
+                        openRun = null;
+                    }
+
+                    segs.Add(new Seg { Kind = SegKind.OutOfFlow, Block = cid });
                     continue;
                 }
 
@@ -256,20 +309,27 @@ internal static partial class DomBuild
 
             if (inlineLevel)
             {
-                if (segs.Count > 0 && segs[^1].Kind == SegKind.Run)
+                if (openRun is { } open)
                 {
-                    segs[^1].Run.Add(cid);
+                    segs[open].Run.Add(cid);
                 }
                 else
                 {
+                    openRun = segs.Count;
                     segs.Add(new Seg { Kind = SegKind.Run, Run = [cid] });
                 }
             }
             else
             {
+                openRun = null;
                 segs.Add(new Seg { Kind = SegKind.Block, Block = cid });
             }
         }
+
+        bool IsWhitespaceText(NodeId cid) =>
+            tree.GetNode(cid) is { } node
+            && node.IsText
+            && tree.TextContent(cid).AsSpan().Trim().Length == 0;
 
         // Inline pseudos join the first/last inline run. A block-level pseudo is a real direct
         // child of this block.
@@ -287,8 +347,11 @@ internal static partial class DomBuild
             segs = AnchorOrSplitFloats(context, id, segs, beforePending, afterPending);
         }
 
-        int segCount = segs.Count;
+        // Inline pseudo content joins the first and last in-flow segments; a box built in place
+        // out of flow is neither.
+        (int firstFlow, int lastFlow) = FlowSegmentBounds(segs);
         List<TaffyNodeId> childIds = [];
+        int outOfFlowNodes = 0;
         if (beforeBlock)
         {
             if (floatFlow && style.BeforePseudo is { } beforeStyle)
@@ -305,6 +368,14 @@ internal static partial class DomBuild
         for (int i = 0; i < segs.Count; i++)
         {
             Seg seg = segs[i];
+            if (seg.Kind == SegKind.OutOfFlow)
+            {
+                List<TaffyNodeId> placed = BuildAny(context, seg.Block);
+                outOfFlowNodes += placed.Count;
+                childIds.AddRange(placed);
+                continue;
+            }
+
             if (seg.Kind == SegKind.Float)
             {
                 if (context.Styles.TryGetValue(seg.Block, out LayoutStyle? floatStyle))
@@ -369,11 +440,7 @@ internal static partial class DomBuild
             }
 
             // Collapsible source formatting at the start/end of an inline run does not create
-            // line width.
-            bool IsWhitespaceText(NodeId cid) =>
-                tree.GetNode(cid) is { } node
-                && node.IsText
-                && tree.TextContent(cid).AsSpan().Trim().Length == 0;
+            // line width (IsWhitespaceText).
 
             int start = seg.Run.Count;
             for (int index = 0; index < seg.Run.Count; index++)
@@ -396,8 +463,8 @@ internal static partial class DomBuild
             }
 
             List<NodeId> run = start < end ? seg.Run.GetRange(start, end - start) : [];
-            bool joinBefore = beforePending && i == 0;
-            bool joinAfter = afterPending && i + 1 == segCount;
+            bool joinBefore = beforePending && i == firstFlow;
+            bool joinAfter = afterPending && i == lastFlow;
 
             // Fast path: the whole run folds to one shaped leaf.
             if (!joinBefore && !joinAfter
@@ -416,7 +483,7 @@ internal static partial class DomBuild
                 {
                     items = [];
                     context.Ifc.Runs[id] = items;
-                    if (childIds.Count == 0)
+                    if (childIds.Count == outOfFlowNodes)
                     {
                         // The item's first line is this run's: an inside marker indents it.
                         ListMarkers.ApplyInsideMarker(context.Engine, tree, id, style, item);

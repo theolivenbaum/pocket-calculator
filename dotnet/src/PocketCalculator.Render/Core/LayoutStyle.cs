@@ -372,6 +372,12 @@ public sealed class LayoutStyle
     /// </remarks>
     internal bool DisplayInherit;
 
+    /// <summary>
+    /// The outer display was inline-level before absolute positioning blockified it (upstream
+    /// a41696e <c>static_position_inline</c>), so its static position is on a line.
+    /// </summary>
+    internal bool StaticPositionInline;
+
     /// <summary>The cascade's winning <c>display</c> came from a declaration, not the UA arm.</summary>
     /// <remarks>
     /// <c>&lt;caption&gt;</c>, <c>&lt;col&gt;</c> and <c>&lt;colgroup&gt;</c> have no user-agent
@@ -2775,6 +2781,11 @@ public static class LayoutStyleExtensions
         if (!IsInlineLevelBox(style))
         {
             return;
+        }
+
+        if (style.Position == Layout.Position.Absolute)
+        {
+            style.StaticPositionInline = true;
         }
 
         if (style.Display == Display.Inline)
