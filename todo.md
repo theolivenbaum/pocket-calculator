@@ -335,7 +335,8 @@ Security (exposed today unless noted):
       `WorkCancellation` check
 - [x] `025088c` - `span 0` / line `0` grid placements threw in layout; now dropped in the
       cascade, and taffy treats `Span(0)` as auto
-- [ ] `e83d803` - CDP watchdog is not armed for a command that resumes a suspended page
+- [x] `e83d803` - CDP watchdog is not armed for a command that resumes a suspended page
+      (`addScriptToEvaluateOnNewDocument{runImmediately}` is not implemented in the port)
 - [ ] `8dbf7e1`, `cf5067e`, `f2bf4c3`, `d45bee5`, `f152fcf`, `efb57d8` - serializer:
       escape `<` `>` U+00A0 in attributes (mXSS), missing void elements, fixed xml/xlink/
       xmlns prefixes

@@ -154,7 +154,17 @@ public static class Dispatcher
         ArmedWatchdog? watchdog = null;
         if (budgetMs != 0 && !v8Free)
         {
-            if (ctx.GetSessionPage(req.SessionId)?.IsolateHandle is { } handle)
+            // upstream e83d803: a script command can create or resume its page's isolate inside
+            // the handler, and a suspended page (every page but the active one here) has none
+            // yet, so the evaluation that follows ran with no budget. Resolve the page mutably
+            // for those commands first, which resumes it, so the first call is armed too.
+            var handle = ctx.GetSessionPage(req.SessionId)?.IsolateHandle;
+            if (handle is null && req.Method is "Runtime.evaluate" or "Runtime.callFunctionOn")
+            {
+                handle = ctx.GetSessionPageMut(req.SessionId)?.IsolateHandle;
+            }
+
+            if (handle is not null)
             {
                 watchdog = CdpWatchdog.Arm(handle, TimeSpan.FromMilliseconds(budgetMs));
             }
