@@ -497,9 +497,37 @@ internal static partial class Tools
             TryQuery(dom, "body") is { } body ? TextExtraction.ExtractText(dom, body, null) : string.Empty)
             ?? string.Empty;
 
+        return SearchBody(bodyText, query, caseSensitive, context, limit);
+    }
+
+    /// <summary>
+    /// Port of upstream <c>search_body</c> (cbc2f97). Lowercasing can change a character's
+    /// UTF-8 length (U+0130 becomes <c>i</c> plus U+0307, 2 bytes to 3), so a match is
+    /// found in the folded haystack and its offset is mapped back to the original body
+    /// before slicing and reporting.
+    /// </summary>
+    internal static string SearchBody(string bodyText, string query, bool caseSensitive, int context, int limit)
+    {
         var body = Encoding.UTF8.GetBytes(bodyText);
-        var haystack = caseSensitive ? body : Encoding.UTF8.GetBytes(bodyText.ToLowerInvariant());
-        var needle = Encoding.UTF8.GetBytes(caseSensitive ? query : query.ToLowerInvariant());
+        byte[] haystack;
+        int[]? offsetMap = null;
+        if (caseSensitive)
+        {
+            haystack = body;
+        }
+        else
+        {
+            var map = new List<int>(body.Length + 1);
+            haystack = RustLowercase(bodyText, wordFinalSigma: false, map);
+            map.Add(body.Length);
+            offsetMap = [.. map];
+        }
+        var needle = caseSensitive
+            ? Encoding.UTF8.GetBytes(query)
+            : RustLowercase(query, wordFinalSigma: true, null);
+        int ToBody(int haystackOffset) => offsetMap is null
+            ? haystackOffset
+            : haystackOffset < offsetMap.Length ? offsetMap[haystackOffset] : body.Length;
 
         var matches = new List<JsonNode?>();
         var idx = 0;
@@ -511,9 +539,10 @@ internal static partial class Tools
                 break;
             }
 
-            var abs = pos;
+            var abs = ToBody(pos);
+            var matchEnd = ToBody(pos + needle.Length);
             var start = Math.Max(0, abs - context);
-            var end = Math.Min(abs + needle.Length + context, body.Length);
+            var end = Math.Min(matchEnd + context, body.Length);
             // start/end are byte offsets derived from char counts and needle.len(),
             // so they can land inside a multi-byte (CJK) character. Snap to char
             // boundaries before slicing (#257).
@@ -549,7 +578,7 @@ internal static partial class Tools
                 ["offset"] = JsonExt.Int(abs),
                 ["snippet"] = snippet,
             });
-            idx = abs + needle.Length;
+            idx = pos + needle.Length;
             if (matches.Count >= limit)
             {
                 break;
@@ -568,6 +597,93 @@ internal static partial class Tools
         }
 
         return $"{matches.Count.ToString(CultureInfo.InvariantCulture)} match(es). {string.Join("\n", rendered)}";
+    }
+
+    /// <summary>
+    /// Rust's lowercasing as UTF-8: <c>char::to_lowercase</c> per scalar for the haystack,
+    /// which maps U+0130 to <c>i</c> U+0307 where .NET's simple mapping gives one
+    /// character, and <c>str::to_lowercase</c> for the needle, which also lowers a
+    /// word-final capital sigma to U+03C2. When <paramref name="map"/> is given it gets,
+    /// for each output byte, the byte offset in <paramref name="text"/> of the scalar that
+    /// produced it.
+    /// </summary>
+    private static byte[] RustLowercase(string text, bool wordFinalSigma, List<int>? map)
+    {
+        var output = new List<byte>(text.Length + 8);
+        Span<byte> buffer = stackalloc byte[4];
+        var sourceOffset = 0;
+        var index = 0;
+        while (index < text.Length)
+        {
+            Rune.DecodeFromUtf16(text.AsSpan(index), out var rune, out var consumed);
+            void Emit(Rune lowered, Span<byte> scratch)
+            {
+                var length = lowered.EncodeToUtf8(scratch);
+                for (var i = 0; i < length; i++)
+                {
+                    output.Add(scratch[i]);
+                    map?.Add(sourceOffset);
+                }
+            }
+            if (rune.Value == 0x0130)
+            {
+                Emit(new Rune('i'), buffer);
+                Emit(new Rune(0x0307), buffer);
+            }
+            else if (wordFinalSigma && rune.Value == 0x03A3 && IsWordFinal(text, index, consumed))
+            {
+                Emit(new Rune(0x03C2), buffer);
+            }
+            else
+            {
+                Emit(Rune.ToLowerInvariant(rune), buffer);
+            }
+            sourceOffset += rune.Utf8SequenceLength;
+            index += consumed;
+        }
+        return [.. output];
+
+        static bool IsCased(Rune r) => Rune.IsUpper(r) || Rune.IsLower(r)
+            || Rune.GetUnicodeCategory(r) == System.Globalization.UnicodeCategory.TitlecaseLetter;
+        static bool IsCaseIgnorable(Rune r) => Rune.GetUnicodeCategory(r) is
+            System.Globalization.UnicodeCategory.NonSpacingMark
+            or System.Globalization.UnicodeCategory.EnclosingMark
+            or System.Globalization.UnicodeCategory.Format
+            or System.Globalization.UnicodeCategory.ModifierLetter
+            or System.Globalization.UnicodeCategory.ModifierSymbol
+            || r.Value is '\'' or '.' or ':' or 0x00B7 or 0x2019;
+        // Unicode's Final_Sigma: a cased letter before (skipping case-ignorables) and
+        // none after.
+        static bool IsWordFinal(string s, int at, int width)
+        {
+            var before = false;
+            for (var i = at; i > 0;)
+            {
+                Rune.DecodeLastFromUtf16(s.AsSpan(0, i), out var r, out var n);
+                i -= n;
+                if (IsCaseIgnorable(r))
+                {
+                    continue;
+                }
+                before = IsCased(r);
+                break;
+            }
+            if (!before)
+            {
+                return false;
+            }
+            for (var i = at + width; i < s.Length;)
+            {
+                Rune.DecodeFromUtf16(s.AsSpan(i), out var r, out var n);
+                i += n;
+                if (IsCaseIgnorable(r))
+                {
+                    continue;
+                }
+                return !IsCased(r);
+            }
+            return true;
+        }
     }
 
     private static int IndexOf(byte[] haystack, byte[] needle, int from)

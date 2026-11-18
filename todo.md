@@ -478,8 +478,10 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] `604d30b` (+ the `7500e6d` profile): `pocket-calculator --storage-dir DIR mcp` loads and
       keeps cookies in DIR (handed over as `POCKETCALCULATOR_STORAGE_DIR`); stdio EOF and
       `browser_set_storage_state` save them. Web Storage persistence waits on `677f6d2`
-- [ ] MCP: `5c27e76`, `a3aea0a`, `5171717`,
-      `cbc2f97`; `9855ef4` web_search stays opt-in
+- [x] `cbc2f97`: `browser_search` folds case the way Rust does (U+0130 to `i` U+0307, a
+      word-final sigma in the query) and maps a match back to its UTF-8 offset in the body
+- [ ] MCP: `5c27e76`, `a3aea0a` (fill_form submit), `5171717`;
+      `9855ef4` web_search stays opt-in
 - [x] `9a6dd86`: CLI fetch and stdio MCP navigation errors from an SSRF denial of a loopback,
       private or localhost target carry the --allow-private-network hint (metadata and special
       ranges get none); the hint names the port's executable and environment variable
