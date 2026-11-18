@@ -449,8 +449,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       uses the same lines; `extract_text` skips hidden text and `template`. Tool JSON ported
       byte for byte. Not ported: the render fast path `accessibility_styles_without_layout`
       (see Known deviations)
+- [x] `c6402a7` (+ #951): MCP pages keep console calls (`[level] message`, at most 1024) for
+      `browser_console_messages`, including across tab suspension; it used to always answer
+      "No console messages."
 - [ ] MCP:
-      `604d30b`, `5c27e76`, `c6402a7` console feed, `a3aea0a`, `5171717`,
+      `604d30b`, `5c27e76`, `a3aea0a`, `5171717`,
       `cbc2f97`; `9855ef4` web_search stays opt-in
 - [ ] CLI and workers: `11d6ea8` + `afb0d61`, `ec0186b`, `1949e9b`, `f2b9e99`, `4b14a76`,
       `0f27e69`, `9a6dd86`, `52d8ddd`, `1b259b9` failed-save log

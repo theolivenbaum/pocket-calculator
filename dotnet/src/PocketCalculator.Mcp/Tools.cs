@@ -468,10 +468,23 @@ internal static partial class Tools
         return string.Join("\n", lines);
     }
 
-    internal static string ConsoleMessages(BrowserState state) =>
-        state.ConsoleMessages.Count == 0
+    /// <summary>
+    /// <c>browser_console_messages</c>: the active page's console calls since the last read are
+    /// appended to the session's list (at most 1024, oldest dropped), as upstream does (#951,
+    /// c6402a7). Nothing used to feed the list, so it always answered "No console messages."
+    /// </summary>
+    internal static string ConsoleMessages(BrowserState state)
+    {
+        state.ConsoleMessages.AddRange(state.PageMut().TakePendingConsoleMessages());
+        if (state.ConsoleMessages.Count > 1024)
+        {
+            state.ConsoleMessages.RemoveRange(0, state.ConsoleMessages.Count - 1024);
+        }
+
+        return state.ConsoleMessages.Count == 0
             ? "No console messages."
             : string.Join("\n", state.ConsoleMessages);
+    }
 
     internal static string Close(BrowserState state)
     {

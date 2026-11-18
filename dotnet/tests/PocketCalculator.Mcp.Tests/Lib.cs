@@ -260,6 +260,21 @@ public sealed class LibTests
             $"the submitted body must carry the filled field, got {submitted}");
     }
 
+    // upstream #951 / c6402a7: console calls reach browser_console_messages, including ones made
+    // before the tab was suspended by a tab switch.
+    [Fact]
+    public async Task ConsoleMessagesAreCollectedAndSurviveATabSwitch()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync("data:text/html,<script>console.log('first'); console.warn('second')</script>");
+        state.PageMut().Evaluate("console.error('third')");
+        var other = state.NewTab();
+        await state.PageMut().NavigateAsync("data:text/html,<p>other</p>");
+        Tools.TabSwitch(JsonNode.Parse("""{"tab_id":"tab-1"}"""), state);
+        Assert.Equal("[log] first\n[warning] second\n[error] third", Tools.ConsoleMessages(state));
+        _ = other;
+    }
+
     // upstream a3aea0a: evaluate_failures_are_mcp_tool_errors
     [Fact]
     public async Task EvaluateFailuresAreMcpToolErrors()

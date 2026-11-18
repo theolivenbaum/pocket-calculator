@@ -83,7 +83,9 @@ public sealed class BrowserState : IDisposable
         {
             _tabCounter++;
             var newId = $"tab-{_tabCounter.ToString(CultureInfo.InvariantCulture)}";
-            _tabs[newId] = new Page("mcp-page", _context);
+            var created = new Page("mcp-page", _context);
+            created.SetConsoleMessagesEnabled(true);
+            _tabs[newId] = created;
             _activeTab = newId;
         }
 
@@ -96,7 +98,9 @@ public sealed class BrowserState : IDisposable
     {
         _tabCounter++;
         var id = $"tab-{_tabCounter.ToString(CultureInfo.InvariantCulture)}";
-        _tabs[id] = new Page($"mcp-{id}", _context);
+        var tab = new Page($"mcp-{id}", _context);
+        tab.SetConsoleMessagesEnabled(true);
+        _tabs[id] = tab;
         _activeTab = id;
         _interactiveRefs.Clear();
         return id;

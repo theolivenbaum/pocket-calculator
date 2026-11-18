@@ -524,6 +524,7 @@ public sealed partial class Page : IDisposable
 
         rt.SetCookieJar(Context.CookieJar);
         rt.SetWebStorage(Context.LocalStorage, SessionStorage);
+        rt.SetConsoleMessagesEnabled(ConsoleMessagesEnabled);
         rt.SetHttpClient(HttpClient);
         rt.SetCallbacks(_callbacks);
         rt.SetBlockedUrls(BlockedUrlPatterns);

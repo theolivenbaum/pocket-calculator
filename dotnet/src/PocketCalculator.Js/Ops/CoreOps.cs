@@ -230,6 +230,16 @@ public static class CoreOps
             ArgumentNullException.ThrowIfNull(page);
             ConsoleMessage?.Invoke(level, msg);
 
+            if (page.ConsoleMessagesEnabled)
+            {
+                if (page.PendingConsoleMessages.Count >= 1024)
+                {
+                    page.PendingConsoleMessages.Dequeue();
+                }
+
+                page.PendingConsoleMessages.Enqueue($"[{level}] {msg}");
+            }
+
             if (!page.RuntimeEventsEnabled)
             {
                 return;

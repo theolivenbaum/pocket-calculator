@@ -250,6 +250,14 @@ public sealed class PocketCalculatorState
 
     public bool RuntimeEventsEnabled { get; set; }
 
+    /// <summary>
+    /// Upstream #951 / c6402a7: when set (MCP pages), console calls are kept as
+    /// <c>[level] message</c> for <c>browser_console_messages</c>, at most 1024, oldest dropped.
+    /// </summary>
+    public bool ConsoleMessagesEnabled { get; set; }
+
+    public Queue<string> PendingConsoleMessages { get; } = new();
+
     public ulong RuntimeExceptionCounter { get; set; }
 
     public Dictionary<string, StoredNetworkResponseBody> NetworkResponseBodies { get; } =

@@ -326,6 +326,8 @@ public sealed partial class Page
             return;
         }
         IReadOnlyList<uint> startedScriptIds = js.StartedScriptIds();
+        // upstream c6402a7 (#971): messages the client has not read yet survive the suspension.
+        _suspendedConsoleMessages.AddRange(js.TakePendingConsoleMessages());
         _suspendedCdpObjectState = js.TakeCdpObjectState();
         PocketCalculator.Dom.DomTree? dom = js.TakeDom();
         if (dom is not null)
@@ -391,6 +393,34 @@ public sealed partial class Page
     /// <c>close()</c> on a loaded document, for the CDP layer to report.
     /// </summary>
     public int TakeScriptDocumentLoads() => Js?.TakeScriptDocumentLoads() ?? 0;
+
+    private readonly List<string> _suspendedConsoleMessages = [];
+    private bool _consoleMessagesEnabled;
+
+    /// <summary>Keep console calls for <see cref="TakePendingConsoleMessages"/> (MCP pages).</summary>
+    public void SetConsoleMessagesEnabled(bool enabled)
+    {
+        _consoleMessagesEnabled = enabled;
+        Js?.SetConsoleMessagesEnabled(enabled);
+    }
+
+    internal bool ConsoleMessagesEnabled => _consoleMessagesEnabled;
+
+    /// <summary>
+    /// Console messages not yet read: those buffered while the runtime was suspended, then the
+    /// live runtime's (upstream c6402a7).
+    /// </summary>
+    public List<string> TakePendingConsoleMessages()
+    {
+        List<string> messages = [.. _suspendedConsoleMessages];
+        _suspendedConsoleMessages.Clear();
+        if (Js is { } js)
+        {
+            messages.AddRange(js.TakePendingConsoleMessages());
+        }
+
+        return messages;
+    }
 
     public IReadOnlyList<RuntimeEvent> TakePendingRuntimeEvents() =>
         Js?.TakePendingRuntimeEvents() ?? [];

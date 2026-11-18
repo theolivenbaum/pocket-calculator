@@ -341,6 +341,16 @@ public sealed partial class PocketCalculatorJsRuntime
     /// expression for every console argument reported by reference so a later
     /// <c>Runtime.getProperties</c> can still reach it.
     /// </summary>
+    public void SetConsoleMessagesEnabled(bool enabled) => State.ConsoleMessagesEnabled = enabled;
+
+    /// <summary>The console messages kept since the last call, oldest first.</summary>
+    public List<string> TakePendingConsoleMessages()
+    {
+        List<string> messages = [.. State.PendingConsoleMessages];
+        State.PendingConsoleMessages.Clear();
+        return messages;
+    }
+
     public IReadOnlyList<RuntimeEvent> TakePendingRuntimeEvents()
     {
         DrainHostConsole();
