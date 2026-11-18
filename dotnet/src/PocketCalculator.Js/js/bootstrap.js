@@ -20614,7 +20614,11 @@ globalThis.focus = function() {}; _markNative(globalThis.focus);
 globalThis.blur = function() {}; _markNative(globalThis.blur);
 globalThis.print = function() {}; _markNative(globalThis.print);
 globalThis.alert = function() {}; _markNative(globalThis.alert);
-globalThis.confirm = function() { return true; }; _markNative(globalThis.confirm);
+// upstream 33aeb3f: a noninteractive engine dismisses a confirmation, as prompt() already
+// cancels. Chromium blocks until a CDP client answers Page.javascriptDialogOpening, which the
+// port does not emit, and Playwright dismisses an unhandled dialog (confirm() is false); true
+// silently accepted destructive confirmations.
+globalThis.confirm = function() { return false; }; _markNative(globalThis.confirm);
 globalThis.prompt = function() { return null; }; _markNative(globalThis.prompt);
 globalThis.open = function() { return null; }; _markNative(globalThis.open);
 globalThis.close = function() {}; _markNative(globalThis.close);

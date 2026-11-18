@@ -12548,6 +12548,15 @@ public sealed partial class RuntimeTests
         Assert.NotNull(info.ObjectId);
     }
 
+    // upstream 33aeb3f: noninteractive dialogs dismiss: confirm() is false, prompt() null,
+    // alert() returns undefined without blocking.
+    [Fact]
+    public void NoninteractiveDialogsAreDismissed()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
+        Assert.Equal("[false,null,null]", fixture.Runtime.Evaluate("JSON.stringify([confirm('Delete?'), prompt('Name?', 'x'), alert('hi') ?? null])")!.GetValue<string>());
+    }
+
     // upstream daac810: test_style_set_property_without_change_queues_no_mutation. An unchanged
     // style.setProperty rewrote the style attribute and queued a mutation record, so an observer
     // that re-applies the same style re-triggered itself forever.

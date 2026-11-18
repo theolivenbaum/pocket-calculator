@@ -359,7 +359,9 @@ Security (exposed today unless noted):
 - [x] `b3475a5`, `7a8c0e3`, `fd5c729` - cookie prefix rules on the import path; a
       public-suffix import is kept host-only instead of dropped
 - [x] `1922f4a` - loopback counts as a secure cookie context
-- [ ] `33aeb3f` - `confirm()` returns true; measure Chromium headless first
+- [x] `33aeb3f` - `confirm()` returns false. Measured 2026-11-18: Chromium 1243 (full and
+      headless shell) blocks on the dialog until a CDP client answers it; the port emits no
+      dialog events, and Playwright dismisses an unhandled one
 - [x] `9b05070` - frame-realm script ops resolve the frame's document (the image and canvas
       ops already did)
 - [x] `c8e5b9e` - the linked-stylesheet load script addresses its link by node id
