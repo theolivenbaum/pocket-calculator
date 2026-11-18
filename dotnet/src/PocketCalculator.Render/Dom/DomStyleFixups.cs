@@ -1164,7 +1164,8 @@ internal static class DomStyleFixups
         float intrinsicWidth,
         float intrinsicHeight,
         float horizontalEdges,
-        float verticalEdges)
+        float verticalEdges,
+        bool percentageUsesIntrinsic = true)
     {
         bool contentBox = style.BoxSizing == BoxSizing.ContentBox;
         if (style.Width.IsAuto && !stretchedGridItem.Inline)
@@ -1173,8 +1174,14 @@ internal static class DomStyleFixups
                 ? F32.Max(intrinsicWidth - horizontalEdges, 0f)
                 : intrinsicWidth);
         }
-        else if (style.Width.Kind == DimensionKind.Percent)
+        else if (style.Width.Kind == DimensionKind.Percent
+            || (percentageUsesIntrinsic
+                && style.SizeExpressions[0]?.Contains('%', StringComparison.Ordinal) == true))
         {
+            // upstream 322f46c: a percentage inside a functional width publishes the intrinsic
+            // size too, for the controls whose auto width models their content (every input
+            // but color and the buttons, select and textarea), so a cyclic `calc(100% - 32px)`
+            // contributes the control's auto width.
             // DEVIATION from crates/obscura-render/src/dom.rs, which publishes the intrinsic size
             // only into an `auto` width and so leaves a percentage-width control contributing
             // nothing but its padding. A percentage that cannot be resolved behaves as `auto` for

@@ -640,8 +640,20 @@ internal static class DomSubgridPasses
                     styles.TryGetValue(resolvedFlexItem, out LayoutStyle? itemSizing)
                     && itemSizing.Width.IsAuto
                     && itemSizing.FlexBasis.IsAuto;
+                // upstream 322f46c: a preferred width that means the box's own size keeps the
+                // percentage-zero value - a fixed-layout table (its columns come from the
+                // declared width, not from content), a replaced box, and a control whose auto
+                // width does not model its content (the button types).
+                bool keepsZeroBasis = slot == 0
+                    && ((style.IsTableBox && style.TableLayoutFixed)
+                        || style.ReplacedIntrinsic is not null
+                        || style.HasReplacedSizing
+                        || (style.IsReplacedBox
+                            && !(style.NativeControlContent is not null
+                                && RenderDom.NativeControlPercentageUsesIntrinsic(tree, id))));
                 Dimension value =
-                    kind == DeferredCyclicInlineSourceKind.Expression || contentSizedItem
+                    !keepsZeroBasis
+                    && (kind == DeferredCyclicInlineSourceKind.Expression || contentSizedItem)
                         ? Dimension.Auto
                         : Dimension.Px(F32.Max(intrinsicValue, 0f));
                 switch (slot)

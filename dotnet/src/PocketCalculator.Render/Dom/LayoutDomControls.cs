@@ -344,9 +344,28 @@ public static partial class RenderDom
                 intrinsic.Width,
                 intrinsic.Height,
                 inputHorizontalEdges,
-                inputVerticalEdges);
+                inputVerticalEdges,
+                NativeControlPercentageUsesIntrinsic(inputType));
         }
     }
+
+    /// <summary>
+    /// upstream 322f46c <c>native_control_percentage_uses_intrinsic</c>: whether a control's
+    /// auto width models its inner content, so a cyclic percentage width contributes it. For
+    /// an input, every type but color and the button types.
+    /// </summary>
+    internal static bool NativeControlPercentageUsesIntrinsic(string inputType) =>
+        inputType is not ("color" or "button" or "submit" or "reset" or "image");
+
+    /// <summary>The same, for any element: select and textarea always do.</summary>
+    internal static bool NativeControlPercentageUsesIntrinsic(DomTree tree, NodeId id) =>
+        DomTraversal.ElementLocalName(tree, id) switch
+        {
+            "select" or "textarea" => true,
+            "input" => NativeControlPercentageUsesIntrinsic(
+                (tree.GetNode(id)?.GetAttribute("type") ?? "text").Trim().ToLowerInvariant()),
+            _ => false,
+        };
 
     /// <summary>Chromium's textarea scrollbar gutter, the whole of its intrinsic constant term.</summary>
     private const float TextareaScrollbarWidth = 15f;
