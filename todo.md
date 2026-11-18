@@ -332,7 +332,9 @@ Security (exposed today unless noted):
       day 0 underflows; validate RFC 6265 ranges first. Also `Max-Age` overflow and the
       400-day cap; IP literals must not suffix-match in `DomainMatches`
 - [x] `281470c` - grid `DistributeSpaceUpToLimits` can loop forever and has no
-      `WorkCancellation` check; with `025088c` (`span 0` grid placements)
+      `WorkCancellation` check
+- [x] `025088c` - `span 0` / line `0` grid placements threw in layout; now dropped in the
+      cascade, and taffy treats `Span(0)` as auto
 - [ ] `e83d803` - CDP watchdog is not armed for a command that resumes a suspended page
 - [ ] `8dbf7e1`, `cf5067e`, `f2bf4c3`, `d45bee5`, `f152fcf`, `efb57d8` - serializer:
       escape `<` `>` U+00A0 in attributes (mXSS), missing void elements, fixed xml/xlink/

@@ -60,6 +60,10 @@ internal readonly record struct NonNamedGridPlacement(GenericGridPlacementKind K
     public OriginZeroGridPlacement IntoOriginZeroPlacement(ushort explicitTrackCount) => Kind switch
     {
         GenericGridPlacementKind.Auto => OriginZeroGridPlacement.Auto,
+        // upstream 025088c: a span of zero is invalid (CSS Grid 1 section 8.3) and would give the
+        // item a zero-track area that track sizing indexes as an inverted range. Treat it as
+        // Auto, like the invalid line zero.
+        GenericGridPlacementKind.Span when SpanValue == 0 => OriginZeroGridPlacement.Auto,
         GenericGridPlacementKind.Span => OriginZeroGridPlacement.FromSpan(SpanValue),
         // Grid line zero is an invalid index, so it gets treated as Auto.
         _ => LineValue.AsI16() == 0
@@ -100,6 +104,10 @@ internal static class GridPlacementExtensions
         ushort explicitTrackCount) => self.Kind switch
         {
             GridPlacementKind.Auto => OriginZeroGridPlacement.Auto,
+            // upstream 025088c: a span of zero is invalid (CSS Grid 1 section 8.3) and would give the
+            // item a zero-track area that track sizing indexes as an inverted range. Treat it as
+            // Auto, like the invalid line zero.
+            GridPlacementKind.Span when self.SpanCount == 0 => OriginZeroGridPlacement.Auto,
             GridPlacementKind.Span => OriginZeroGridPlacement.FromSpan(self.SpanCount),
             // Grid line zero is an invalid index, so it gets treated as Auto.
             GridPlacementKind.Line => self.LineIndex == 0

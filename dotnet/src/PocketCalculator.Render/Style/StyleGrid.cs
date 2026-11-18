@@ -1249,6 +1249,37 @@ public static partial class ComputedStyle
         return new Layout.Line<Layout.GridPlacement>(start, end);
     }
 
+    /// <summary>
+    /// Rust <c>grid_placement_declaration_is_valid</c> (upstream 025088c): whether a
+    /// <c>grid-column</c>/<c>grid-row</c> shorthand or one of their longhands is valid. CSS Grid 1
+    /// section 8.3 makes zero and negative spans and line number zero invalid.
+    /// </summary>
+    internal static bool GridPlacementDeclarationIsValid(string value, bool shorthand)
+    {
+        string trimmed = value.Trim();
+        if (CssText.AsciiLower(trimmed) is "initial" or "inherit" or "unset" or "revert" or "revert-layer")
+        {
+            return true;
+        }
+
+        List<string> parts = SplitTopLevel(trimmed, '/');
+        if (parts.Count > (shorthand ? 2 : 1))
+        {
+            return false;
+        }
+
+        foreach (string part in parts)
+        {
+            string p = part.Trim();
+            if (p.Length == 0 || ParseGridLineKind(p) is null)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /// <summary>Rust <c>parse_grid_placement</c>.</summary>
     /// <remarks>
     /// Deviation from Rust, which parses the integer as <c>i16</c>/<c>u16</c> and turns anything

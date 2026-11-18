@@ -3216,6 +3216,13 @@ public static partial class ComputedStyle
             case "grid-area":
                 SetGridArea(style, value);
                 return true;
+            // upstream 025088c: an invalid placement (`span 0`, line `0`, including one a var()
+            // substituted to) is dropped like any invalid declaration, so an earlier valid one
+            // wins; it used to reach layout and throw.
+            case "grid-column" or "grid-row" or "grid-column-start" or "grid-column-end"
+                or "grid-row-start" or "grid-row-end"
+                when !GridPlacementDeclarationIsValid(value, name is "grid-column" or "grid-row"):
+                return true;
             case "grid-column":
                 SetGridPlacement(style, value, true);
                 return true;
