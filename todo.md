@@ -360,8 +360,10 @@ Security (exposed today unless noted):
       public-suffix import is kept host-only instead of dropped
 - [x] `1922f4a` - loopback counts as a secure cookie context
 - [ ] `33aeb3f` - `confirm()` returns true; measure Chromium headless first
-- [ ] `9b05070`, `0d8a200`, `c8e5b9e`, `d853a73`, `2f448c3` - frame-realm script ops,
-      upload validation, link by node id, wrapKey usages, detached-frame timers
+- [x] `9b05070` - frame-realm script ops resolve the frame's document (the image and canvas
+      ops already did)
+- [ ] `0d8a200`, `c8e5b9e`, `d853a73`, `2f448c3` - upload validation, link by node id,
+      wrapKey usages, detached-frame timers
 
 Correctness, by area (order and grouping as in the review's per-area "suggested port order"):
 

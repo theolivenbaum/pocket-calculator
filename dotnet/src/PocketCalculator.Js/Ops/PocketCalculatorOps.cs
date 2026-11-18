@@ -243,10 +243,6 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
                     ? forwarder.OpDom(null, FrameState(realm), S(cmd), S(a1), S(a2))
                     : DomOps.OpDom(FrameState(realm), S(cmd), S(a1), S(a2));
             }));
-        Bind(ops, "op_script_mark_started", (Func<object?, bool>)(
-            nid => CoreOps.OpScriptMarkStarted(Page, U32(nid))));
-        Bind(ops, "op_script_try_start", (Func<object?, bool>)(
-            nid => CoreOps.OpScriptTryStart(Page, U32(nid))));
         Bind(ops, "op_run_classic_script", (Action<object?, object?>)(
             (source, url) => RunClassicScript(engine, S(source), S(url))));
         // Upstream 04418a5: host-held linked-sheet CSS and its origin-clean bit.
@@ -466,6 +462,13 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
     /// </summary>
     private void BindDocumentOps(ScriptObject ops, PocketCalculatorState document)
     {
+        // upstream 9b05070: a script node id names a node of the calling realm's document.
+        // Bound to the page, a frame's inserted script was looked up in the top document, so it
+        // never ran, or claimed a page script that shared its id.
+        Bind(ops, "op_script_mark_started", (Func<object?, bool>)(
+            nid => CoreOps.OpScriptMarkStarted(document, U32(nid))));
+        Bind(ops, "op_script_try_start", (Func<object?, bool>)(
+            nid => CoreOps.OpScriptTryStart(document, U32(nid))));
         // Port addition: document.write() into the running parser at its insertion point.
         // False when the document has no parser with an insertion point, and the shim falls
         // back to its own input stream.

@@ -77,6 +77,54 @@ public sealed class SrcdocFrameTests
         }
     }
 
+    /// <summary>
+    /// upstream 9b05070: iframe_realm_node_ops_resolve_the_frame_document. A child realm's
+    /// node ids index its own document; a script frame code inserts must run, its canvas must
+    /// give a 2D context, and its image must fire load.
+    /// </summary>
+    [Fact]
+    public async Task IframeRealmNodeOpsResolveTheFrameDocument()
+    {
+        using TestHttpServer server = Server(path => path == "/page"
+            ? TestResponse.Html("<html><body><p>parent</p></body></html>")
+            : null);
+        using Page page = PageFixtures.NewPage("frame-node-ops");
+        await page.NavigateAsync($"{server.Origin}/page");
+        page.Evaluate("""
+            (() => {
+                const frame = document.createElement('iframe'); frame.id = 'child';
+                frame.srcdoc = `<body><script>
+                    globalThis.results = {};
+                    const ctx = document.createElement('canvas').getContext('2d');
+                    results.canvas = ctx ? 'context' : 'null';
+                    const inserted = document.createElement('script');
+                    inserted.textContent = 'results.script = "ran"';
+                    document.head.appendChild(inserted);
+                    const image = new Image();
+                    image.onload = () => { results.image = 'load'; };
+                    image.onerror = () => { results.image = 'error'; };
+                    image.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+                <\/script></body>`;
+                document.body.appendChild(frame);
+                return 1;
+            })()
+            """);
+        string? json = null;
+        for (int attempt = 0; attempt < 40; attempt++)
+        {
+            await page.SettleAsync(50);
+            // The port runs a frame in its own realm; read the frame's globals there.
+            json = page.Frames.FirstOrDefault(frame => frame.Url == "about:srcdoc")
+                ?.Evaluate("JSON.stringify(globalThis.results)")?.GetValue<string>();
+            if (json is not null && json.Contains("image", StringComparison.Ordinal))
+            {
+                break;
+            }
+        }
+
+        PageFixtures.AssertJson("""{"canvas":"context","script":"ran","image":"load"}""", JsonNode.Parse(json ?? "null"));
+    }
+
     [Fact]
     public async Task SrcdocWinsOverSrcAndRunsWithTheParentsOriginBaseAndCookies()
     {
