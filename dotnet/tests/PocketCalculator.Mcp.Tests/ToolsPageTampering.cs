@@ -67,7 +67,7 @@ public sealed class ToolsPageTampering
 
         Assert.Equal(
             "Filled 1 fields.",
-            Tools.FillForm(JsonNode.Parse("""{ "fields": [{ "selector": "#q", "value": "form" }] }"""), state));
+            await Tools.FillFormAsync(JsonNode.Parse("""{ "fields": [{ "selector": "#q", "value": "form" }] }"""), state));
         Assert.Equal("form", state.PageMut().Evaluate("document.getElementById('q').value")?.GetValue<string>());
     }
 

@@ -75,7 +75,7 @@ internal static partial class Tools
                 return out;
             })()
             """;
-        var val = page.EvaluateHost(js);
+        var val = EvaluateToolScript(page, js);
         if (val.IsNull())
         {
             return "No forms found.";
@@ -91,7 +91,7 @@ internal static partial class Tools
     /// or visible text. Optional <c>submit_ref</c> / <c>submit_selector</c> clicks
     /// after filling.
     /// </summary>
-    internal static string FillForm(JsonNode? args, BrowserState state)
+    internal static async Task<string> FillFormAsync(JsonNode? args, BrowserState state)
     {
         var fields = args.Get("fields").ArrayOrNull() ?? throw new ToolException("Missing fields array");
         var snapshot = new List<JsonNode?>(fields.Count);
@@ -179,7 +179,7 @@ internal static partial class Tools
             };
             // EvaluateHost: markTrusted and setFieldValue are host helpers here, where
             // crates/obscura-mcp names them as page-visible __obscura_* globals.
-            var res = state.PageMut().EvaluateHost(js);
+            var res = EvaluateToolScript(state.PageMut(), js);
             switch (res.AsString())
             {
                 case "ok":
@@ -194,7 +194,15 @@ internal static partial class Tools
             }
         }
 
-        // Optional submit click
+        var count = filled.ToString(CultureInfo.InvariantCulture);
+        // Upstream a3aea0a: a partly filled form is not submitted, and the error is a
+        // tool error rather than a successful reply that lists it.
+        if (errors.Count > 0)
+        {
+            throw new ToolException($"Filled {count} fields; not submitted. Errors: {string.Join("; ", errors)}");
+        }
+
+        // Optional submit click. A submit target that does not resolve is an error.
         string? submitTarget = null;
         if (args.Has("submit_ref") || args.Has("submit_selector"))
         {
@@ -203,14 +211,7 @@ internal static partial class Tools
                 ["ref"] = args.Get("submit_ref")?.DeepClone(),
                 ["selector"] = args.Get("submit_selector")?.DeepClone(),
             };
-            try
-            {
-                submitTarget = ResolveTarget(pseudo, state);
-            }
-            catch (ToolException)
-            {
-                submitTarget = null;
-            }
+            submitTarget = ResolveTarget(pseudo, state);
         }
 
         if (submitTarget is { } target)
@@ -224,14 +225,16 @@ internal static partial class Tools
                     return "ok";
                 })()
                 """;
-            state.PageMut().EvaluateHost(js);
+            if (EvaluateToolScript(state.PageMut(), js).AsString() != "ok")
+            {
+                throw new ToolException($"Submit target not found: {target}");
+            }
             state.InteractiveRefs.Clear();
         }
 
-        var count = filled.ToString(CultureInfo.InvariantCulture);
-        return errors.Count == 0
-            ? $"Filled {count} fields."
-            : $"Filled {count} fields. Errors: {string.Join("; ", errors)}";
+        // The submit's navigation completes before the reply (upstream a3aea0a).
+        await state.SettleSyntheticNavigationAsync().ConfigureAwait(false);
+        return $"Filled {count} fields.";
     }
 
     /// <summary>
@@ -258,7 +261,7 @@ internal static partial class Tools
                     return h.stringify({__proto__:null, x: at[0], y: at[1]});
                 })()
                 """;
-            var elementResult = state.PageMut().EvaluateHost(js);
+            var elementResult = EvaluateToolScript(state.PageMut(), js);
             if (elementResult.AsString() == "error:not found")
             {
                 throw new ToolException($"Element not found: {selector}");
@@ -295,7 +298,7 @@ internal static partial class Tools
                 return h.stringify({__proto__:null, x: at[0], y: at[1], max_y: h.get(h.body(), 'scrollHeight'), viewport_h: {{viewportHeight}}});
             })()
             """;
-        var res = state.PageMut().EvaluateHost(scrollJs);
+        var res = EvaluateToolScript(state.PageMut(), scrollJs);
         // A scroll can reveal new DOM (infinite scroll); invalidate refs.
         state.InteractiveRefs.Clear();
         return $"Scrolled {direction}. {res.AsString() ?? string.Empty}";
@@ -316,7 +319,7 @@ internal static partial class Tools
                 return v == null ? '' : v;
             })()
             """;
-        var res = state.PageMut().EvaluateHost(js);
+        var res = EvaluateToolScript(state.PageMut(), js);
         if (res.IsNull())
         {
             throw new ToolException($"Element not found: {selector}");
@@ -329,7 +332,7 @@ internal static partial class Tools
     {
         var selector = RequireString(args, "selector", "Missing selector parameter");
         var js = $"__obscura_host.dom.querySelectorAll(__obscura_host.dom.document(), {McpJson.String(selector)}).length";
-        var res = state.PageMut().EvaluateHost(js);
+        var res = EvaluateToolScript(state.PageMut(), js);
         // V8 numbers come back as f64 even when they are integer-valued; as_u64
         // returns None for f64 in serde_json, so coerce via f64.
         var n = res.AsU64() ?? (res.AsF64() is { } f ? SaturatingU64(f) : 0);
@@ -382,7 +385,7 @@ internal static partial class Tools
                 return out;
             })()
             """;
-        var res = state.PageMut().EvaluateHost(js);
+        var res = EvaluateToolScript(state.PageMut(), js);
         return McpJson.SerializePretty(res);
     }
 

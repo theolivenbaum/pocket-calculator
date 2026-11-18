@@ -300,6 +300,81 @@ public sealed class LibTests
         Assert.Equal(42.0, double.Parse(await Tools.EvaluateAsync(JsonNode.Parse("""{"expression":"6 * 7"}"""), state), System.Globalization.CultureInfo.InvariantCulture));
     }
 
+    // upstream a3aea0a: form_errors_prevent_submission
+    [Fact]
+    public async Task FormErrorsPreventSubmission()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync(
+            "data:text/html,<input id=q><button id=go onclick='window.submits++'>Submit</button><script>window.submits=0</script>");
+        var response = await McpServer.DispatchAsync("tools/call", JsonNode.Parse("1"), new JsonObject
+        {
+            ["name"] = "browser_fill_form",
+            ["arguments"] = JsonNode.Parse(
+                """{"fields":[{"selector":"#q","value":"kept"},{"selector":"#missing","value":"bad"}],"submit_selector":"#go"}"""),
+        }, state);
+        // A partial form must not be submitted.
+        Assert.Equal(0.0, state.PageMut().Evaluate("window.submits")?.GetValue<double>());
+        Assert.True(response.Result?["isError"]?.GetValue<bool>() == true, response.Result?.ToJsonString());
+        Assert.StartsWith(
+            "Error: Filled 1 fields; not submitted. Errors: #missing: ",
+            response.Result?["content"]?[0]?["text"]?.GetValue<string>(),
+            StringComparison.Ordinal);
+
+        response = await McpServer.DispatchAsync("tools/call", JsonNode.Parse("2"), new JsonObject
+        {
+            ["name"] = "browser_fill_form",
+            ["arguments"] = JsonNode.Parse("""{"fields":[],"submit_ref":"unknown"}"""),
+        }, state);
+        // A missing submit target must not be ignored.
+        Assert.True(response.Result?["isError"]?.GetValue<bool>() == true, response.Result?.ToJsonString());
+    }
+
+    // upstream a3aea0a: fill_form_submission_reaches_the_server_before_replying
+    [Fact]
+    public async Task FillFormSubmissionReachesTheServerBeforeReplying()
+    {
+        var (baseUrl, requests) = SpawnFormRecordingServer();
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync(baseUrl);
+        Assert.StartsWith("GET /", Recv(requests, "the form page itself must be fetched"), StringComparison.Ordinal);
+
+        var reply = await Tools.FillFormAsync(
+            JsonNode.Parse("""{"fields":[{"selector":"#q","value":"complete"}],"submit_selector":"#go"}"""), state);
+        Assert.Equal("Filled 1 fields.", reply);
+        var request = Recv(requests, "submit must complete before the reply");
+        Assert.StartsWith("POST /submitted", request, StringComparison.Ordinal);
+        Assert.Contains("q=complete", request, StringComparison.Ordinal);
+    }
+
+    // upstream a3aea0a: interaction_exceptions_are_mcp_tool_errors. The upstream setups
+    // replace el.click, scrollIntoView or the field setter from page script; the port's
+    // tools reach those through the frozen host helpers, which page script cannot replace
+    // (SECURITY.md L10), so the exception path is exercised on the evaluator itself.
+    [Fact]
+    public async Task ToolScriptExceptionsAndTimeoutsAreToolErrors()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync("data:text/html,<button id=action>Continue</button>");
+        var thrown = Assert.Throws<ToolException>(
+            () => Tools.EvaluateToolScript(state.PageMut(), "(function(){throw new Error('action failed');})()"));
+        Assert.Contains("action failed", thrown.Message, StringComparison.Ordinal);
+        var timedOut = Assert.Throws<ToolException>(
+            () => Tools.EvaluateToolScript(state.PageMut(), "(function(){while(true){}})()"));
+        Assert.Equal("JavaScript execution or serialization exceeded the 5000ms deadline", timedOut.Message);
+        // The isolate is usable afterwards.
+        Assert.Equal(42.0, Tools.EvaluateToolScript(state.PageMut(), "6*7")?.GetValue<double>());
+
+        using var blank = new BrowserState(null, null, false);
+        var response = await McpServer.DispatchAsync("tools/call", JsonNode.Parse("1"), new JsonObject
+        {
+            ["name"] = "browser_press_key",
+            ["arguments"] = JsonNode.Parse("""{"selector":"#missing","key":"Enter"}"""),
+        }, state);
+        Assert.True(response.Result?["isError"]?.GetValue<bool>() == true, response.Result?.ToJsonString());
+        Assert.Equal("Error: Element not found for key press", response.Result?["content"]?[0]?["text"]?.GetValue<string>());
+    }
+
     // upstream a3aea0a: evaluate_runs_scripts_once_and_preserves_null_results
     [Fact]
     public async Task EvaluateRunsScriptsOnceAndPreservesNullResults()
@@ -604,7 +679,7 @@ public sealed class LibTests
 
         await Tools.FillAsync(JsonNode.Parse("""{ "selector": "#field", "value": "filled" }"""), state);
         await Tools.TypeAsync(JsonNode.Parse("""{ "selector": "#field", "text": "-typed" }"""), state);
-        Tools.FillForm(
+        await Tools.FillFormAsync(
             JsonNode.Parse("""{ "fields": [{ "selector": "#field", "value": "form-filled" }] }"""),
             state);
 
@@ -666,7 +741,7 @@ public sealed class LibTests
             })()
             """);
 
-        Tools.FillForm(
+        await Tools.FillFormAsync(
             JsonNode.Parse(
                 """
                 {

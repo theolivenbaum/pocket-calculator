@@ -77,6 +77,40 @@ internal static partial class Tools
         }
     }
 
+    /// <summary>
+    /// Port of upstream <c>evaluate_tool_script</c> (a3aea0a): run a tool's host script
+    /// under a 5 s watchdog and report a thrown exception or a timeout as a tool error,
+    /// where <see cref="Page.EvaluateHost"/> answers null and the tool went on to report
+    /// success.
+    /// </summary>
+    internal static JsonNode? EvaluateToolScript(Page page, string script)
+    {
+        if (page.Js is not { } js)
+        {
+            throw new ToolException("Navigate before evaluating JavaScript");
+        }
+        // Armed through result serialization, which can run page code.
+        var watchdog = js.ArmWatchdog(TimeSpan.FromSeconds(5));
+        JsonNode? result;
+        try
+        {
+            result = js.EvaluateHostChecked(script);
+        }
+        catch (PocketCalculator.Js.Runtime.JsRuntimeException error)
+        {
+            if (js.DisarmWatchdog(watchdog))
+            {
+                throw new ToolException("JavaScript execution or serialization exceeded the 5000ms deadline");
+            }
+            throw new ToolException(error.Message);
+        }
+        if (js.DisarmWatchdog(watchdog))
+        {
+            throw new ToolException("JavaScript execution or serialization exceeded the 5000ms deadline");
+        }
+        return result;
+    }
+
     internal static async Task<string> NavigateAsync(JsonNode? args, BrowserState state)
     {
         var url = RequireString(args, "url", "Missing url parameter");
@@ -177,7 +211,7 @@ internal static partial class Tools
         // The agent's click stands for a user's, so it gives the page user activation:
         // a link it follows reports Sec-Fetch-User: ?1, as a real click in Chromium does.
         state.PageMut().NoteUserActivation();
-        var result = state.PageMut().EvaluateHost(js);
+        var result = EvaluateToolScript(state.PageMut(), js);
         if (result.AsString() == "error:element not found")
         {
             throw new ToolException($"Element not found: {selector}");
@@ -209,7 +243,7 @@ internal static partial class Tools
 
         // EvaluateHost: markTrusted and setFieldValue are host helpers here, where
         // crates/obscura-mcp names them as page-visible __obscura_* globals.
-        var result = state.PageMut().EvaluateHost(js);
+        var result = EvaluateToolScript(state.PageMut(), js);
         if (result.AsString() == "error:element not found")
         {
             throw new ToolException($"Element not found: {selector}");
@@ -235,7 +269,7 @@ internal static partial class Tools
             })()
             """;
 
-        var result = state.PageMut().EvaluateHost(js);
+        var result = EvaluateToolScript(state.PageMut(), js);
         if (result.AsString() == "error:element not found")
         {
             throw new ToolException($"Element not found: {selector}");
@@ -267,7 +301,10 @@ internal static partial class Tools
             """;
 
         state.PageMut().NoteUserActivation();
-        state.PageMut().EvaluateHost(js);
+        if (EvaluateToolScript(state.PageMut(), js).AsString() == "error:element not found")
+        {
+            throw new ToolException("Element not found for key press");
+        }
         await state.SettleSyntheticNavigationAsync().ConfigureAwait(false);
         return $"Pressed key '{key}'";
     }
@@ -295,7 +332,7 @@ internal static partial class Tools
             })()
             """;
 
-        var result = state.PageMut().EvaluateHost(js);
+        var result = EvaluateToolScript(state.PageMut(), js);
         return result.AsString() switch
         {
             "error:element not found" => throw new ToolException($"Element not found: {selector}"),
@@ -515,7 +552,7 @@ internal static partial class Tools
     {
         var maxChars = ClampToInt(args.Get("max_chars").AsU64()) ?? McpServer.DefaultTextLimit;
         var page = state.PageMut();
-        var result = page.EvaluateHost(MarkdownScript.HtmlToMarkdown);
+        var result = EvaluateToolScript(page, MarkdownScript.HtmlToMarkdown);
         var md = result.AsString() ?? string.Empty;
         return TextExtraction.Truncate(md, maxChars);
     }
@@ -549,7 +586,7 @@ internal static partial class Tools
                 return out;
             })()
             """;
-        var val = page.EvaluateHost(js);
+        var val = EvaluateToolScript(page, js);
         var arr = val.ArrayOrNull();
         var lines = new List<string>();
         if (arr is not null)
@@ -739,7 +776,7 @@ internal static partial class Tools
                 return refs;
             })()
             """;
-        var val = page.EvaluateHost(tagJs);
+        var val = EvaluateToolScript(page, tagJs);
         var refs = new List<string>();
         if (val.ArrayOrNull() is { } array)
         {
@@ -930,7 +967,7 @@ internal static partial class Tools
         ulong tickMs = 5;
         while (true)
         {
-            var found = state.PageMut().EvaluateHost(js).AsBool() ?? false;
+            var found = EvaluateToolScript(state.PageMut(), js).AsBool() ?? false;
             if (found)
             {
                 return $"Found text {TextExtraction.RustDebugString(needle)}";

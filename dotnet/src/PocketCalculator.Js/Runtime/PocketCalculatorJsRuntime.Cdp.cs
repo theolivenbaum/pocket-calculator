@@ -34,6 +34,16 @@ public sealed partial class PocketCalculatorJsRuntime
     }
 
     /// <summary>
+    /// <see cref="EvaluateHost"/> that throws <see cref="JsRuntimeException"/> when the
+    /// script throws, instead of answering null.
+    /// </summary>
+    public JsonNode? EvaluateHostChecked(string expression)
+    {
+        BeginJavaScriptTask();
+        return ToJson(InvokeHostScript("<host-eval>", HostScript.WrapCheckedExpression(expression)));
+    }
+
+    /// <summary>
     /// <see cref="ExecuteScript"/> for host-authored statements that use the page realm's
     /// host helpers as <c>__obscura_host</c> (see <see cref="HostScript"/>).
     /// </summary>

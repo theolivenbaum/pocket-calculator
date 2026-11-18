@@ -329,7 +329,7 @@ public static class McpServer
             "browser_wait_for_text" => await Tools.WaitForTextAsync(args, state).ConfigureAwait(false),
             // Tier 2 agent-UX additions
             "browser_detect_forms" => Tools.DetectForms(state),
-            "browser_fill_form" => Tools.FillForm(args, state),
+            "browser_fill_form" => await Tools.FillFormAsync(args, state).ConfigureAwait(false),
             "browser_scroll" => Tools.Scroll(args, state),
             "browser_get_attribute" => Tools.GetAttribute(args, state),
             "browser_count" => Tools.Count(args, state),

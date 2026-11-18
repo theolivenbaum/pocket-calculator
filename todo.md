@@ -483,8 +483,13 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] `5171717`: `mcp --font-dir DIR` (repeatable), validated before either transport starts
 - [x] `5c27e76`: the MCP HTTP dispatcher drives the active page between requests, as stdio
       does; both transports pass `yieldTo` so a waiting request ends a turn early
-- [ ] MCP: `a3aea0a` (fill_form submit);
-      `9855ef4` web_search stays opt-in
+- [x] `a3aea0a` (rest): MCP tool scripts run through `EvaluateToolScript` (5 s watchdog,
+      a thrown exception or a timeout is a tool error, not null); `browser_fill_form` refuses
+      to submit a partly filled form, errors on an unresolved submit target and settles the
+      submit's navigation before replying; `browser_press_key` reports a missing element.
+      Upstream's tests replace `el.click`/`scrollIntoView`/the field setter from page script,
+      which the port's frozen host helpers ignore, so the error path is tested directly
+- [ ] MCP: `9855ef4` web_search, opt-in
 - [x] `9a6dd86`: CLI fetch and stdio MCP navigation errors from an SSRF denial of a loopback,
       private or localhost target carry the --allow-private-network hint (metadata and special
       ranges get none); the hint names the port's executable and environment variable

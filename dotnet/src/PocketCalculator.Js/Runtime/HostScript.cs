@@ -44,6 +44,17 @@ public static class HostScript
     }
 
     /// <summary>
+    /// <see cref="WrapExpression"/> without the catch: an exception propagates to the
+    /// caller (upstream a3aea0a's <c>evaluate_script</c>, which MCP tools use so a page
+    /// exception is a tool error and not a null result).
+    /// </summary>
+    internal static string WrapCheckedExpression(string expression)
+    {
+        var cleaned = expression.Trim().TrimEnd(';', ' ', '\t', '\r', '\n', '\f', '\v');
+        return $"(function({Parameter}) {{ \"use strict\"; return (\n{cleaned}\n); }})";
+    }
+
+    /// <summary>
     /// A function whose body is <paramref name="source"/>; an exception propagates to
     /// the caller, as it does from a script run with <c>ExecuteScript</c>.
     /// </summary>
