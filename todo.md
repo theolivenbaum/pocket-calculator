@@ -423,10 +423,6 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       declined: Chromium 1243 refuses every Origin without the flag (measured 2026-11-18).
       `e1acbe5` + `31e1dfe` routing by the request target's path, trailing slashes accepted (the
       private-profile part of `e1acbe5` waits for `f661c2e`). `8a2f957` not ported
-- [ ] Media emulation: `c9978c3` + `c7ec60a` + `6ba3613` (setEmulatedMedia, reduced
-      motion, color scheme, MediaQueryList change events)
-- [ ] CDP control plane: `1faf17f` (origin = endpoint authority, env allowlist),
-      `e1acbe5` + `31e1dfe`. Do not port `8a2f957`
 - [x] Media emulation: `c9978c3` + `c7ec60a` + `6ba3613` (setEmulatedMedia, reduced
       motion, color scheme, MediaQueryList change events), plus CDP's `media` type
 - [x] Render text: `bf10c46` word-spacing; `f8a36a4` font size keywords and `<font size>`;
