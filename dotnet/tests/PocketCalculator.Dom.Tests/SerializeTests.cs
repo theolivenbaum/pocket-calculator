@@ -116,4 +116,80 @@ public class SerializeTests
             tree.OuterHtml(host));
         Assert.Equal("<strong>shadow</strong>", tree.InnerHtml(root));
     }
+
+    private static NodeId Element(DomTree tree, string ns, string local, List<PocketCalculator.Dom.Attribute>? attrs = null) =>
+        tree.NewNode(new ElementData(new QualName(null, ns, local), attrs ?? [], null, false));
+
+    // upstream 8dbf7e1: attribute_values_and_text_are_escaped_as_the_standard_says
+    [Fact]
+    public void AttributeValuesAndTextAreEscapedAsTheStandardSays()
+    {
+        var tree = HtmlParsing.ParseHtml("<a title='&quot;&gt;&lt;img src=x&gt; a&nbsp;b &amp;amp;'>c&nbsp;d</a>");
+        const string link = "<a title=\"&quot;&gt;&lt;img src=x&gt; a&nbsp;b &amp;amp;\">c&nbsp;d</a>";
+        var out1 = tree.OuterHtml(tree.QuerySelector("a")!.Value);
+        Assert.Equal(link, out1);
+        var again = HtmlParsing.ParseHtml(out1);
+        Assert.Equal(link, again.OuterHtml(again.QuerySelector("a")!.Value));
+    }
+
+    // upstream 8dbf7e1: an_attribute_value_cannot_end_a_raw_text_parent
+    [Fact]
+    public void AnAttributeValueCannotEndARawTextParent()
+    {
+        var tree = HtmlParsing.ParseHtml("<noscript id=host></noscript>");
+        var host = tree.GetElementById("host")!.Value;
+        var child = Element(tree, Namespaces.Html, "p",
+            [new PocketCalculator.Dom.Attribute(QualName.Attr("title"), "</noscript><img src=x onerror=1>")]);
+        tree.AppendChild(host, child);
+        var out1 = tree.OuterHtml(host);
+        Assert.Equal("<noscript id=\"host\"><p title=\"&lt;/noscript&gt;&lt;img src=x onerror=1&gt;\"></p></noscript>", out1);
+        Assert.Null(HtmlParsing.ParseHtml(out1).QuerySelector("img"));
+    }
+
+    // upstream cf5067e: elements_that_serialize_as_void_write_no_children_and_no_end_tag
+    [Fact]
+    public void ElementsThatSerializeAsVoidWriteNoChildrenAndNoEndTag()
+    {
+        var tree = HtmlParsing.ParseHtml("<span id=host></span>");
+        var host = tree.GetElementById("host")!.Value;
+        foreach (var tag in new[] { "br", "img", "basefont", "bgsound", "frame", "keygen", "param" })
+        {
+            var element = Element(tree, Namespaces.Html, tag);
+            tree.AppendChild(element, Element(tree, Namespaces.Html, "b"));
+            tree.AppendChild(host, element);
+            Assert.Equal(string.Empty, tree.InnerHtml(element));
+            Assert.Equal($"<{tag}>", tree.OuterHtml(element));
+        }
+
+        Assert.Equal("<br><img><basefont><bgsound><frame><keygen><param>", tree.InnerHtml(host));
+    }
+
+    // upstream cf5067e: a_void_name_in_another_namespace_is_an_ordinary_element
+    [Fact]
+    public void AVoidNameInAnotherNamespaceIsAnOrdinaryElement()
+    {
+        var tree = HtmlParsing.ParseHtml("<span id=host></span>");
+        var br = Element(tree, Namespaces.Svg, "br");
+        tree.AppendChild(br, Element(tree, Namespaces.Svg, "g"));
+        Assert.Equal("<br><g></g></br>", tree.OuterHtml(br));
+        Assert.Equal("<g></g>", tree.InnerHtml(br));
+    }
+
+    // upstream f2bf4c3: namespaced_attributes_are_written_with_their_fixed_prefix
+    [Fact]
+    public void NamespacedAttributesAreWrittenWithTheirFixedPrefix()
+    {
+        var tree = HtmlParsing.ParseHtml("<span id=host></span>");
+        static PocketCalculator.Dom.Attribute A(string ns, string? prefix, string local) => new(new QualName(prefix, ns, local), "v");
+        var svg = Element(tree, Namespaces.Svg, "svg",
+        [
+            A(Namespaces.Xml, "abc", "lang"),
+            A(Namespaces.XLink, null, "href"),
+            A(Namespaces.XmlNs, null, "xmlns"),
+            A(Namespaces.XmlNs, "x", "foo"),
+            A(Namespaces.None, null, "plain"),
+            A("urn:other", "o", "k"),
+        ]);
+        Assert.Equal("<svg xml:lang=\"v\" xlink:href=\"v\" xmlns=\"v\" xmlns:foo=\"v\" plain=\"v\" o:k=\"v\"></svg>", tree.OuterHtml(svg));
+    }
 }

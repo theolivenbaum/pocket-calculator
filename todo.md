@@ -337,9 +337,10 @@ Security (exposed today unless noted):
       cascade, and taffy treats `Span(0)` as auto
 - [x] `e83d803` - CDP watchdog is not armed for a command that resumes a suspended page
       (`addScriptToEvaluateOnNewDocument{runImmediately}` is not implemented in the port)
-- [ ] `8dbf7e1`, `cf5067e`, `f2bf4c3`, `d45bee5`, `f152fcf`, `efb57d8` - serializer:
+- [x] `8dbf7e1`, `cf5067e`, `f2bf4c3`, `d45bee5`, `f152fcf`, `efb57d8` - serializer:
       escape `<` `>` U+00A0 in attributes (mXSS), missing void elements, fixed xml/xlink/
-      xmlns prefixes
+      xmlns prefixes. `d45bee5` and `f152fcf` were already in the port (SECURITY.md M9; the
+      tree builder's foreign-attribute table); `efb57d8` is a Rust-side perf change, skipped
 - [ ] `5bfac24` - fetch SSRF gate fails open when `UrlRecord.Parse` rejects the URL
       (`FetchOps.cs`, initial URL and intercept rewrite)
 - [ ] `1ee3ac1` - markdown extraction is 2^depth on nested tables, unbounded recursion

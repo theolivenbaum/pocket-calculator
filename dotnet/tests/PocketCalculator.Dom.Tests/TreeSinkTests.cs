@@ -284,4 +284,24 @@ public class TreeSinkTests
         Assert.Null(tree.GetNode(template)!.Parent);
         Assert.Equal(ShadowRootMode.Closed, tree.ShadowRootInfo(contents)!.Value.Mode);
     }
+
+    // upstream f152fcf (#1524): foreign_xmlns_attribute_has_no_prefix. The port's tree builder
+    // already gave xmlns no prefix; kept as a regression guard.
+    [Fact]
+    public void ForeignXmlnsAttributeHasNoPrefix()
+    {
+        var tree = HtmlParsing.ParseHtml(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\"></svg><math xmlns=\"http://www.w3.org/1998/Math/MathML\"></math>");
+        foreach (var selector in new[] { "svg", "math" })
+        {
+            var element = (ElementData)tree.GetNode(tree.QuerySelector(selector)!.Value)!.Data;
+            var attr = element.Attrs[0];
+            Assert.Null(attr.Name.Prefix);
+            Assert.Equal(Namespaces.XmlNs, attr.Name.Ns);
+            Assert.Equal("xmlns", attr.QualifiedName);
+        }
+
+        var svg = (ElementData)tree.GetNode(tree.QuerySelector("svg")!.Value)!.Data;
+        Assert.Equal("xmlns:xlink", svg.Attrs[1].QualifiedName);
+    }
 }

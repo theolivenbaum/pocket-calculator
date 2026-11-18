@@ -21,6 +21,13 @@ public sealed partial class DomTree
 
     public string InnerHtml(NodeId nodeId)
     {
+        // upstream cf5067e: an element that serializes as void has no markup of its own, even
+        // when script has appended children to it.
+        if ((GetNode(nodeId)?.Data as ElementData)?.Name is { } name && SerializesAsVoid(name))
+        {
+            return string.Empty;
+        }
+
         var buf = new StringBuilder();
         var stack = new Stack<SerializeWork>();
         PushChildWork(ContentSource(nodeId), stack);
@@ -98,12 +105,8 @@ public sealed partial class DomTree
                         foreach (var attr in element.Attrs)
                         {
                             buf.Append(' ');
-                            if (attr.Name.Prefix is { } prefix)
-                            {
-                                buf.Append(prefix).Append(':');
-                            }
-
-                            buf.Append(attr.Name.Local).Append("=\"");
+                            AppendAttributeName(attr.Name, buf);
+                            buf.Append("=\"");
                             EscapeAttr(attr.Value, buf);
                             buf.Append('"');
                         }
@@ -120,7 +123,7 @@ public sealed partial class DomTree
                         buf.Append('>');
                     }
 
-                    if (!IsVoidElement(tag))
+                    if (!SerializesAsVoid(element.Name))
                     {
                         // Push the closing tag first so it pops after all the children we push next.
                         if (includeSelf)
@@ -184,6 +187,9 @@ public sealed partial class DomTree
         }
     }
 
+    // "Escaping a string" from the HTML Standard (upstream 8dbf7e1). Attribute mode escapes `<`
+    // and `>` too: left literal, a value such as `</noscript><img>` ends its raw-text parent
+    // when the markup is parsed again (mXSS). Both modes escape U+00A0 as `&nbsp;`.
     private static void EscapeText(string s, StringBuilder buf)
     {
         foreach (var c in s)
@@ -191,6 +197,7 @@ public sealed partial class DomTree
             switch (c)
             {
                 case '&': buf.Append("&amp;"); break;
+                case '\u00A0': buf.Append("&nbsp;"); break;
                 case '<': buf.Append("&lt;"); break;
                 case '>': buf.Append("&gt;"); break;
                 default: buf.Append(c); break;
@@ -218,18 +225,53 @@ public sealed partial class DomTree
             switch (c)
             {
                 case '&': buf.Append("&amp;"); break;
+                case '\u00A0': buf.Append("&nbsp;"); break;
                 case '"': buf.Append("&quot;"); break;
+                case '<': buf.Append("&lt;"); break;
+                case '>': buf.Append("&gt;"); break;
                 default: buf.Append(c); break;
             }
         }
     }
 
+    /// <summary>
+    /// "Serializes as void" (upstream cf5067e): the void elements plus four obsolete ones
+    /// (basefont, bgsound, frame, keygen). Such an element gets no end tag and its children are
+    /// not written. Callers check the HTML namespace; see <see cref="SerializesAsVoid"/>.
+    /// </summary>
     internal static bool IsVoidElement(string tag) => tag switch
     {
-        "area" or "base" or "br" or "col" or "embed" or "hr" or "img" or "input" or "link"
-            or "meta" or "param" or "source" or "track" or "wbr" => true,
+        "area" or "base" or "basefont" or "bgsound" or "br" or "col" or "embed" or "frame" or "hr"
+            or "img" or "input" or "keygen" or "link" or "meta" or "param" or "source" or "track"
+            or "wbr" => true,
         _ => false,
     };
+
+    /// <summary>HTML elements only: a <c>br</c> created in another namespace is an ordinary element.</summary>
+    private static bool SerializesAsVoid(QualName name) =>
+        string.Equals(name.Ns, Namespaces.Html, StringComparison.Ordinal) && IsVoidElement(name.Local);
+
+    /// <summary>
+    /// An attribute's serialized name (upstream f2bf4c3): the three namespaces HTML knows are
+    /// written with their fixed prefix whatever prefix the attribute carries.
+    /// </summary>
+    private static void AppendAttributeName(QualName name, StringBuilder buf)
+    {
+        string? prefix = name.Ns switch
+        {
+            Namespaces.None => null,
+            Namespaces.Xml => "xml",
+            Namespaces.XLink => "xlink",
+            Namespaces.XmlNs => name.Local == "xmlns" ? null : "xmlns",
+            _ => name.Prefix,
+        };
+        if (prefix is not null)
+        {
+            buf.Append(prefix).Append(':');
+        }
+
+        buf.Append(name.Local);
+    }
 
     /// <summary>
     /// Whether text under <paramref name="parent"/> is emitted without escaping: HTML's fragment
