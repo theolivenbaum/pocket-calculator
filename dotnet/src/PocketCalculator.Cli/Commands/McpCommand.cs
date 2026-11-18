@@ -12,6 +12,12 @@ public static class McpCommand
         var proxy = CliOptions.MergeProxy(args.Proxy, mcp.Proxy);
         var userAgent = CliOptions.MergeUserAgent(args.UserAgent, mcp.UserAgent);
         HardDeadline.ArmHangExit();
+        // `pocket-calculator mcp` builds its BrowserContext from the environment, so the
+        // root profile flag is handed over explicitly (upstream 7500e6d).
+        if (args.StorageDir is { } storageDir)
+        {
+            Environment.SetEnvironmentVariable("POCKETCALCULATOR_STORAGE_DIR", storageDir);
+        }
         if (mcp.Http)
         {
             // The option is a u16 in Rust and its parser enforces that here too,

@@ -763,6 +763,8 @@ internal static partial class Tools
 
             applied += (uint)parsed.Count;
             state.Context.CookieJar.SetCookiesFromCdp(parsed);
+            // Upstream saves the restored profile straight away (save_storage).
+            state.Context.SaveCookies();
         }
 
         // Storage (per origin). Only applies if there's an active page.

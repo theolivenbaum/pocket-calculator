@@ -66,7 +66,7 @@ public sealed class McpClientTests
         private readonly StreamReader _stdout;
         private long _nextId = 1;
 
-        public McpClient()
+        public McpClient(params string[] rootArguments)
         {
             var psi = new ProcessStartInfo(CliProcess.Binary!)
             {
@@ -75,6 +75,10 @@ public sealed class McpClientTests
                 RedirectStandardError = true,
                 UseShellExecute = false,
             };
+            foreach (var argument in rootArguments)
+            {
+                psi.ArgumentList.Add(argument);
+            }
             psi.ArgumentList.Add("mcp");
             psi.Environment["POCKETCALCULATOR_ALLOW_PRIVATE_NETWORK"] = "1";
             _child = Process.Start(psi)
@@ -163,6 +167,13 @@ public sealed class McpClientTests
             return read.Result;
         }
 
+        /// <summary>Close stdin, as a client does on the way out, and wait for the server to exit.</summary>
+        public bool CloseAndWait(TimeSpan budget)
+        {
+            _stdin.Close();
+            return _child.WaitForExit(budget);
+        }
+
         public void Dispose()
         {
             try
@@ -189,6 +200,36 @@ public sealed class McpClientTests
         node is null || node.GetValueKind() == JsonValueKind.Null;
 
     // -- tests ----------------------------------------------------------------
+
+    // Upstream 604d30b: closing the stdio transport saves the cookies an agent set after
+    // the last navigation into the --storage-dir profile.
+    [Fact]
+    public void Closing_stdin_saves_cookies_to_the_storage_dir()
+    {
+        var directory = Directory.CreateTempSubdirectory("obscura-mcp-profile");
+        try
+        {
+            var profile = Path.Combine(directory.FullName, "profile");
+            using (var client = new McpClient("--storage-dir", profile))
+            {
+                var set = client.Tool("browser_set_cookie", new JsonObject
+                {
+                    ["name"] = "agent_token",
+                    ["value"] = "kept",
+                    ["domain"] = "example.com",
+                });
+                Assert.Contains("Set cookie agent_token", ContentText(set), StringComparison.Ordinal);
+                Assert.True(client.CloseAndWait(TimeSpan.FromSeconds(30)), "mcp did not exit on EOF");
+            }
+            var saved = File.ReadAllText(Path.Combine(profile, "cookies.json"));
+            Assert.Contains("\"agent_token\"", saved, StringComparison.Ordinal);
+            Assert.Contains("\"kept\"", saved, StringComparison.Ordinal);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
 
     [Fact]
     public void Test_initialize()

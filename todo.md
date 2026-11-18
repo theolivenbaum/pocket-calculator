@@ -461,7 +461,7 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       returned promise through the host-side CDP await (upstream first used a page-visible
       slot, `__obscura_mcp_expression`, which a page could forge; its final version uses the
       CDP path too), errors are tool errors; `browser_wait_for_function` pumps page tasks
-      between polls. Still open from `7500e6d`: MCP `--storage-dir` (with `604d30b`)
+      between polls. MCP `--storage-dir` landed with `604d30b` (below)
 - [x] MCP `3c56f59`: bounded actionable snapshots. The accessibility tree moved to
       `PocketCalculator.Browser/Accessibility.cs` (`AccessibilityTree`, `AccessibilityContext`),
       shared by CDP `getFullAXTree` and MCP; it brought `f81c296` along (names from labels,
@@ -475,8 +475,10 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] `c6402a7` (+ #951): MCP pages keep console calls (`[level] message`, at most 1024) for
       `browser_console_messages`, including across tab suspension; it used to always answer
       "No console messages."
-- [ ] MCP:
-      `604d30b`, `5c27e76`, `a3aea0a`, `5171717`,
+- [x] `604d30b` (+ the `7500e6d` profile): `pocket-calculator --storage-dir DIR mcp` loads and
+      keeps cookies in DIR (handed over as `POCKETCALCULATOR_STORAGE_DIR`); stdio EOF and
+      `browser_set_storage_state` save them. Web Storage persistence waits on `677f6d2`
+- [ ] MCP: `5c27e76`, `a3aea0a`, `5171717`,
       `cbc2f97`; `9855ef4` web_search stays opt-in
 - [x] `9a6dd86`: CLI fetch and stdio MCP navigation errors from an SSRF denial of a loopback,
       private or localhost target carry the --allow-private-network hint (metadata and special

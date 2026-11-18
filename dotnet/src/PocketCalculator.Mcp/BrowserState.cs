@@ -46,7 +46,12 @@ public sealed class BrowserState : IDisposable
 
     public BrowserState(string? proxy, string? userAgent, bool stealth)
     {
-        _context = BrowserContext.WithOptions("mcp", proxy, stealth);
+        // `--storage-dir` is a root flag, so the profile arrives through the environment
+        // rather than through every constructor call (upstream 7500e6d). Without it the
+        // MCP path ignored the flag and persisted nothing, cookies included.
+        var storageDir = Environment.GetEnvironmentVariable("POCKETCALCULATOR_STORAGE_DIR");
+        _context = BrowserContext.WithStorageFull(
+            "mcp", proxy, stealth, null, string.IsNullOrEmpty(storageDir) ? null : storageDir);
         UserAgent = userAgent;
     }
 
