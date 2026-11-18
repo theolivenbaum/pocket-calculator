@@ -516,8 +516,10 @@ internal static partial class DomBuild
         {
             foreach (NodeId cid in domChildren)
             {
+                // upstream 6a7bbf3 (#764): `display: none` generates no box, so it cannot float.
                 if (context.Styles.TryGetValue(cid, out LayoutStyle? childStyle)
-                    && childStyle.Float is not null)
+                    && childStyle.Float is not null
+                    && childStyle.Display != Display.None)
                 {
                     hasFloatChild = true;
                     break;
