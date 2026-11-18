@@ -183,7 +183,7 @@ public static class FetchCommand
         }
         catch (PageException error)
         {
-            throw new CliException($"Failed to navigate to {urlStr}: {error.Message}");
+            throw new CliException($"Failed to navigate to {urlStr}: {OperatorHint.WithHint(error.Message)}");
         }
 
         if (page.LoadAbandoned)
@@ -567,7 +567,7 @@ public static class FetchCommand
         }
         catch (PocketCalculatorNetException error)
         {
-            throw new CliException($"Failed to fetch {urlStr}: {error.Message}");
+            throw new CliException($"Failed to fetch {urlStr}: {OperatorHint.WithHint(error.Message)}");
         }
     }
 

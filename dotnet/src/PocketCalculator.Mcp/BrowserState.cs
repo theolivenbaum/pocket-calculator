@@ -66,6 +66,9 @@ public sealed class BrowserState : IDisposable
 
     internal Dictionary<string, NodeId> InteractiveRefs => _interactiveRefs;
 
+    /// <summary>Whether navigation errors carry the local-network hint (stdio only, upstream 9a6dd86).</summary>
+    internal bool OperatorNetworkHints { get; set; }
+
     /// <summary>
     /// Bumped by every ref rebuild (upstream a449a80): refs are <c>e{generation}-{n}</c> and are
     /// never reused, so a ref from an old snapshot cannot name an element of a newer one.

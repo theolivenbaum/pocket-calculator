@@ -478,8 +478,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [ ] MCP:
       `604d30b`, `5c27e76`, `a3aea0a`, `5171717`,
       `cbc2f97`; `9855ef4` web_search stays opt-in
+- [x] `9a6dd86`: CLI fetch and stdio MCP navigation errors from an SSRF denial of a loopback,
+      private or localhost target carry the --allow-private-network hint (metadata and special
+      ranges get none); the hint names the port's executable and environment variable
 - [ ] CLI and workers: `11d6ea8` + `afb0d61`, `ec0186b`, `1949e9b`, `f2b9e99`, `4b14a76`,
-      `0f27e69`, `9a6dd86`, `52d8ddd`, `1b259b9` failed-save log
+      `0f27e69`, `52d8ddd`, `1b259b9` failed-save log
 - [ ] From merges: `61aa8fb` CDP URL pattern matcher (done, see CDP Fetch), `fded066` (`flex: 200px` sets grow 1, an
       invalid `flex` keeps the cascade), `8a4d745` real bold faces and kerning (done, see
       Render text), `322f46c`, `d04b661`, `ab19571`, `97f8f81`, `4c12826`, `716826c`

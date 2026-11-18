@@ -98,7 +98,7 @@ internal static partial class Tools
         }
         catch (Exception error) when (error is not ToolException)
         {
-            throw new ToolException(error.Message);
+            throw new ToolException(state.OperatorNetworkHints ? OperatorHint.WithHint(error.Message) : error.Message);
         }
 
         var summary = $"Navigated to {page.UrlString()} — \"{page.Title}\"";

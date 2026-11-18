@@ -51,6 +51,9 @@ public static class McpServer
             Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = false };
 
         using var state = new BrowserState(proxy, userAgent, stealth);
+        // upstream 9a6dd86: the stdio operator gets the --allow-private-network hint; the HTTP
+        // transport keeps the bare error.
+        state.OperatorNetworkHints = true;
         var runtimePumpArmed = false;
         Task<string?>? pendingRead = null;
 
