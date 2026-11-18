@@ -2036,7 +2036,6 @@ public sealed partial class PreparedRender
 
         bool positioned = style.Position is not null || style.PositionFixed || style.PositionSticky;
         if (!positioned
-            || style.PositionSticky
             || TreeValue is not { } tree
             || style.Display == PocketCalculator.Render.Display.None
             || style.DisplayContents
@@ -2213,7 +2212,27 @@ public sealed partial class PreparedRender
     /// </summary>
     private Rect InsetContainingBlock(DomTree tree, NodeId id, LayoutStyle style, bool absolute, bool[] percentage)
     {
-        _ = percentage;
+        // Upstream 7b632d9: a sticky box's percentages resolve against its scroll container's
+        // content box (the scrollport less the container's padding). The root scroller has no
+        // node, and a horizontal percentage under it takes the initial containing block below,
+        // which the root's stable gutters narrow.
+        if (style.PositionSticky
+            && id.Index < ScrollTree.MovementOwner.Length
+            && ScrollTree.MovementOwner[id.Index] is { } owner
+            && owner.Index < ScrollTree.Containers.Count
+            && ScrollTree.Containers[owner.Index] is var container
+            && (container.Node is not null || !(percentage[1] || percentage[3])))
+        {
+            Edges padding = container.Node is { } node && Layout.Styles.TryGetValue(node, out LayoutStyle? ownerStyle)
+                ? ownerStyle.Padding
+                : Edges.Zero;
+            return new Rect(
+                0f,
+                0f,
+                F32.Max(container.ClientSize.Width - padding.Left - padding.Right, 0f),
+                F32.Max(container.ClientSize.Height - padding.Top - padding.Bottom, 0f));
+        }
+
         Rect containing = new(0f, 0f, ViewportSize.Width, ViewportSize.Height);
         NodeId? next = id;
         for (int guard = 0; guard <= tree.Count && next is { } current; guard++)

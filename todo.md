@@ -2483,6 +2483,15 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   for an absolute axis with both insets set (Chromium's `margin: 0 auto` answer). Open: the
   port's layout ignores an authored root margin, so a fixed box with all-auto insets under
   `html{margin:20px}` reports its static position as 0px, where Chromium reports 20px.
+- Sticky insets (`7b632d9`): percentages resolve against the scroll container's content box,
+  which in the port is narrowed by its classic scrollbar (F34), as in Chromium with classic
+  scrollbars (28.5px where upstream's hidden-scrollbar oracle says 30px). That is why
+  `render-repros/computed-insets.html` still differs from Rust in `--dump html` (its `nested`
+  marker), besides the trailing newline the port's parser-blocking script places after the
+  markers, as Chromium does. The port reserves no classic scrollbar on the viewport, so a
+  root-scrolled sticky box reports 80px where classic-scrollbar Chromium reports 78.5px.
+  Sticky paint still uses the scrollport as the percentage basis (upstream changes only the
+  computed value).
 
 ### Operator font directories load per render pass, not into a cached base database
 

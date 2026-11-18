@@ -68,7 +68,8 @@ public sealed class ComputedInsetsTests
     }
 
     /// <remarks>
-    /// Sticky boxes (`sticky`, `nested`) keep their declared percentages until 7b632d9.
+    /// `nested` sits in an overflowing scroller, so its left is 28.5px rather than upstream's
+    /// 30px: see <see cref="ComputedStickyPercentagesUseTheScrollContainerContentBox"/>.
     /// </remarks>
     [Fact]
     public void ComputedInsetsResolvePercentagesAgainstTheRelevantBox()
@@ -89,7 +90,7 @@ public sealed class ComputedInsetsTests
             <div id=scroller><div id=nested class=box></div><div style='height:400px'></div></div></div>
             """);
         Same(
-            """[["20px","-40px","-20px","40px"],["22px","338px","178px","42px"],["10%","auto","auto","10%"],["calc(10% + 5px)","auto","37px","32px"],["10%","auto","auto","10%"]]""",
+            """[["20px","-40px","-20px","40px"],["22px","338px","178px","42px"],["60px","auto","auto","80px"],["calc(10% + 5px)","auto","37px","32px"],["10px","auto","auto","28.5px"]]""",
             Json(fixture, """
                 ['rel','abs','sticky','static','nested'].map(id => {
                   const c = getComputedStyle(document.getElementById(id));
@@ -138,7 +139,7 @@ public sealed class ComputedInsetsTests
             })()
             """;
         const string Expected =
-            """{"ltr":"5px 20px 7px 10px","rtl":"5px 20px 7px 10px","center":"0px 0px 0px 0px","startauto":"10px 374px 196px 12px","endauto":"199px 9px 7px 377px","allauto":"13px 373px 193px 13px","fixedcb":"10px 374px 196px 12px","inline":"10% auto auto 10%","inlinepx":"5px -7px -5px 7px","blockchild":"5px -40px -5px 40px","inlineblock":"5px -40px -5px 40px","stickyend":"auto 10% 10% auto","math":"32px 16px 32px 37px","absmath":"32px 354px 174px 32px"}""";
+            """{"ltr":"5px 20px 7px 10px","rtl":"5px 20px 7px 10px","center":"0px 0px 0px 0px","startauto":"10px 374px 196px 12px","endauto":"199px 9px 7px 377px","allauto":"13px 373px 193px 13px","fixedcb":"10px 374px 196px 12px","inline":"10% auto auto 10%","inlinepx":"5px -7px -5px 7px","blockchild":"5px -40px -5px 40px","inlineblock":"5px -40px -5px 40px","stickyend":"auto 80px 60px auto","math":"32px 16px 32px 37px","absmath":"32px 354px 174px 32px"}""";
         Same(Expected, Json(fixture, Read));
         fixture.Runtime.Evaluate("window.scrollTo(0,1200)");
         Same(Expected, Json(fixture, Read));
@@ -174,7 +175,7 @@ public sealed class ComputedInsetsTests
         const string Ids = "'fixed','absolute','auto','vw','sticky','math'";
         string expected =
             $"[\"60px {right} 520px {left}\",\"60px {right} 520px {left}\",\"10px {autoRight} 570px 12px\","
-            + $"\"60px {vwRight} 520px 80px\",\"10% auto auto 10%\",\"10px {mathRight} 570px {mathLeft}\"]";
+            + $"\"60px {vwRight} 520px 80px\",\"60px auto auto {left}\",\"10px {mathRight} 570px {mathLeft}\"]";
 
         fixture.Runtime.Evaluate($"document.documentElement.setAttribute('style','scrollbar-gutter:{gutter}')");
         Same(expected, Json(fixture, Read(Ids)));
@@ -186,5 +187,53 @@ public sealed class ComputedInsetsTests
         fixture.Runtime.Evaluate(
             $"document.documentElement.setAttribute('style','scrollbar-gutter:{gutter};width:500px;margin:20px')");
         Same(expected, Json(fixture, Read(Ids)));
+    }
+
+    [Fact]
+    public void ComputedStickyPercentagesUseTheScrollContainerContentBox()
+    {
+        // The port lays out a classic scrollbar inside a scroll container (round3 F34), so the
+        // expected values are Chromium 157's with classic scrollbars (Playwright without
+        // --hide-scrollbars): an overflowing scroller's content box is 15px narrower than in
+        // upstream's oracle, and 15px shorter when it also overflows horizontally. The root
+        // rows keep upstream's 80px: the port reserves no classic scrollbar on the viewport,
+        // where Chromium's would narrow the initial containing block to 785px (78.5px).
+        (string Id, string Outer, string? Inner, double Top, double Left)[] cases =
+        [
+            ("direct", "width:300px;height:100px;overflow:auto", null, 10.0, 28.5),
+            ("padding", "width:300px;height:100px;padding:10px;overflow:auto", null, 10.0, 28.5),
+            ("border", "width:300px;height:100px;padding:10px;border:3px solid;overflow:auto", null, 10.0, 28.5),
+            ("small", "width:300px;height:100px;padding:10px;overflow:auto", "width:200px;height:60px", 10.0, 28.5),
+            ("large", "width:300px;height:100px;padding:10px;overflow:auto", "width:500px;height:200px", 8.5, 28.5),
+            ("innerpadding", "width:300px;height:100px;padding:10px;overflow:auto", "width:200px;height:60px;padding:20px;border:2px solid", 10.0, 28.5),
+            ("borderbox", "box-sizing:border-box;width:300px;height:100px;padding:10px;border:3px solid;overflow:auto", null, 7.39062, 25.8906),
+            ("root", "width:400px;height:200px;padding:13px;border:3px solid", null, 60.0, 80.0),
+            ("rootnested", "width:300px;height:100px;padding:10px", "width:200px;height:60px", 60.0, 80.0),
+            ("innerscroll", "width:300px;height:100px;padding:10px;overflow:auto", "width:200px;height:60px;padding:20px;overflow:auto", 6.0, 18.5),
+        ];
+        var html = new System.Text.StringBuilder("<!doctype html><style>body{margin:0;min-height:1400px}</style>");
+        foreach (var (id, outer, inner, _, _) in cases)
+        {
+            string item = $"<div id='{id}' style='position:sticky;top:10%;left:10%;width:40px;height:20px'></div>";
+            if (inner is not null)
+            {
+                item = $"<div style='{inner}'>{item}<div style='height:400px'></div></div>";
+            }
+
+            html.Append($"<div style='{outer}'>{item}<div style='height:400px'></div></div>");
+        }
+
+        using var fixture = Load(html.ToString());
+        foreach (var (id, _, _, top, left) in cases)
+        {
+            var actual = fixture.Runtime.Evaluate(
+                $"(() => {{ const c = getComputedStyle(document.getElementById('{id}')); return [parseFloat(c.top),parseFloat(c.left),c.right,c.bottom]; }})()")!
+                .AsArray();
+            // Chromium rounds used lengths to 1/64px; native layout uses f32.
+            Assert.True(Math.Abs(actual[0]!.GetValue<double>() - top) < 0.02, $"{id}: {actual.ToJsonString()}");
+            Assert.True(Math.Abs(actual[1]!.GetValue<double>() - left) < 0.02, $"{id}: {actual.ToJsonString()}");
+            Assert.Equal("auto", actual[2]!.GetValue<string>());
+            Assert.Equal("auto", actual[3]!.GetValue<string>());
+        }
     }
 }
