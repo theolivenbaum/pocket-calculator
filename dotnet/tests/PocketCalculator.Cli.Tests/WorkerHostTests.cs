@@ -129,7 +129,7 @@ public sealed class WorkerHostTests
         Assert.Equal(6, replies.Count);
         // Key order is the WorkerResponse field order: ok, then result.
         Assert.Equal(
-            $"{{\"ok\":true,\"result\":{{\"title\":\"worker\",\"url\":\"{server.Base}/\"}}}}",
+            $"{{\"ok\":true,\"result\":{{\"title\":\"worker\",\"url\":\"{server.Base}/\",\"status\":200}}}}",
             replies[0]);
         Assert.Equal("{\"ok\":true,\"result\":\"worker\"}", replies[1]);
         // A bare JS number reaches the parent as an f64, which serde_json prints
@@ -140,6 +140,32 @@ public sealed class WorkerHostTests
         Assert.Equal("{\"ok\":true,\"result\":null}", replies[3]);
         Assert.Contains("hello", replies[4], StringComparison.Ordinal);
         Assert.Equal("{\"ok\":true,\"result\":\"bye\"}", replies[5]);
+    }
+
+    // Upstream 11d6ea8 (worker_navigation_status.rs): the reply carries the main document's
+    // final status after redirects, and an HTTP error is still ok: true.
+    [Fact]
+    public void Navigate_reports_the_final_document_status_after_redirects()
+    {
+        using var server = LocalHttpServer.Raw(target => target switch
+        {
+            "/start" => "HTTP/1.1 302 Found\r\nLocation: /missing\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            _ => "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 44\r\nConnection: close\r\n\r\n"
+                + "<html><title>gone</title><img src=/x></html>",
+        });
+
+        var replies = Drive(
+            $"{{\"cmd\":\"navigate\",\"url\":\"{server.Base}/start\"}}",
+            "{\"cmd\":\"navigate\",\"url\":\"data:text/html,<title>d</title>\"}",
+            "{\"cmd\":\"navigate\",\"url\":\"about:blank\"}");
+
+        Assert.Equal(3, replies.Count);
+        Assert.Equal(
+            $"{{\"ok\":true,\"result\":{{\"title\":\"gone\",\"url\":\"{server.Base}/missing\",\"status\":404}}}}",
+            replies[0]);
+        // No HTTP response: status is null, not omitted.
+        Assert.Equal("{\"ok\":true,\"result\":{\"title\":\"d\",\"url\":\"data:text/html,<title>d</title>\",\"status\":null}}", replies[1]);
+        Assert.Equal("{\"ok\":true,\"result\":{\"title\":\"\",\"url\":\"about:blank\",\"status\":null}}", replies[2]);
     }
 
     [Fact]

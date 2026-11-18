@@ -127,6 +127,7 @@ public static class WorkerHost
                         {
                             ["title"] = JsonValue.Create(page.Title),
                             ["url"] = JsonValue.Create(page.UrlString()),
+                            ["status"] = DocumentStatus(page),
                         });
                     }
                     catch (PageException error)
@@ -201,6 +202,28 @@ public static class WorkerHost
 
             await WriteAsync(output, response).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// The main document's final HTTP status after redirects (upstream 11d6ea8), or null
+    /// when the navigation had no HTTP response: <c>about:blank</c>, a <c>data:</c> URL, or
+    /// a request blocked before it was sent, which records status 0 (upstream afb0d61).
+    /// Navigation clears the event list and records the document before any script or
+    /// child frame, so the first <c>Document</c> event is the page's own.
+    /// </summary>
+    internal static JsonNode? DocumentStatus(Page page)
+    {
+        foreach (var networkEvent in page.NetworkEvents)
+        {
+            if (networkEvent.ResourceType != "Document")
+            {
+                continue;
+            }
+            var http = networkEvent.Url.StartsWith("http://", StringComparison.Ordinal)
+                || networkEvent.Url.StartsWith("https://", StringComparison.Ordinal);
+            return networkEvent.Status != 0 && http ? JsonValue.Create(networkEvent.Status) : null;
+        }
+        return null;
     }
 
     /// <summary>

@@ -24,6 +24,7 @@ internal sealed class LocalHttpServer : IDisposable
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Func<string, (string ContentType, byte[] Body)> _handler;
     private readonly bool _cors;
+    private Func<string, string>? _raw;
 
     public LocalHttpServer(Func<string, (string ContentType, byte[] Body)> handler, bool cors = false)
     {
@@ -38,6 +39,13 @@ internal sealed class LocalHttpServer : IDisposable
     /// <summary>Serve one fixed HTML body for every request.</summary>
     public static LocalHttpServer Html(string html) =>
         new(_ => ("text/html", Encoding.UTF8.GetBytes(html)));
+
+    /// <summary>
+    /// Serve whole responses (status line, headers and body) built per request target, for
+    /// tests that need a status other than 200 or a redirect.
+    /// </summary>
+    public static LocalHttpServer Raw(Func<string, string> respond) =>
+        new(_ => ("text/plain", [])) { _raw = respond };
 
     /// <summary>The origin, with no trailing slash: <c>http://127.0.0.1:PORT</c>.</summary>
     public string Base { get; }
@@ -73,6 +81,13 @@ internal sealed class LocalHttpServer : IDisposable
                 var parts = request.Split(
                     [' ', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
                 var target = parts.Length > 1 ? parts[1] : "/";
+                if (_raw is { } raw)
+                {
+                    await stream.WriteAsync(Encoding.UTF8.GetBytes(raw(target))).ConfigureAwait(false);
+                    await stream.FlushAsync().ConfigureAwait(false);
+                    client.Client.Shutdown(SocketShutdown.Both);
+                    return;
+                }
                 var (contentType, body) = _handler(target);
                 var head = new StringBuilder()
                     .Append("HTTP/1.1 200 OK\r\nContent-Type: ").Append(contentType)

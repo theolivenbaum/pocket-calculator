@@ -481,7 +481,9 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] `9a6dd86`: CLI fetch and stdio MCP navigation errors from an SSRF denial of a loopback,
       private or localhost target carry the --allow-private-network hint (metadata and special
       ranges get none); the hint names the port's executable and environment variable
-- [ ] CLI and workers: `11d6ea8` + `afb0d61`, `ec0186b`, `1949e9b`, `f2b9e99`, `4b14a76`,
+- [x] `11d6ea8` + `afb0d61`: worker `navigate` replies carry `status`, the main document's
+      final HTTP status after redirects, null with no HTTP response or a blocked request
+- [ ] CLI and workers: `ec0186b`, `1949e9b`, `f2b9e99`, `4b14a76`,
       `0f27e69`, `1b259b9` failed-save log
 - [x] `52d8ddd`: network errors from a send or a body read carry the inner exception chain
       (`ErrorChain`, each cause appended once), so a TLS failure names its certificate error
