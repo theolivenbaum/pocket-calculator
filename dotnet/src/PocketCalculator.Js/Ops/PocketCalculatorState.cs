@@ -712,6 +712,12 @@ public sealed class JsNetworkEvent
 
     public required string Method { get; init; }
 
+    /// <summary>
+    /// The request's destination as CDP names it (upstream 359362f): Fetch, XHR, Script,
+    /// Stylesheet or Document.
+    /// </summary>
+    public string ResourceType { get; init; } = "Fetch";
+
     public required int Status { get; init; }
 
     public required IReadOnlyDictionary<string, string> ResponseHeaders { get; init; }

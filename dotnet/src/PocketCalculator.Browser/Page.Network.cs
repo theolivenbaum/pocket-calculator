@@ -276,7 +276,7 @@ public sealed partial class Page
                 RequestId = ev.RequestId,
                 Url = ev.Url,
                 Method = ev.Method,
-                ResourceType = "Fetch",
+                ResourceType = ev.ResourceType,
                 Status = ev.Status,
                 Headers = NoHeaders,
                 ResponseHeaders = ev.ResponseHeaders,

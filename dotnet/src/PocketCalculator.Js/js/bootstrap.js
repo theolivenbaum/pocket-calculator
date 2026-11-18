@@ -664,7 +664,7 @@ async function __fetchDynClassicScript(task) {
   // cross-origin response, which page fetch() only sees as opaque (04418a5).
   // The op's promise is kept so a redrive can read the settled response again.
   const op = __obscuraCore.ops.op_fetch_url(
-    task.url, "GET", "{}", new Uint8Array(0), task.referrerArg || "", "no-cors", "same-origin", true
+    task.url, "GET", "{}", new Uint8Array(0), task.referrerArg || "", "no-cors", "same-origin", "Script"
   );
   task.opPromise = op;
   task.opSettled = false;
@@ -6421,7 +6421,7 @@ class Element extends Node {
       request ? '{"Content-Type":"' + request.contentType + '"}' : '{}',
       request ? request.body : new _Uint8ArrayAtBoot(0),
       _referrerArgFor(el),
-      'navigate', 'include', true
+      'navigate', 'include', 'Document'
     )), [raw => {
       if (_weakMapGet(_iframeStates, el) !== st) return;
       const response = _JSONparse(raw);
@@ -10742,7 +10742,9 @@ function _fetchLocalScheme(url, method) {
   return Promise.resolve(new Response(bytes, { status: 200, statusText: 'OK', headers: { 'content-type': type }, type: 'basic', url }));
 }
 
-globalThis.fetch = async (input, init = {}) => {
+// upstream 359362f: the destination (Fetch, or XHR for XMLHttpRequest) reaches the op, so
+// the request's Network events, interception and resource type report what issued it.
+async function _fetchWithDestination(input, init, resourceType) {
   init = init || {};
   const request = input instanceof Request ? input : null;
   let url = typeof input === "string"
@@ -10827,7 +10829,7 @@ globalThis.fetch = async (input, init = {}) => {
   try {
     raw = await __obscuraCore.ops.op_fetch_url(
       url, method, hdrs, body, _referrerArg(fetchReferrerPolicy, fetchReferrer), fetchMode, fetchCredentials,
-      signal === null ? false : { cancel_rid: cancelRid });
+      signal === null ? resourceType : { cancel_rid: cancelRid, destination: resourceType });
   } catch (error) {
     cleanup();
     throw signalState !== undefined && signalState.aborted ? signalState.reason : error;
@@ -10868,7 +10870,8 @@ globalThis.fetch = async (input, init = {}) => {
     });
   }
   return response;
-};
+}
+globalThis.fetch = async (input, init = {}) => _fetchWithDestination(input, init, "Fetch");
 
 // Fetch's header guards. Deviation from Rust, whose Headers keeps every name
 // (lower-cased, append overwriting) and whose fetch()/Request forward whatever
@@ -11219,13 +11222,13 @@ globalThis.XMLHttpRequest = class XMLHttpRequest extends XMLHttpRequestEventTarg
     // Same rule as fetch: always resolve through the URL parser.
     let url = _resolveUrl(this._url);
 
-    _fetchAtBoot(url, {
+    _fetchWithDestination(url, {
       method: this._method,
       headers: this._headers,
       body: body || undefined,
       mode: 'cors',
       credentials: this.withCredentials ? 'include' : 'same-origin',
-    }).then(async (resp) => {
+    }, 'XHR').then(async (resp) => {
       if (xhr._aborted) return;
 
       xhr._status = resp.status;

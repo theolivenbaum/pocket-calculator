@@ -109,7 +109,7 @@ internal static partial class LinkedStylesheetLoader
         // Only installing the sheet does (OpLoadStylesheetAsync).
         var raw = await FetchOps.FetchUrlAsync(
                 transport, document, url, "GET", "{}", [], "no-cors", "same-origin",
-                internalLoad: true, hostConsumesBody: true, referrer: referrer)
+                internalLoad: true, hostConsumesBody: true, referrer: referrer, destination: "Stylesheet")
             .ConfigureAwait(false);
         var load = TakeLoad(document, raw)
             ?? throw new InvalidOperationException("Stylesheet fetch failed: " + url);

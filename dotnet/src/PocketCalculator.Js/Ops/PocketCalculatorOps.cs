@@ -704,8 +704,8 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
     /// is what decides CORS, credentials and SameSite.
     /// </remarks>
     /// <remarks>
-    /// upstream 0155807: the last argument is either <c>internal_load</c> or, for a page
-    /// <c>fetch()</c> with a signal, <c>{cancel_rid}</c> naming a handle from
+    /// upstream 0155807 and 359362f: the last argument is the destination or, for a page
+    /// <c>fetch()</c> with a signal, <c>{cancel_rid, destination}</c> naming a handle from
     /// <c>op_fetch_cancel_handle</c>; closing it with <c>op_try_close</c> cancels the request.
     /// </remarks>
     private void BindFetch(ScriptObject ops, PocketCalculatorState document)
@@ -715,14 +715,28 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
                 FetchCancellation(document, options) is { } cancellation
                     ? FetchOps.OpFetchUrlAsync(
                         RealmState(), S(url), S(method), S(headers), Bytes(body), S(origin), S(mode), S(credentials),
-                        options is not ScriptObject && B(options), document, tailOnPageLoop: true,
-                        cancellation: cancellation)
+                        FetchOps.IsInternalDestination(FetchDestination(options, S(mode))), document,
+                        tailOnPageLoop: true, cancellation: cancellation,
+                        destination: FetchDestination(options, S(mode)))
                     : Task.FromException<string>(new OpException("Bad resource ID"))));
         Bind(ops, "op_fetch_cancel_handle", (Func<double>)(
             () => OpGuard.Run("op_fetch_cancel_handle", () => (double)FetchOps.OpenCancelHandle(document), 0d)));
         Bind(ops, "op_try_close", (Action<object?>)(
             rid => OpGuard.Run("op_try_close", () => FetchOps.CloseCancelHandle(document, U32(rid)))));
     }
+
+    /// <summary>
+    /// The destination <paramref name="options"/> carries (upstream 359362f): a string, or the
+    /// <c>destination</c> of a <c>{cancel_rid, destination}</c> object. A bare <c>true</c>
+    /// (the old <c>internal_load</c>) is a script, or a document for a navigate-mode load.
+    /// </summary>
+    private static string FetchDestination(object? options, string mode) => options switch
+    {
+        string destination => destination,
+        ScriptObject handle when handle.GetProperty("destination") is string destination => destination,
+        bool internalLoad when internalLoad => mode == "navigate" ? "Document" : "Script",
+        _ => "Fetch",
+    };
 
     /// <summary>The token of the <c>{cancel_rid}</c> handle <paramref name="options"/> names.</summary>
     /// <remarks>

@@ -447,7 +447,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] `004bcdd`: TextDecoder's non-fatal UTF-8 path is the native `op_decode` (U+FFFD for
       malformed input, one copy for a large body, replacing the shim's M4 chunked decoder), and
       an explicit label removes only its own BOM (`utf-8` over `FF FE` gives two U+FFFD)
-- [ ] Network fidelity: `359362f`, `3f37d91` + `73358fd` + `8440fe6`, `3aa2f59`, `a1dd711`
+- [x] `359362f`: `op_fetch_url`'s last argument is the destination (`Script`, `Stylesheet`,
+      `Document`, `XHR`, `Fetch`, or `{cancel_rid, destination}`), so a dynamic script, a frame
+      document, a host stylesheet load and an XHR report their own type in Network events,
+      interception and the request/response callbacks; internal loads are derived from it
+- [ ] Network fidelity: `3f37d91` + `73358fd` + `8440fe6`, `3aa2f59`, `a1dd711`
 - [x] `0155807` (AbortSignal): fetch() rejects with the signal's reason before and during the
       request (the op is cancelled, Network.loadingFailed net::ERR_ABORTED), an unread body
       errors on abort, Request has its own following signal, private signal state, trusted

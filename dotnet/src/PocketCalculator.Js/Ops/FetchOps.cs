@@ -216,12 +216,30 @@ public static partial class FetchOps
     /// network event CDP reports and the body <c>Network.getResponseBody</c> returns, bounded
     /// like a transport response's. The body is kept base64 when the client supplied bytes.
     /// </summary>
+    /// <summary>
+    /// The <c>op_fetch_url</c> destination (upstream 359362f) as a transport resource type and
+    /// the name CDP reports; anything else is a page fetch().
+    /// </summary>
+    internal static (ResourceType Type, string Name) Destination(string? destination) => destination switch
+    {
+        "Script" => (ResourceType.Script, "Script"),
+        "Stylesheet" => (ResourceType.Stylesheet, "Stylesheet"),
+        "Document" => (ResourceType.Document, "Document"),
+        "XHR" => (ResourceType.Xhr, "XHR"),
+        _ => (ResourceType.Fetch, "Fetch"),
+    };
+
+    /// <summary>The engine's own loads, whose bodies the shim consumes (upstream 359362f).</summary>
+    internal static bool IsInternalDestination(string? destination) =>
+        destination is "Script" or "Stylesheet" or "Document";
+
     internal static void RecordInterceptedCompletion(
         PocketCalculatorState gs,
         string requestId,
         string url,
         string method,
-        InterceptResolution.Fulfill fulfill)
+        InterceptResolution.Fulfill fulfill,
+        string resourceType = "Fetch")
     {
         var bytes = fulfill.BodyBytes;
         var bodySize = bytes?.Length ?? Encoding.UTF8.GetByteCount(fulfill.Body);
@@ -244,6 +262,7 @@ public static partial class FetchOps
             RequestId = requestId,
             Url = url,
             Method = method,
+            ResourceType = resourceType,
             Status = fulfill.Status,
             ResponseHeaders = fulfill.Headers,
             BodySize = bodySize,
@@ -480,7 +499,8 @@ public static partial class FetchOps
         bool internalLoad = false,
         PocketCalculatorState? document = null,
         bool tailOnPageLoop = false,
-        CancellationToken cancellation = default)
+        CancellationToken cancellation = default,
+        string destination = "Fetch")
     {
         bool frameDocument = internalLoad && string.Equals(mode, "navigate", StringComparison.Ordinal);
         if (frameDocument)
@@ -496,7 +516,7 @@ public static partial class FetchOps
             return await FetchUrlAsync(
                     state, document ?? state, url, method, headersJson, body, mode, credentials, internalLoad,
                     referrer: FetchReferrer.Parse(origin), tailOnPageLoop: tailOnPageLoop,
-                    cancellation: cancellation)
+                    cancellation: cancellation, destination: destination)
                 .ConfigureAwait(false);
         }
         catch (Exception) when (cancellation.IsCancellationRequested)
@@ -539,9 +559,11 @@ public static partial class FetchOps
         bool hostConsumesBody = false,
         FetchReferrer? referrer = null,
         bool tailOnPageLoop = false,
-        CancellationToken cancellation = default)
+        CancellationToken cancellation = default,
+        string destination = "Fetch")
     {
         ArgumentNullException.ThrowIfNull(gs);
+        var (resourceType, resourceTypeName) = Destination(destination);
         ArgumentNullException.ThrowIfNull(document);
 
         // DEVIATION from crates/obscura-js (ops.rs), which takes the request origin from
@@ -664,7 +686,7 @@ public static partial class FetchOps
                     Url = url,
                     Method = method,
                     Headers = customHeaders,
-                    ResourceType = "Fetch",
+                    ResourceType = resourceTypeName,
                 };
                 if (channel.Sink.TrySend(intercepted))
                 {
@@ -700,7 +722,7 @@ public static partial class FetchOps
                             var fulfilledMethod = method;
                             Func<string> record = () =>
                             {
-                                RecordInterceptedCompletion(gs, fulfilledId, fulfilledUrl, fulfilledMethod, fulfill);
+                                RecordInterceptedCompletion(gs, fulfilledId, fulfilledUrl, fulfilledMethod, fulfill, resourceTypeName);
                                 return InterceptFulfillResponse(
                                     fulfill.Status,
                                     fulfill.Headers,
@@ -807,7 +829,7 @@ public static partial class FetchOps
                     Url = callbackUri,
                     Method = method,
                     Headers = customHeaders2,
-                    ResourceType = ResourceType.Fetch,
+                    ResourceType = resourceType,
                 });
             }
 
@@ -1269,7 +1291,7 @@ public static partial class FetchOps
                             Url = responseUri,
                             Method = currentMethod.Method,
                             Headers = respHeaders,
-                            ResourceType = ResourceType.Fetch,
+                            ResourceType = resourceType,
                         },
                         built);
                 }
@@ -1309,6 +1331,7 @@ public static partial class FetchOps
                         RequestId = requestId,
                         Url = currentUrl,
                         Method = currentMethod.Method,
+                        ResourceType = resourceTypeName,
                         Status = finalStatus,
                         ResponseHeaders = respHeaders,
                         BodySize = respBytes.Length,
@@ -1393,7 +1416,8 @@ public static partial class FetchOps
             if (!settled)
             {
                 var failure = RecordFetchFailure(
-                    gs, url, method, cancellation.IsCancellationRequested ? "net::ERR_ABORTED" : "net::ERR_FAILED");
+                    gs, url, method, cancellation.IsCancellationRequested ? "net::ERR_ABORTED" : "net::ERR_FAILED",
+                    resourceTypeName);
                 if (tailOnPageLoop)
                 {
                     // Posted before the op settles, so the page records it first; not awaited,
@@ -1417,7 +1441,8 @@ public static partial class FetchOps
     /// that got no response reports, status 0 with <paramref name="errorText"/>, under a fresh
     /// <c>fetch-{N}</c> id like a completed request's.
     /// </summary>
-    private static Func<bool> RecordFetchFailure(PocketCalculatorState gs, string url, string method, string errorText) =>
+    private static Func<bool> RecordFetchFailure(
+        PocketCalculatorState gs, string url, string method, string errorText, string resourceType) =>
         () =>
         {
             gs.NetworkResponseBodyCounter++;
@@ -1426,6 +1451,7 @@ public static partial class FetchOps
                 RequestId = "fetch-" + gs.NetworkResponseBodyCounter.ToString(CultureInfo.InvariantCulture),
                 Url = url,
                 Method = method,
+                ResourceType = resourceType,
                 Status = 0,
                 ResponseHeaders = new Dictionary<string, string>(StringComparer.Ordinal),
                 BodySize = 0,
