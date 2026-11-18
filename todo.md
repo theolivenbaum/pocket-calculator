@@ -422,7 +422,7 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `e1acbe5` + `31e1dfe`. Do not port `8a2f957`
 - [ ] Media emulation: `c9978c3` + `c7ec60a` + `6ba3613` (setEmulatedMedia, reduced
       motion, color scheme, MediaQueryList change events)
-- [ ] Render text: [x] `bf10c46` word-spacing; [x] `f8a36a4` font size keywords and `<font size>`; [ ] `1fff1f7`
+- [ ] Render text: [x] `bf10c46` word-spacing; [x] `f8a36a4` font size keywords and `<font size>`; [x] `1fff1f7` native control text clip and centring
       (`9a3d12e` is done; the kerning and real bold faces of merge `8a4d745` are not)
 - [ ] Render layout: tables `2b61abf` + `7bf782b`; floats `9f64ce9`, `6a7bbf3`, `423e58a`;
       inline `0e99b3a`, `a41696e`, `df5ee65`, `62e8e7f`; flex merges `fded066`/`322f46c`

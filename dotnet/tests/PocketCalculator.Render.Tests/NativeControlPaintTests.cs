@@ -361,4 +361,88 @@ public class NativeControlPaintTests
                 (int)(rect.X + rect.Width), (int)(rect.Y + rect.Height)) > 40,
             "the accent fill must follow the dirty checked state");
     }
+
+    /// <summary>
+    /// Port of paint.rs <c>native_input_text_respects_its_box_and_ancestor_clip</c> (upstream
+    /// 1fff1f7): Chrome clips single-line text to the content width but lets ink into the
+    /// vertical padding, a textarea clips to its padding box, the ancestor overflow clip still
+    /// applies, and a short control keeps its centred glyph ink.
+    /// </summary>
+    [Theory]
+    [InlineData("<input id=control value=abcdefghijabcdefghij>")]
+    [InlineData("<input id=control placeholder=abcdefghijabcdefghij>")]
+    [InlineData("<textarea id=control placeholder=abcdefghijabcdefghij wrap=off></textarea>")]
+    public void NativeInputTextRespectsItsBoxAndAncestorClip(string control)
+    {
+        foreach (float height in new[] { 8f, 40f })
+        {
+            foreach (bool clipped in new[] { false, true })
+            {
+                string overflow = clipped ? "hidden" : "visible";
+                DomTree tree = Parse($$"""
+                    <style>
+                    body{margin:0;background:white}
+                    #parent{position:absolute;left:20px;top:20px;width:60px;height:40px;overflow:{{overflow}}}
+                    #control{position:absolute;left:10px;top:6px;box-sizing:content-box;
+                    width:80px;height:{{height}}px;padding:8px;border:3px solid red;
+                    font:32px Arial;line-height:{{height}}px;color:blue;background:white;
+                    white-space:pre;overflow:visible;resize:none}
+                    #control::placeholder{color:blue;opacity:1}
+                    </style><div id=parent>{{control}}</div>
+                    """);
+                RenderResourceCache resources = new();
+                PreparedRender prepared = RenderPaint.PrepareDom(tree, (220f, 140f), null, resources)!;
+                Rect rect = prepared.DocumentRect(tree.GetElementById("control")!.Value)!.Value;
+                bool textarea = control.StartsWith("<textarea", StringComparison.Ordinal);
+                Rect allowed = new(
+                    rect.X + (textarea ? 3f : 11f),
+                    rect.Y + 3f,
+                    rect.Width - (textarea ? 6f : 22f),
+                    rect.Height - 6f);
+                if (clipped)
+                {
+                    Rect parent = prepared.DocumentRect(tree.GetElementById("parent")!.Value)!.Value;
+                    allowed = allowed.Intersect(parent)!.Value;
+                }
+
+                ResolvedScrollState scroll =
+                    prepared.ResolveScrollState(tree, (0f, 0f), new Dictionary<NodeId, (float, float)>());
+                foreach (float scale in new[] { 1f, 2f })
+                {
+                    using Pixmap pixmap = RenderPaint.PaintPreparedRegionWithScroll(
+                        tree, prepared, resources, scroll, CaptureRegion.New(0f, 0f, 220f, 140f, scale)).Pixmap!;
+                    int count = 0;
+                    uint minY = uint.MaxValue;
+                    uint maxY = 0;
+                    for (uint y = 0; y < pixmap.Height; y++)
+                    {
+                        for (uint x = 0; x < pixmap.Width; x++)
+                        {
+                            PremultipliedColor p = pixmap.Pixel(x, y)!.Value;
+                            if (p.Blue > 200 && p.Red < 50 && p.Green < 50)
+                            {
+                                float cx = (x + 0.5f) / scale;
+                                float cy = (y + 0.5f) / scale;
+                                Assert.True(
+                                    cx >= allowed.X && cx < allowed.X + allowed.Width
+                                        && cy >= allowed.Y && cy < allowed.Y + allowed.Height,
+                                    $"text outside clip: height={height}, clipped={clipped}, scale={scale}, ({cx},{cy}), {allowed}");
+                                count++;
+                                minY = Math.Min(minY, y);
+                                maxY = Math.Max(maxY, y);
+                            }
+                        }
+                    }
+
+                    Assert.True(count > 30, $"clipping must leave visible text: height={height}, clipped={clipped}, scale={scale}");
+                    if (!clipped && height == 8f)
+                    {
+                        Assert.True(
+                            (maxY - minY + 1) / scale >= 20f,
+                            $"short controls must retain the centered glyph ink visible in Chrome: scale={scale}");
+                    }
+                }
+            }
+        }
+    }
 }

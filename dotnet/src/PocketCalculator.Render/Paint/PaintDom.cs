@@ -1559,7 +1559,28 @@ internal static class PaintDomPainter
                     bool hasValue = shownValue is { Length: > 0 };
                     float textSize = style.FontSize ?? 16f;
                     float textX = rect.X + style.Padding.Left + style.Border.Left;
-                    float textY = rect.Y + style.Padding.Top + style.Border.Top;
+
+                    // Upstream 1fff1f7: a single-line editor clips its text horizontally to
+                    // the content box but lets glyph ink use the vertical padding; a textarea
+                    // clips to its padding box. The ancestor overflow clip still applies. The
+                    // text is centred on the content height (an input) or the line height (a
+                    // textarea placeholder) by the face's ascent-to-descent height.
+                    bool singleLine = !isTextarea;
+                    float inlineInset = singleLine ? style.Padding.Left + style.Padding.Right : 0f;
+                    Rect textClip = new Rect(
+                            rect.X + style.Border.Left + (singleLine ? style.Padding.Left : 0f),
+                            rect.Y + style.Border.Top,
+                            F32.Max(rect.Width - style.Border.Left - style.Border.Right - inlineInset, 0f),
+                            F32.Max(rect.Height - style.Border.Top - style.Border.Bottom, 0f))
+                        .Intersect(visibleRect) ?? Rect.Zero;
+                    float textLineHeight = singleLine
+                        ? F32.Max(
+                            rect.Height - style.Border.Top - style.Border.Bottom
+                                - style.Padding.Top - style.Padding.Bottom,
+                            0f)
+                        : FontResolution.UsedLineHeight(style);
+                    float textY = rect.Y + style.Border.Top + style.Padding.Top
+                        + ((textLineHeight - PaintText.NativeFontHeight(textSize, style.FontFamily)) / 2f);
                     if (hasValue && !isTextarea && PaintNativeControls.ShowsTextValue(inputType))
                     {
                         RgbaColor color = style.Color ?? new RgbaColor(0, 0, 0, 255);
@@ -1579,7 +1600,7 @@ internal static class PaintDomPainter
                                 style.FontFamily,
                                 style.LetterSpacing ?? 0f,
                                 style.WordSpacing ?? 0f,
-                                boxClip,
+                                textClip,
                                 elementClipMask,
                                 rasterScale);
                         }
@@ -1605,7 +1626,7 @@ internal static class PaintDomPainter
                                 style.FontFamily,
                                 style.LetterSpacing ?? 0f,
                                 style.WordSpacing ?? 0f,
-                                boxClip,
+                                textClip,
                                 elementClipMask,
                                 rasterScale);
                         }

@@ -21,6 +21,32 @@ internal static class PaintText
     internal static float MeasureText(string text, float size, bool isBold, string? family) =>
         DomTextMeasure.MeasureText(text, size, isBold, family);
 
+    /// <summary>
+    /// The face's ascent-to-descent height at <paramref name="size"/>, em-scaled like
+    /// <see cref="DrawText"/>: paint.rs <c>font.as_scaled(native_font_scale(..)).height()</c>.
+    /// </summary>
+    internal static float NativeFontHeight(float size, string? family)
+    {
+        if (!float.IsFinite(size) || size <= 0f)
+        {
+            return 0f;
+        }
+
+        SKTypeface typeface;
+        try
+        {
+            typeface = Typeface(family);
+        }
+        catch (Exception)
+        {
+            return 0f;
+        }
+
+        using SKFont font = new(typeface, size) { LinearMetrics = true, Hinting = SKFontHinting.None };
+        SKFontMetrics metrics = font.Metrics;
+        return metrics.Descent - metrics.Ascent;
+    }
+
     private static SKTypeface Typeface(string? family)
     {
         string stem = DomTextMeasure.FallbackFaceStem(family);
