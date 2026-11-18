@@ -498,6 +498,7 @@ public static class DomOps
                 {
                     var name = arg2[..split];
                     var value = arg2[(split + 1)..];
+                    ForgetImageRequestOnSourceChange(gs, nodeId, name);
                     var existing = dom.GetNode(nodeId)?.GetAttribute(name);
                     dom.EnsureCanGrow(2L * (value.Length - (existing?.Length ?? -name.Length)));
                     var sizeBefore = dom.DataSize(nodeId);
@@ -583,6 +584,7 @@ public static class DomOps
             case "remove_attribute":
             {
                 var nodeId = ParseNodeOrZero(arg1);
+                ForgetImageRequestOnSourceChange(gs, nodeId, arg2);
                 var sizeBefore = dom.DataSize(nodeId);
                 var attrs = dom.GetNode(nodeId)?.Attrs;
                 attrs?.RemoveAll(a => a.QualifiedNameEquals(arg2));
@@ -609,6 +611,11 @@ public static class DomOps
                 var value = parts.Length > 2 ? parts[2] : string.Empty;
                 if (qualified.Length != 0)
                 {
+                    if (ns.Length == 0)
+                    {
+                        ForgetImageRequestOnSourceChange(gs, nodeId, qualified);
+                    }
+
                     var colon = qualified.IndexOf(':', StringComparison.Ordinal);
                     var local = colon >= 0 ? qualified[(colon + 1)..] : qualified;
                     var existing = dom.GetNode(nodeId)?.GetAttributeNs(ns, local);
@@ -635,6 +642,11 @@ public static class DomOps
             {
                 var nodeId = ParseNodeOrZero(arg1);
                 var (ns, local) = SplitOnceNul(arg2);
+                if (arg2.StartsWith('\0'))
+                {
+                    ForgetImageRequestOnSourceChange(gs, nodeId, local);
+                }
+
                 var sizeBefore = dom.DataSize(nodeId);
                 if (ns.Length == 0 && string.Equals(local, "id", StringComparison.Ordinal))
                 {
@@ -1523,6 +1535,18 @@ public static class DomOps
     }
 
     private static string Bool(bool value) => value ? "true" : "false";
+
+    /// <summary>
+    /// A change to an image's source selection starts a new attempt, so a failed one does
+    /// not stick to the new source (upstream a3171f3, moved to the mutation ops by 5efc4a1).
+    /// </summary>
+    private static void ForgetImageRequestOnSourceChange(PocketCalculatorState gs, NodeId nodeId, string name)
+    {
+        if (name is "src" or "srcset" or "sizes" or "crossorigin")
+        {
+            gs.RenderResources.ForgetHtmlImageRequest(nodeId);
+        }
+    }
 
     /// <summary>The document a document-level command addresses: the page's unless a secondary document's id is given.</summary>
     private static NodeId DocumentArg(DomTree dom, string arg) =>

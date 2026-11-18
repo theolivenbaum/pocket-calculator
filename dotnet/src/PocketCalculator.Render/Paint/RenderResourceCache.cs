@@ -151,6 +151,14 @@ public sealed class RenderResourceCache
     private volatile int _syncMissCount;
     private IRenderResourceLoader _loader;
 
+    /// <summary>
+    /// Owned by one page document and fed by its transport (upstream 74ac75f). Such a cache
+    /// retains failed HTML image attempts per element (upstream a3171f3); generic resource
+    /// failures keep their normal retry window.
+    /// </summary>
+    private bool _documentScoped;
+    private readonly HtmlImageRequests _htmlImageRequests = new();
+
     private RenderResourceCache(IRenderResourceLoader loader, int maxEntries, int maxBytes)
     {
         _loader = loader;
@@ -261,6 +269,178 @@ public sealed class RenderResourceCache
     }
 
     /// <summary>
+    /// Retain failed HTML image attempts for this document. Generic resource failures keep
+    /// their normal retry window. Page-owned caches turn this on with the page transport.
+    /// </summary>
+    public void SetDocumentScoped(bool enabled)
+    {
+        lock (_gate)
+        {
+            _documentScoped = enabled;
+            if (!enabled)
+            {
+                _htmlImageRequests.Clear();
+            }
+        }
+    }
+
+    /// <summary>Whether this cache retains failed HTML image attempts for its document.</summary>
+    public bool DocumentScoped
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _documentScoped;
+            }
+        }
+    }
+
+    internal HtmlImageRequests HtmlImageRequestsForTest => _htmlImageRequests;
+
+    /// <summary>Test-only: backdate a retained failure, as Rust tests rewrite its <c>Instant</c>.</summary>
+    internal void AgeEntryForTest(string url, ImageRequestProfile profile, TimeSpan age)
+    {
+        string key = ImageResourceKey(url, profile);
+        lock (_gate)
+        {
+            if (_entries.TryGetValue(key, out CachedResource? entry) && entry is CachedResource.Missing)
+            {
+                _entries[key] = new CachedResource.Missing(Environment.TickCount64 - (long)age.TotalMilliseconds);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Discard <paramref name="node"/>'s image attempt: its <c>src</c>, <c>srcset</c>,
+    /// <c>sizes</c> or <c>crossorigin</c> changed, so the next selection is a new request.
+    /// </summary>
+    public void ForgetHtmlImageRequest(NodeId node)
+    {
+        lock (_gate)
+        {
+            _htmlImageRequests.Forget(node);
+        }
+    }
+
+    /// <summary>
+    /// An explicit source assignment may retry a failed attempt without discarding
+    /// successful bytes or changing another element's failure.
+    /// </summary>
+    public void RetryHtmlImageRequest(NodeId node, string url, ImageRequestProfile profile)
+    {
+        string key = ImageResourceKey(url, profile);
+        lock (_gate)
+        {
+            _htmlImageRequests.Forget(node);
+            if (_entries.TryGetValue(key, out CachedResource? entry) && entry is CachedResource.Missing)
+            {
+                Remove(key);
+            }
+        }
+    }
+
+    /// <summary>Whether <paramref name="node"/>'s current attempt for this request failed.</summary>
+    internal bool FailedHtmlImage(DomTree tree, NodeId node, string url, ImageRequestProfile profile)
+    {
+        lock (_gate)
+        {
+            return FailedHtmlImageLocked(tree, node, url, profile);
+        }
+    }
+
+    private bool FailedHtmlImageLocked(DomTree tree, NodeId node, string url, ImageRequestProfile profile)
+    {
+        if (!_documentScoped || !_htmlImageRequests.Nodes.TryGetValue(node, out HtmlImageRequests.Record? record))
+        {
+            return false;
+        }
+
+        // A freed element's record goes with it. A reused slot has a different NodeId
+        // (the generation is part of the id), so it never finds this record at all.
+        if (tree.GetNode(node) is null)
+        {
+            _htmlImageRequests.Forget(node);
+            return false;
+        }
+
+        return record.Failed && string.Equals(record.Key, ImageResourceKey(url, profile), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Record what an element's image lookup saw: a usable image (true), a failure (false)
+    /// or nothing known yet (null).
+    /// </summary>
+    private void ObserveHtmlImageLocked(DomTree tree, NodeId node, string url, ImageRequestProfile profile, bool? outcome)
+    {
+        if (!_documentScoped || url.StartsWith("data:", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (outcome == true)
+        {
+            _htmlImageRequests.ObserveSuccess(node);
+        }
+        else if (tree.GetNode(node) is not null)
+        {
+            _htmlImageRequests.Observe(node, ImageResourceKey(url, profile), outcome == false);
+        }
+    }
+
+    /// <summary>
+    /// Intrinsic metadata of an HTML <c>&lt;img&gt;</c>'s selected resource, honouring the
+    /// element's own attempt: a failed attempt stays failed, and a new attempt is not
+    /// failed by another element's earlier failure of the same URL.
+    /// </summary>
+    internal ReplacedIntrinsic? HtmlImageIntrinsic(DomTree tree, NodeId node, string url, ImageRequestProfile profile)
+    {
+        lock (_gate)
+        {
+            if (FailedHtmlImageLocked(tree, node, url, profile))
+            {
+                return null;
+            }
+
+            string? key = null;
+            if (_documentScoped && !url.StartsWith("data:", StringComparison.Ordinal))
+            {
+                // Keep the ordinary image loader's scheme/resolution gate before consulting
+                // retained bytes or registering a transport attempt.
+                if (PaintResources.ResolveResourceUrl(url, null) is null)
+                {
+                    return null;
+                }
+
+                // A new logical image may retry a different element's failure, including
+                // before the generic negative-cache window expires.
+                key = ImageResourceKey(url, profile);
+                if (_entries.TryGetValue(key, out CachedResource? entry) && entry is CachedResource.Bytes retained)
+                {
+                    ReplacedIntrinsic? known = PaintResources.ImageIntrinsicMetadata(retained.Value);
+                    ObserveHtmlImageLocked(tree, node, url, profile, known is not null);
+                    return known;
+                }
+
+                ObserveHtmlImageLocked(tree, node, url, profile, null);
+                if (_htmlImageRequests.Nodes.ContainsKey(node)
+                    && _entries.TryGetValue(key, out CachedResource? stale) && stale is CachedResource.Missing)
+                {
+                    Remove(key);
+                }
+            }
+
+            byte[]? bytes = PaintResources.FetchProfiledImageBytes(url, null, this, profile);
+            ReplacedIntrinsic? intrinsic = bytes is null ? null : PaintResources.ImageIntrinsicMetadata(bytes);
+            bool? outcome = intrinsic is not null
+                ? true
+                : _entries.ContainsKey(key ?? ImageResourceKey(url, profile)) ? false : null;
+            ObserveHtmlImageLocked(tree, node, url, profile, outcome);
+            return intrinsic;
+        }
+    }
+
+    /// <summary>
     /// Take the resources that cache-only layout or paint asked for and did not have,
     /// exactly as they were resolved (network URL plus the image request profile, or
     /// none for CSS images and fonts). The owning page loads them through its
@@ -349,14 +529,84 @@ public sealed class RenderResourceCache
         }
     }
 
-    public bool HasLiveImageOutcome(string url, ImageRequestProfile profile) =>
-        HasLiveOutcome(ImageResourceKey(url, profile));
+    public bool HasLiveImageOutcome(string url, ImageRequestProfile profile)
+    {
+        string key = ImageResourceKey(url, profile);
+        lock (_gate)
+        {
+            // A failure left by an earlier attempt does not settle a pending new one.
+            if (_entries.TryGetValue(key, out CachedResource? entry) && entry is CachedResource.Missing
+                && _htmlImageRequests.Generation(key) is not null)
+            {
+                return false;
+            }
+        }
+
+        return HasLiveOutcome(key);
+    }
+
+    /// <summary>
+    /// The pending HTML image attempt for this request, captured when its transport starts
+    /// rather than when it finishes. Null outside a document-scoped cache.
+    /// </summary>
+    public ulong? HtmlImageRequestGeneration(string url, ImageRequestProfile profile)
+    {
+        string key = ImageResourceKey(url, profile);
+        lock (_gate)
+        {
+            return _documentScoped ? _htmlImageRequests.Generation(key) : null;
+        }
+    }
+
+    /// <summary>Mark the pending HTML image attempt for this request as started.</summary>
+    public ulong? BeginHtmlImageRequest(string url, ImageRequestProfile profile)
+    {
+        string key = ImageResourceKey(url, profile);
+        lock (_gate)
+        {
+            return _documentScoped ? _htmlImageRequests.Begin(key) : null;
+        }
+    }
 
     public void SeedImage(string url, ImageRequestProfile profile, byte[] bytes) =>
-        Seed(ImageResourceKey(url, profile), bytes);
+        SeedImageForRequest(url, profile, bytes, HtmlImageRequestGeneration(url, profile));
+
+    /// <summary>
+    /// Seed an image the transport fetched for attempt <paramref name="generation"/>. Only
+    /// that attempt's elements settle; a newer attempt of the same request stays pending.
+    /// </summary>
+    public void SeedImageForRequest(string url, ImageRequestProfile profile, byte[] bytes, ulong? generation)
+    {
+        string key = ImageResourceKey(url, profile);
+        if (generation is null)
+        {
+            Seed(key, bytes);
+            return;
+        }
+
+        bool failed = PaintResources.ImageIntrinsicMetadata(bytes) is null;
+        lock (_gate)
+        {
+            _htmlImageRequests.Complete(key, generation, failed);
+            Remove(key);
+            InsertBytes(key, bytes);
+        }
+    }
 
     public void SeedImageMissing(string url, ImageRequestProfile profile) =>
-        SeedMissing(ImageResourceKey(url, profile));
+        SeedImageMissingForRequest(url, profile, HtmlImageRequestGeneration(url, profile));
+
+    /// <summary>Retain a transport failure for attempt <paramref name="generation"/>.</summary>
+    public void SeedImageMissingForRequest(string url, ImageRequestProfile profile, ulong? generation)
+    {
+        string key = ImageResourceKey(url, profile);
+        lock (_gate)
+        {
+            _htmlImageRequests.Complete(key, generation, true);
+            Remove(key);
+            InsertMissing(key);
+        }
+    }
 
     /// <summary>Seed bytes fetched by the owning page's asynchronous browser transport.</summary>
     public void Seed(string url, byte[] bytes)
@@ -498,10 +748,7 @@ public sealed class RenderResourceCache
 
         string resolved = PaintResources.ResolveResourceUrl(picked.Url, baseUrl) ?? picked.Url;
         ImageRequestProfile profile = PaintImages.ImageRequestProfileFor(tree, id);
-        byte[]? bytes = PaintResources.FetchProfiledImageBytes(resolved, null, this, profile);
-        (float Width, float Height)? metadata = bytes is null
-            ? null
-            : PaintResources.ImageMetadataFromBytes(bytes);
+        (float Width, float Height)? metadata = HtmlImageIntrinsic(tree, id, resolved, profile)?.NaturalSize();
         (float Width, float Height)? dimensions = metadata is { } size
             ? (size.Width / picked.Density, size.Height / picked.Density)
             : null;
@@ -524,7 +771,28 @@ public sealed class RenderResourceCache
 
         string resolved = PaintResources.ResolveResourceUrl(picked.Url, baseUrl) ?? picked.Url;
         ImageRequestProfile profile = PaintImages.ImageRequestProfileFor(tree, id);
+        if (FailedHtmlImage(tree, id, resolved, profile))
+        {
+            return (resolved, picked.Density, true, null);
+        }
+
         var cached = CachedProfiledImageMetadata(resolved, null, profile);
+        lock (_gate)
+        {
+            // A failure another element's attempt left behind is not this element's outcome.
+            bool canTrack = _documentScoped
+                && (_htmlImageRequests.Nodes.ContainsKey(id)
+                    || _htmlImageRequests.Nodes.Count < HtmlImageRequests.MaxRequests);
+            if (canTrack && cached is { Value: null }
+                && _entries.TryGetValue(ImageResourceKey(resolved, profile), out CachedResource? entry)
+                && entry is CachedResource.Missing)
+            {
+                cached = null;
+            }
+
+            ObserveHtmlImageLocked(tree, id, resolved, profile, cached is { } known ? known.Value is not null : null);
+        }
+
         if (cached is null)
         {
             return (resolved, picked.Density, false, null);
@@ -638,10 +906,17 @@ public sealed class RenderResourceCache
 
             // The private profile key is cache identity only and must never escape into a loader.
             byte[]? loaded = LoadSafely(NetworkResourceUrl(url));
+            ulong? generation = _htmlImageRequests.Generation(key);
             if (loaded is null)
             {
+                _htmlImageRequests.Complete(key, generation, true);
                 InsertMissing(key);
                 return null;
+            }
+
+            if (generation is not null)
+            {
+                _htmlImageRequests.Complete(key, generation, PaintResources.ImageIntrinsicMetadata(loaded) is null);
             }
 
             InsertBytes(key, loaded);

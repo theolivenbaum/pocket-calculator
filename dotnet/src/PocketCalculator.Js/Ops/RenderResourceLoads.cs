@@ -11,12 +11,17 @@ namespace PocketCalculator.Js.Ops;
 /// <param name="Generation">The <c>DocumentGeneration</c> the request was made for.</param>
 /// <param name="Request">The network URL, image request profile and resource kind.</param>
 /// <param name="Response">The response, or null when the request failed or was cancelled.</param>
+/// <param name="ImageRequestGeneration">
+/// The HTML image attempt the load was started for, so only that attempt's elements settle
+/// (upstream a3171f3); null for CSS images, fonts and untracked images.
+/// </param>
 public sealed record RenderResourceLoad(
     ulong Generation,
     RenderResourceMiss Request,
     Response? Response,
     double StartedAtUnixMs,
-    double EndedAtUnixMs);
+    double EndedAtUnixMs,
+    ulong? ImageRequestGeneration = null);
 
 /// <summary>
 /// A transport response the runtime applied; the page turns it into the Network events

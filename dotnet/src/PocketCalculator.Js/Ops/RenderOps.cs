@@ -899,13 +899,23 @@ public static class RenderOps
         () =>
         {
             ArgumentNullException.ThrowIfNull(state);
-            _ = cachedOnly;
             var nodeId = NodeId.New(nid);
             var isImage = state.Dom?.GetNode(nodeId)?.AsElement() is { } element
                 && string.Equals(element.Name.Local, "img", StringComparison.Ordinal);
-            return isImage
-                ? CachedImageMetadataForNode(state, nodeId)
-                : "{\"ok\":false,\"currentSrc\":\"\"}";
+            if (!isImage)
+            {
+                return "{\"ok\":false,\"currentSrc\":\"\"}";
+            }
+
+            // Source assignments may retry a failed request; getters and layout only
+            // observe the current outcome and must not restart it (upstream a3171f3).
+            if (!cachedOnly && state.Dom is { } dom
+                && ProfiledCachedImageMetadata(state, nodeId) is { } current)
+            {
+                state.RenderResources.RetryHtmlImageRequest(nodeId, current.Url, ImageRequestProfileOf(dom, nodeId));
+            }
+
+            return CachedImageMetadataForNode(state, nodeId);
         },
         "{\"ok\":false,\"currentSrc\":\"\"}");
 
@@ -1441,8 +1451,10 @@ public static class RenderOps
             return LoadImageMetadataWithoutPageTransport(shared, nodeId);
         }
 
-        // Different CORS/credential profiles do not share an in-flight response.
-        var requestKey = (documentGeneration, selectedUrl, profile);
+        // Different CORS/credential profiles do not share an in-flight response, and
+        // neither do different attempts of the same request (upstream a3171f3).
+        var imageRequestGeneration = shared.RenderResources.BeginHtmlImageRequest(selectedUrl, profile);
+        var requestKey = (documentGeneration, selectedUrl, profile, imageRequestGeneration);
         TaskCompletionSource? follower = null;
         lock (shared.AsyncResourceGate)
         {
@@ -1516,14 +1528,15 @@ public static class RenderOps
                     {
                         if (bytes is not null && RenderPaint.ImageIntrinsicDimensions(bytes) is not null)
                         {
-                            shared.RenderResources.SeedImage(selectedUrl, profile, bytes);
+                            shared.RenderResources.SeedImageForRequest(
+                                selectedUrl, profile, bytes, imageRequestGeneration);
                             // The leader owns the unknown-to-known cache transition. Followers
                             // only observe this result and must not invalidate again.
                             RenderInvalidation.InvalidateRenderResourceGeometry(shared);
                         }
                         else
                         {
-                            shared.RenderResources.SeedImageMissing(selectedUrl, profile);
+                            shared.RenderResources.SeedImageMissingForRequest(selectedUrl, profile, imageRequestGeneration);
                         }
                     }
 

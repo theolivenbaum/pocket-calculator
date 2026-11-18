@@ -1258,7 +1258,12 @@ internal static class PaintDomPainter
             if (boxOnSurface && (localName is "img" or "video" || PaintImages.IsImageButton(node))
                 && pass.SelectedImages.TryGetValue(nid, out SelectedImage? source))
             {
-                bool painted = PaintImages.PaintImage(
+                // A failed <img> attempt stays broken even when another consumer (a CSS
+                // content image, a newer element) has bytes for the URL (upstream a3171f3).
+                bool failed = string.Equals(localName, "img", StringComparison.Ordinal)
+                    && style.ContentImage is null
+                    && pass.ImageCache.FailedHtmlImage(tree, nid, source.ResolvedUrl, source.Profile);
+                bool painted = !failed && PaintImages.PaintImage(
                     source.ResolvedUrl,
                     null,
                     rect,

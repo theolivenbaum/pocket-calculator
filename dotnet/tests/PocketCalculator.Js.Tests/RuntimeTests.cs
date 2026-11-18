@@ -10680,6 +10680,106 @@ public sealed partial class RuntimeTests
     }
 
     [Fact]
+    public async Task ImageSrcReassignmentRetriesAFailedDocumentResource()
+    {
+        // Ported from upstream a3171f3, crates/obscura-js/src/runtime.rs.
+        var calls = 0;
+        var png = TwoByThreePng();
+        using var fixture = ParserImageRuntime(
+            """<img id="retry" src="transient.png" width="20" height="30">""",
+            _ => Interlocked.Increment(ref calls) != 1 ? png : null);
+        var rt = fixture.Runtime;
+        rt.State.RenderResources.SetDocumentScoped(true);
+        rt.SetViewport(80.0, 60.0);
+        rt.ExecuteScript(
+            "observe-image-retry",
+            """
+            globalThis.__retryEvents = [];
+            const retry = document.getElementById('retry');
+            retry.onload = () => __retryEvents.push('load');
+            retry.onerror = () => __retryEvents.push('error');
+            void retry.complete;
+            """);
+        await EventLoopWait.UntilIdleAsync(rt);
+        AssertJsonEquals(
+            """[true, 0, ["error"]]""",
+            rt.Evaluate("[retry.complete, retry.naturalWidth, __retryEvents]"));
+        rt.Evaluate(
+            """
+            (() => {
+                for (let index = 0; index < 20; index++) {
+                    void retry.complete;
+                    void retry.naturalWidth;
+                    void retry.getBoundingClientRect().width;
+                }
+            })()
+            """);
+        await EventLoopWait.UntilIdleAsync(rt);
+        Assert.Equal(1, Volatile.Read(ref calls));
+
+        // Unchanged HTML image queries must not retry after the generic cache window.
+        await Task.Delay(TimeSpan.FromMilliseconds(2_100));
+        rt.Evaluate("[retry.complete, retry.naturalWidth, retry.getBoundingClientRect().width]");
+        await EventLoopWait.UntilIdleAsync(rt);
+        Assert.Equal(1, Volatile.Read(ref calls));
+        Assert.NotNull(rt.ScreenshotPrepared((80.0f, 60.0f), "http://example.com/page/index.html"));
+        Assert.Equal(1, Volatile.Read(ref calls));
+        Assert.False(
+            rt.State.RenderResources.HasSyncMisses,
+            "painting an unchanged failed HTML image must not request it again");
+
+        rt.ExecuteScript("retry-image-source", "retry.src = retry.src;");
+        await EventLoopWait.UntilIdleAsync(rt);
+        AssertJsonEquals(
+            """[true, 2, 3, ["error", "load"]]""",
+            rt.Evaluate("[retry.complete, retry.naturalWidth, retry.naturalHeight, __retryEvents]"));
+        Assert.Equal(2, Volatile.Read(ref calls));
+
+        rt.ExecuteScript("reuse-loaded-image", "retry.src = retry.src;");
+        await EventLoopWait.UntilIdleAsync(rt);
+        Assert.Equal(2, Volatile.Read(ref calls));
+    }
+
+    [Fact]
+    public async Task NewParserImageRetriesWithoutRevivingTheFailedElement()
+    {
+        // Ported from upstream a3171f3, crates/obscura-js/src/runtime.rs.
+        var calls = 0;
+        var png = TwoByThreePng();
+        using var fixture = ParserImageRuntime(
+            """<div id="host"><img id="old" src="transient.png"></div>""",
+            _ => Interlocked.Increment(ref calls) != 1 ? png : null);
+        var rt = fixture.Runtime;
+        rt.State.RenderResources.SetDocumentScoped(true);
+        rt.ExecuteScript("fail-first-image", "globalThis.old = document.getElementById('old'); void old.complete;");
+        await EventLoopWait.UntilIdleAsync(rt);
+        AssertJsonEquals("[true, 0]", rt.Evaluate("[old.complete, old.naturalWidth]"));
+        rt.ExecuteScript(
+            "insert-new-image",
+            """
+            document.getElementById('host').innerHTML = '<img id="fresh" src="transient.png">';
+            globalThis.fresh = document.getElementById('fresh');
+            void fresh.complete;
+            """);
+        await EventLoopWait.UntilIdleAsync(rt);
+        AssertJsonEquals(
+            "[true, 2, true, 0]",
+            rt.Evaluate("[fresh.complete, fresh.naturalWidth, old.complete, old.naturalWidth]"));
+        Assert.Equal(2, Volatile.Read(ref calls));
+        rt.ExecuteScript(
+            "replace-parser-image",
+            """
+            document.getElementById('host').innerHTML = '<img id="replacement" src="transient.png">';
+            globalThis.replacement = document.getElementById('replacement'); void replacement.complete;
+            """);
+        await EventLoopWait.UntilIdleAsync(rt);
+        AssertJsonEquals(
+            "[true, 2, 0]",
+            rt.Evaluate("[replacement.complete, replacement.naturalWidth, old.naturalWidth]"));
+        Assert.Equal(2, Volatile.Read(ref calls));
+    }
+
+    [Fact]
     public void ParserImageFirstGetterObservesPrepareSeededCacheSynchronously()
     {
         int calls = 0;

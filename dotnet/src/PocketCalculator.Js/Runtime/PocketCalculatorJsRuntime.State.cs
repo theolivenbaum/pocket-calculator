@@ -156,6 +156,7 @@ public sealed partial class PocketCalculatorJsRuntime
         // A page transport makes the renderer cache-only; see FreshRenderResources for
         // why layout must not fetch by itself (upstream 97ff86d).
         State.RenderResources.SetSyncLoadingEnabled(false);
+        State.RenderResources.SetDocumentScoped(true);
     }
 
     /// <summary>
@@ -214,6 +215,7 @@ public sealed partial class PocketCalculatorJsRuntime
         if (client.IsAvailable)
         {
             State.RenderResources.SetSyncLoadingEnabled(false);
+            State.RenderResources.SetDocumentScoped(true);
         }
     }
 
@@ -687,6 +689,7 @@ public sealed partial class PocketCalculatorJsRuntime
         if (HasTransport(State))
         {
             frame.RenderResources.SetSyncLoadingEnabled(false);
+            frame.RenderResources.SetDocumentScoped(true);
         }
     }
 

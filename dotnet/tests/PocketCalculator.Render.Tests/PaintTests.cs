@@ -741,6 +741,235 @@ public class PaintTests
         Assert.Single(cache.TakeSyncMisses());
     }
 
+    private static readonly byte[] RetrySvg =
+        """<svg xmlns="http://www.w3.org/2000/svg" width="23" height="17"/>"""u8.ToArray();
+
+    private static RenderResourceCache DocumentScopedCache(bool syncLoading = false)
+    {
+        RenderResourceCache cache = RenderResourceCache.WithLoader(_ => null);
+        cache.SetDocumentScoped(true);
+        cache.SetSyncLoadingEnabled(syncLoading);
+        return cache;
+    }
+
+    [Fact]
+    public void HtmlImageFailureBelongsToTheAttemptNotTheUrl()
+    {
+        // Upstream a3171f3.
+        DomTree tree = Parse("""<img id="old" src="retry.svg"><img id="new" src="retry.svg">""");
+        NodeId old = ById(tree, "old");
+        NodeId fresh = ById(tree, "new");
+        const string Url = "https://assets.test/retry.svg";
+        const ImageRequestProfile Profile = ImageRequestProfile.NoCorsInclude;
+        RenderResourceCache cache = DocumentScopedCache();
+        Assert.Null(cache.HtmlImageIntrinsic(tree, old, Url, Profile));
+        cache.SeedImageMissing(Url, Profile);
+        Assert.True(cache.FailedHtmlImage(tree, old, Url, Profile));
+        // A fresh image must not inherit another attempt's failure.
+        Assert.Equal(
+            (Url, 1f, false, ((float, float)?)null),
+            cache.CachedImageElementMetadata(tree, fresh, (80f, 60f), "https://assets.test/")!.Value);
+        Assert.False(cache.HasLiveImageOutcome(Url, Profile));
+        cache.SeedImage(Url, Profile, RetrySvg);
+        Assert.Equal((23f, 17f), cache.HtmlImageIntrinsic(tree, fresh, Url, Profile)!.Value.NaturalSize());
+        // Another consumer's success must not revive the failed image.
+        Assert.Null(cache.HtmlImageIntrinsic(tree, old, Url, Profile));
+        cache.RetryHtmlImageRequest(old, Url, Profile);
+        Assert.Equal((23f, 17f), cache.HtmlImageIntrinsic(tree, old, Url, Profile)!.Value.NaturalSize());
+        Assert.Empty(cache.HtmlImageRequestsForTest.Nodes);
+        Assert.Empty(cache.HtmlImageRequestsForTest.Cohorts);
+    }
+
+    [Fact]
+    public void CssContentCanReplaceAFailedHtmlImageWithTheSameUrl()
+    {
+        // Upstream a3171f3.
+        DomTree tree = Parse("""<body style="margin:0"><img id="image" src="retry.svg" width="20" height="20">""");
+        NodeId node = ById(tree, "image");
+        const string Url = "https://assets.test/retry.svg";
+        const ImageRequestProfile Profile = ImageRequestProfile.NoCorsInclude;
+        RenderResourceCache cache = DocumentScopedCache();
+        cache.HtmlImageIntrinsic(tree, node, Url, Profile);
+        cache.SeedImageMissing(Url, Profile);
+        Assert.True(cache.FailedHtmlImage(tree, node, Url, Profile));
+        cache.Seed(
+            Url,
+            """<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="blue"/></svg>"""u8
+                .ToArray());
+        tree.GetNode(node)!.SetAttribute("style", "content:url(retry.svg);display:block");
+        PreparedRender prepared = RenderPaint.PrepareDom(tree, (40f, 40f), "https://assets.test/", cache)!;
+        Pixmap pixmap = RenderPaint.PaintPrepared(tree, prepared, cache, (0f, 0f))!;
+        PremultipliedColor pixel = Pixel(pixmap, 10, 10);
+        Assert.True(
+            pixel.B > 240 && pixel.R < 20 && pixel.G < 20,
+            $"CSS replacement bytes must paint despite the independent failed src: {pixel}");
+        Assert.True(cache.FailedHtmlImage(tree, node, Url, Profile));
+    }
+
+    [Fact]
+    public void NativeImageSlotReuseDoesNotInheritAFailedAttempt()
+    {
+        // Upstream a3171f3. Rust compares an allocation generation kept beside the record;
+        // a port NodeId carries its slot generation, so the reused slot is a different id.
+        DomTree tree = Parse("""<img id="old" src="retry.svg"><img id="retained" src="other.svg">""");
+        NodeId old = ById(tree, "old");
+        NodeId retained = ById(tree, "retained");
+        NodeData oldData = tree.GetNode(old)!.Data;
+        const string Url = "https://assets.test/retry.svg";
+        const string Other = "https://assets.test/other.svg";
+        const ImageRequestProfile Profile = ImageRequestProfile.NoCorsInclude;
+        RenderResourceCache cache = DocumentScopedCache();
+        cache.HtmlImageIntrinsic(tree, old, Url, Profile);
+        cache.HtmlImageIntrinsic(tree, retained, Other, Profile);
+        cache.SeedImageMissing(Url, Profile);
+        cache.SeedImageMissing(Other, Profile);
+        Assert.True(cache.FailedHtmlImage(tree, old, Url, Profile));
+        tree.Remove(old);
+        NodeId replacement = tree.NewNode(oldData);
+        Assert.Equal(old.Index, replacement.Index);
+        Assert.False(cache.FailedHtmlImage(tree, replacement, Url, Profile));
+        Assert.False(cache.FailedHtmlImage(tree, old, Url, Profile));
+        Assert.True(cache.FailedHtmlImage(tree, retained, Other, Profile));
+        Assert.Equal(
+            (Url, 1f, false, ((float, float)?)null),
+            cache.CachedImageElementMetadata(tree, replacement, (80f, 60f), "https://assets.test/")!.Value);
+    }
+
+    [Fact]
+    public void HtmlImageCohortsKeepProfileAndSourceChangesSeparate()
+    {
+        // Upstream a3171f3.
+        HtmlImageRequests requests = new();
+        NodeId a = NodeId.New(1);
+        NodeId b = NodeId.New(2);
+        requests.Observe(a, "old", false);
+        requests.Observe(b, "old", false);
+        Assert.Same(requests.Nodes[a].Key, requests.Nodes[b].Key);
+        requests.Observe(a, "new-profile", false);
+        requests.Complete("old", requests.Generation("old"), true);
+        Assert.False(requests.Nodes[a].Failed);
+        Assert.True(requests.Nodes[b].Failed);
+        requests.Complete("new-profile", requests.Generation("new-profile"), false);
+        Assert.False(requests.Nodes.ContainsKey(a));
+        requests.Forget(b);
+        Assert.Empty(requests.Cohorts);
+    }
+
+    [Fact]
+    public void OverlappingHtmlTransportsSettleOnlyTheirOwnAttempt()
+    {
+        // Upstream a3171f3.
+        DomTree tree = Parse(
+            """<img id="old" src="retry.svg"><img id="new" src="retry.svg"><img id="unrelated" src="retry.svg">""");
+        NodeId old = ById(tree, "old");
+        NodeId fresh = ById(tree, "new");
+        NodeId unrelated = ById(tree, "unrelated");
+        const string Url = "https://assets.test/retry.svg";
+        const ImageRequestProfile Profile = ImageRequestProfile.NoCorsInclude;
+        RenderResourceCache cache = DocumentScopedCache();
+        cache.HtmlImageIntrinsic(tree, unrelated, Url, Profile);
+        cache.SeedImageMissing(Url, Profile);
+        cache.HtmlImageIntrinsic(tree, old, Url, Profile);
+        ulong? oldGeneration = cache.HtmlImageRequestGeneration(Url, Profile);
+        cache.SeedImageMissingForRequest(Url, Profile, oldGeneration);
+        Assert.True(cache.FailedHtmlImage(tree, old, Url, Profile));
+        cache.HtmlImageIntrinsic(tree, fresh, Url, Profile);
+        ulong? newGeneration = cache.BeginHtmlImageRequest(Url, Profile);
+        Assert.NotEqual(oldGeneration, newGeneration);
+        cache.SeedImageForRequest(Url, Profile, RetrySvg, oldGeneration);
+        Assert.False(cache.FailedHtmlImage(tree, old, Url, Profile));
+        Assert.False(cache.HtmlImageRequestsForTest.Nodes[fresh].Failed);
+        Assert.True(cache.FailedHtmlImage(tree, unrelated, Url, Profile));
+        Assert.Equal(
+            (23f, 17f),
+            cache.CachedImageElementMetadata(tree, fresh, (80f, 60f), "https://assets.test/")!.Value.Dimensions);
+        // Observing another consumer's bytes must not discard this active attempt.
+        Assert.Equal(newGeneration, cache.HtmlImageRequestGeneration(Url, Profile));
+        cache.SeedImageMissingForRequest(Url, Profile, newGeneration);
+        Assert.True(cache.FailedHtmlImage(tree, fresh, Url, Profile));
+        Assert.True(cache.FailedHtmlImage(tree, unrelated, Url, Profile));
+    }
+
+    [Fact]
+    public void LateHtmlImageCompletionCannotFailANewAttempt()
+    {
+        // Upstream a3171f3.
+        HtmlImageRequests requests = new();
+        NodeId node = NodeId.New(1);
+        requests.Observe(node, "url", false);
+        ulong? oldGeneration = requests.Generation("url");
+        requests.Complete("url", oldGeneration, true);
+        requests.Forget(node);
+        requests.Observe(node, "url", false);
+        ulong? newGeneration = requests.Generation("url");
+        Assert.NotEqual(oldGeneration, newGeneration);
+        requests.Complete("url", oldGeneration, true);
+        Assert.False(requests.Nodes[node].Failed);
+        requests.Complete("url", newGeneration, false);
+        Assert.Empty(requests.Nodes);
+        Assert.Empty(requests.Cohorts);
+    }
+
+    [Fact]
+    public void HtmlImageRequestLimitPreservesEstablishedFailures()
+    {
+        // Upstream a3171f3.
+        const int Max = HtmlImageRequests.MaxRequests;
+        RenderResourceCache cache = RenderResourceCache.WithLoader(_ => null);
+        cache.SetDocumentScoped(true);
+        HtmlImageRequests requests = cache.HtmlImageRequestsForTest;
+        // Synthetic ids above the parsed document's slots.
+        const uint Base = 1000;
+        for (uint id = 0; id < Max; id++)
+        {
+            requests.Observe(NodeId.New(Base + id), "shared", true);
+        }
+
+        requests.Observe(NodeId.New(Base + Max), "other", false);
+        Assert.Equal(Max, requests.Nodes.Count);
+        Assert.True(requests.Nodes[NodeId.New(Base)].Failed);
+        Assert.False(requests.Nodes.ContainsKey(NodeId.New(Base + Max)));
+        Assert.Single(requests.Cohorts);
+
+        DomTree tree = Parse("""<img id="overflow" src="overflow.svg">""");
+        NodeId node = ById(tree, "overflow");
+        cache.SeedMissing("https://assets.test/overflow.svg");
+        // Untracked overflow keeps the generic negative-cache retry window.
+        Assert.Equal(
+            ("https://assets.test/overflow.svg", 1f, true, ((float, float)?)null),
+            cache.CachedImageElementMetadata(tree, node, (80f, 60f), "https://assets.test/")!.Value);
+        Assert.False(requests.Nodes.ContainsKey(node));
+    }
+
+    [Fact]
+    public void FailedHtmlImageIsNotRequestedAgainByRelayoutOrPaint()
+    {
+        // The request amplification upstream 74ac75f / a3171f3 close: a page-owned cache
+        // past the generic 2 s negative-cache window must not ask the transport for a
+        // broken <img> again on relayout, in the warmup scan, or in paint.
+        DomTree tree = Parse("""<body style="margin:0"><img id="broken" src="broken.png" alt="">""");
+        NodeId node = ById(tree, "broken");
+        const string Url = "https://assets.test/broken.png";
+        const ImageRequestProfile Profile = ImageRequestProfile.NoCorsInclude;
+        RenderResourceCache cache = DocumentScopedCache();
+        RenderPaint.PrepareDom(tree, (40f, 40f), "https://assets.test/", cache);
+        Assert.Equal(new[] { new RenderResourceMiss(Url, Profile, false) }, cache.TakeSyncMisses());
+        cache.SeedImageMissing(Url, Profile);
+        cache.AgeEntryForTest(Url, Profile, RenderResourceCache.MissingResourceRetryAfter * 2);
+
+        PreparedRender prepared = RenderPaint.PrepareDom(tree, (40f, 40f), "https://assets.test/", cache)!;
+        RenderPaint.PaintPrepared(tree, prepared, cache, (0f, 0f));
+        Assert.Equal(
+            (Url, 1f, true, ((float, float)?)null),
+            cache.CachedImageElementMetadata(tree, node, (40f, 40f), "https://assets.test/")!.Value);
+        Assert.False(cache.HasSyncMisses);
+
+        // A new source selection is a new attempt.
+        cache.ForgetHtmlImageRequest(node);
+        RenderPaint.PrepareDom(tree, (40f, 40f), "https://assets.test/", cache);
+        Assert.True(cache.HasSyncMisses);
+    }
+
     [Fact]
     public void HtmlImageProfilesKeepIntrinsicGeometryAndPaintSeparate()
     {

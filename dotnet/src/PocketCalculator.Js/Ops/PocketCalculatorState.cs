@@ -451,7 +451,7 @@ public sealed class PocketCalculatorState
     /// navigation identity and request credentials separate so neither stale pages
     /// nor incompatible CORS profiles share a completion.
     /// </summary>
-    public Dictionary<(ulong Generation, string Url, ImageRequestProfile Profile), List<TaskCompletionSource>>
+    public Dictionary<(ulong Generation, string Url, ImageRequestProfile Profile, ulong? Attempt), List<TaskCompletionSource>>
         RenderImageInFlight { get; } = [];
 
     /// <summary>

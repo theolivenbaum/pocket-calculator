@@ -98,13 +98,19 @@ internal static class PaintImages
             string resolvedUrl = PaintResources.ResolveResourceUrl(url, baseUrl) ?? url;
             ImageRequestProfile profile = ImageRequestProfileFor(tree, nid);
             selected[nid] = new SelectedImage(resolvedUrl, density, profile);
-            byte[]? bytes = PaintResources.FetchProfiledImageBytes(resolvedUrl, null, cache, profile);
-            if (bytes is null)
+            ReplacedIntrinsic? metadata;
+            if (string.Equals(element.Name.Local, "img", StringComparison.Ordinal))
             {
-                continue;
+                // An <img> honours its own attempt (upstream a3171f3).
+                metadata = cache.HtmlImageIntrinsic(tree, nid, resolvedUrl, profile);
+            }
+            else
+            {
+                byte[]? bytes = PaintResources.FetchProfiledImageBytes(resolvedUrl, null, cache, profile);
+                metadata = bytes is null ? null : PaintResources.ImageIntrinsicMetadata(bytes);
             }
 
-            if (PaintResources.ImageIntrinsicMetadata(bytes) is { } intrinsic)
+            if (metadata is { } intrinsic)
             {
                 // A 2x (or w-descriptor) candidate's raw pixels are density times its CSS size.
                 output[nid] = intrinsic with

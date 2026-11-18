@@ -420,7 +420,16 @@ public sealed partial class PocketCalculatorJsRuntime
     }
 
     /// <inheritdoc cref="SeedRenderResource"/>
-    public void SeedRenderImageResource(string url, ImageRequestProfile profile, byte[]? bytes)
+    public void SeedRenderImageResource(string url, ImageRequestProfile profile, byte[]? bytes) =>
+        SeedRenderImageResourceForRequest(
+            url, profile, bytes, State.RenderResources.HtmlImageRequestGeneration(url, profile));
+
+    /// <summary>
+    /// <see cref="SeedRenderImageResource"/> for the HTML image attempt the load was started
+    /// for (upstream a3171f3): a late completion settles only its own attempt.
+    /// </summary>
+    internal void SeedRenderImageResourceForRequest(
+        string url, ImageRequestProfile profile, byte[]? bytes, ulong? generation)
     {
         PocketCalculatorState state = State;
         if (bytes is not null && RenderPaint.ImageIntrinsicDimensions(bytes) is not null)
@@ -428,7 +437,7 @@ public sealed partial class PocketCalculatorJsRuntime
             bool needsGeometry = state.PreparedRender is { } prepared && state.Dom is { } dom
                 ? prepared.ImageResourceNeedsGeometry(dom, url, profile)
                 : true;
-            state.RenderResources.SeedImage(url, profile, bytes);
+            state.RenderResources.SeedImageForRequest(url, profile, bytes, generation);
             state.ActivityGeneration = unchecked(state.ActivityGeneration + 1);
             if (needsGeometry)
             {
@@ -437,7 +446,7 @@ public sealed partial class PocketCalculatorJsRuntime
         }
         else
         {
-            state.RenderResources.SeedImageMissing(url, profile);
+            state.RenderResources.SeedImageMissingForRequest(url, profile, generation);
         }
     }
 

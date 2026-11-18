@@ -64,6 +64,7 @@ public sealed partial class PocketCalculatorJsRuntime
         if (HasTransport(state))
         {
             cache.SetSyncLoadingEnabled(false);
+            cache.SetDocumentScoped(true);
         }
 
         return cache;
@@ -227,8 +228,13 @@ public sealed partial class PocketCalculatorJsRuntime
             {
                 policy = request.Profile is null ? ReferrerPolicies.Default : documentPolicy;
             }
+            // The image attempt is captured as the transport starts (upstream a3171f3).
+            ulong? imageRequestGeneration = request.Profile is { } imageProfile
+                ? state.RenderResources.BeginHtmlImageRequest(request.Url, imageProfile)
+                : null;
             _ = LoadRenderResourceAsync(
-                request, initiator, httpClient, stealthClient, callbacks, generation, limiter, loads, policy, referrer);
+                request, initiator, httpClient, stealthClient, callbacks, generation, limiter, loads, policy, referrer,
+                imageRequestGeneration);
         }
 
         return requests.Count;
@@ -276,7 +282,8 @@ public sealed partial class PocketCalculatorJsRuntime
         SemaphoreSlim limiter,
         RenderResourceLoads loads,
         ReferrerPolicy referrerPolicy = ReferrerPolicies.Default,
-        Uri? referrer = null)
+        Uri? referrer = null,
+        ulong? imageRequestGeneration = null)
     {
         Response? response = null;
         double startedAt = 0;
@@ -333,7 +340,7 @@ public sealed partial class PocketCalculatorJsRuntime
         }
 
         loads.Deliver(new RenderResourceLoad(
-            generation, request, response, startedAt, PerformanceOps.UnixMilliseconds()));
+            generation, request, response, startedAt, PerformanceOps.UnixMilliseconds(), imageRequestGeneration));
     }
 
     /// <summary>
@@ -410,7 +417,7 @@ public sealed partial class PocketCalculatorJsRuntime
 
             if (load.Request.Profile is { } profile)
             {
-                SeedRenderImageResource(load.Request.Url, profile, bytes);
+                SeedRenderImageResourceForRequest(load.Request.Url, profile, bytes, load.ImageRequestGeneration);
             }
             else
             {
