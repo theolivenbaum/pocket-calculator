@@ -383,8 +383,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       (`InterceptResolution.Continue.Body` is `byte[]?`, a library type change, as upstream);
       continue and fulfill bodies must be strict base64, else -32602 with the request kept
       paused. The error text after "is not valid base64:" is the port's own wording
+- [x] `2d323dd` + merge `61aa8fb`: only requests matching the Fetch.enable patterns pause
+      (scripted fetch/XHR and post-navigation pauses), with Chromium's `*`/`?`/`\\` pattern
+      dialect and backtracking; Network.setBlockedURLs keeps its star-only matcher
 - [ ] CDP Fetch: `b76d966`
-      (main-document interception), `2d323dd` (patterns), `5e58c86`; with open `dfc546d`
+      (main-document interception), `5e58c86`; with open `dfc546d`
 - [x] `939086a`/`e70183d` setBypassCSP (validated ack), `e5bcd75` Page.close and stopLoading
       (stopLoading drops a queued navigation; in-flight render loads are not cancelled),
       `192561c` removeScriptToEvaluateOnNewDocument errors on an unknown id (preload scripts
@@ -447,8 +450,7 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `cbc2f97`; `9855ef4` web_search stays opt-in
 - [ ] CLI and workers: `11d6ea8` + `afb0d61`, `ec0186b`, `1949e9b`, `f2b9e99`, `4b14a76`,
       `0f27e69`, `9a6dd86`, `52d8ddd`, `1b259b9` failed-save log
-- [ ] From merges: `61aa8fb` CDP URL pattern matcher (`?`, `\` escapes, backtracking;
-      `PageHelpers.UrlMatchesCdpPattern`), `fded066` (`flex: 200px` sets grow 1, an
+- [ ] From merges: `61aa8fb` CDP URL pattern matcher (done, see CDP Fetch), `fded066` (`flex: 200px` sets grow 1, an
       invalid `flex` keeps the cascade), `8a4d745` real bold faces and kerning (with
       `9a3d12e`), `322f46c`, `d04b661`, `ab19571`, `97f8f81`, `4c12826`, `716826c`
 - [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `35b9448`, `a2bfd32`,

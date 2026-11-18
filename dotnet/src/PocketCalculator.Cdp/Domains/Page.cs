@@ -328,6 +328,14 @@ public static partial class Page
             {
                 NetworkEvent networkEvent = networkEvents[i];
                 string rid = navRequestIds[i];
+                // upstream 2d323dd: only requests matching the Fetch.enable patterns pause, as in
+                // Chrome; no patterns means every request. Network reporting below is unaffected.
+                string pausedUrl = networkEvent.Redirects.Count != 0 ? networkEvent.Redirects[0].Url : networkEvent.Url;
+                if (!PocketCalculator.Js.Ops.FetchOps.ShouldIntercept(true, ctx.FetchIntercept.Patterns, pausedUrl))
+                {
+                    continue;
+                }
+
                 ctx.PendingEvents.Add(new CdpEvent
                 {
                     Method = "Fetch.requestPaused",

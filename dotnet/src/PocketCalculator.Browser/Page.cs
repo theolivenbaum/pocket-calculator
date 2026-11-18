@@ -351,7 +351,7 @@ public sealed partial class Page : IDisposable
         {
             foreach (string pattern in InterceptBlockPatterns)
             {
-                if (PageHelpers.UrlMatchesCdpPattern(pattern, url))
+                if (PocketCalculator.Js.Ops.FetchOps.FetchPatternMatches(pattern, url))
                 {
                     return true;
                 }

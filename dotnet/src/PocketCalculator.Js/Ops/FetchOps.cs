@@ -140,6 +140,100 @@ public static partial class FetchOps
         return null;
     }
 
+    /// <summary>
+    /// A CDP <c>Fetch.RequestPattern.urlPattern</c> (upstream 61aa8fb): <c>*</c> matches any
+    /// run, <c>?</c> exactly one character, and a backslash escapes the next one, with
+    /// backtracking so a later star can absorb what an earlier literal over-consumed. The
+    /// split-on-star matcher this replaced had false negatives, and had no <c>?</c> or escape.
+    /// <c>Network.setBlockedURLs</c> keeps <see cref="GlobMatch"/>, its own star-only dialect.
+    /// </summary>
+    public static bool FetchPatternMatches(string pattern, string url)
+    {
+        if (string.Equals(pattern, "*", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        // Rust walks chars (code points); here a literal compares UTF-16 units, which matches a
+        // surrogate pair unit by unit, and `?` and a star's retry step over a whole code point.
+        static int Width(string s, int i) =>
+            char.IsHighSurrogate(s[i]) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]) ? 2 : 1;
+
+        int p = 0;
+        int u = 0;
+        int starPattern = -1;
+        int starUrl = -1;
+        while (true)
+        {
+            if (p < pattern.Length && pattern[p] == '*')
+            {
+                p++;
+                starPattern = p;
+                starUrl = u;
+                continue;
+            }
+
+            if (p >= pattern.Length && u >= url.Length)
+            {
+                return true;
+            }
+
+            if (p < pattern.Length && u < url.Length)
+            {
+                if (pattern[p] == '?')
+                {
+                    p++;
+                    u += Width(url, u);
+                    continue;
+                }
+
+                int literal = pattern[p] == '\\' ? p + 1 : p;
+                if (literal < pattern.Length && pattern[literal] == url[u])
+                {
+                    p = literal + 1;
+                    u++;
+                    continue;
+                }
+            }
+
+            if (starPattern < 0 || starUrl >= url.Length)
+            {
+                return false;
+            }
+
+            starUrl += Width(url, starUrl);
+            p = starPattern;
+            u = starUrl;
+        }
+    }
+
+    /// <summary>
+    /// upstream 2d323dd: a scripted request pauses only when it matches a <c>Fetch.enable</c>
+    /// pattern; no patterns means every request.
+    /// </summary>
+    public static bool ShouldIntercept(bool enabled, List<string> patterns, string url)
+    {
+        if (!enabled)
+        {
+            return false;
+        }
+
+        if (patterns.Count == 0)
+        {
+            return true;
+        }
+
+        foreach (string pattern in patterns)
+        {
+            if (FetchPatternMatches(pattern, url))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>The CDP <c>Network.setBlockedURLs</c> glob dialect.</summary>
     internal static bool GlobMatch(string pattern, string url)
     {
@@ -466,12 +560,13 @@ public static partial class FetchOps
         var pageInFlight = gs.PageInFlight;
 
         (IInterceptSink Sink, string RequestId)? intercept = null;
-        if (gs.InterceptEnabled && gs.InterceptTx is { } sink)
+        var interceptThis = ShouldIntercept(gs.InterceptEnabled, gs.InterceptBlockPatterns, url);
+        if (interceptThis && gs.InterceptTx is { } sink)
         {
             gs.InterceptCounter++;
             intercept = (sink, "intercept-" + gs.InterceptCounter.ToString(CultureInfo.InvariantCulture));
         }
-        else if (gs.InterceptEnabled)
+        else if (interceptThis)
         {
             gs.InterceptCounter++;
         }

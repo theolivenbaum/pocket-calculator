@@ -109,7 +109,7 @@ public sealed partial class PocketCalculatorJsRuntime
             // Same policy as Page.ShouldBlockUrl: Network.setBlockedURLs patterns, and
             // while Fetch.enable is active also its patterns.
             bool blocked = MatchesAnyPattern(state.BlockedUrls, miss.Url)
-                || (state.InterceptEnabled && MatchesAnyPattern(state.InterceptBlockPatterns, miss.Url));
+                || (state.InterceptEnabled && MatchesAnyFetchPattern(state.InterceptBlockPatterns, miss.Url));
             if (blocked || !PageRenderResourceUrlAllowed(state.Url, miss.Url))
             {
                 SeedMissing(state, miss);
@@ -446,6 +446,19 @@ public sealed partial class PocketCalculatorJsRuntime
         RenderResourceEvent[] taken = [.. events];
         events.Clear();
         return taken;
+    }
+
+    private static bool MatchesAnyFetchPattern(List<string> patterns, string url)
+    {
+        foreach (string pattern in patterns)
+        {
+            if (FetchOps.FetchPatternMatches(pattern, url))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool MatchesAnyPattern(List<string> patterns, string url)
