@@ -343,7 +343,7 @@ Security (exposed today unless noted):
       tree builder's foreign-attribute table); `efb57d8` is a Rust-side perf change, skipped
 - [x] `5bfac24` - fetch SSRF gate fails open when `UrlRecord.Parse` rejects the URL
       (`FetchOps.cs`, initial URL and intercept rewrite)
-- [ ] `1ee3ac1` - markdown extraction is 2^depth on nested tables, unbounded recursion
+- [x] `1ee3ac1` - markdown extraction is 2^depth on nested tables, unbounded recursion
 - [ ] `daac810` (+ merge `4724f4b`) - `setProperty`/`removeProperty` of an unchanged
       value must not rewrite `style`
 - [ ] `a449a80` - MCP refs must be checked against the recorded node

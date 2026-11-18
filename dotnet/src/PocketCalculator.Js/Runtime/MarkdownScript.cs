@@ -40,17 +40,55 @@ public static class MarkdownScript
             var h = __obscura_host.dom;
             function escText(s, inLink) { return h.mdText(s, inLink); }
             function safeUrl(url) { return h.mdUrl(url); }
-            function toMd(el, depth) {
+            // upstream 1ee3ac1: a row's cells are converted once, with the rest of its
+            // children (converting them again for the row made nested tables 2^depth), and
+            // past 128 levels the walk goes iterative so a deep DOM cannot exhaust the stack.
+            // `depth` here counts enclosing links (for escaping), so the nesting level that
+            // picks the iterative walk is a separate argument.
+            function toMd(el, depth, level) {
                 if (!el) return '';
-                var out = '';
                 var type = h.nodeType(el);
                 if (type === 3) return escText(h.get(el, 'textContent') || '', depth > 0);
                 if (type !== 1) return '';
+                if (level >= 128) return toMdIterative(el, depth);
                 var tag = h.lower(h.tagName(el) || '');
                 var children = '';
+                var cells = tag === 'tr' ? [] : null;
                 var cn = h.get(el, 'childNodes') || [];
                 var childDepth = tag === 'a' ? depth + 1 : depth;
-                for (var i = 0; i < cn.length; i++) children += toMd(cn[i], childDepth);
+                for (var i = 0; i < cn.length; i++) {
+                    var converted = toMd(cn[i], childDepth, level + 1);
+                    children += converted;
+                    if (cells && h.nodeType(cn[i]) === 1) cells.push(converted);
+                }
+                return finish(el, tag, children, cells);
+            }
+            function frameFor(el, depth) {
+                var tag = h.lower(h.tagName(el) || '');
+                return { node: el, tag: tag, childDepth: tag === 'a' ? depth + 1 : depth,
+                    kids: h.get(el, 'childNodes') || [], index: 0, children: '', cells: tag === 'tr' ? [] : null };
+            }
+            function toMdIterative(el, depth) {
+                var stack = [frameFor(el, depth)];
+                while (stack.length) {
+                    var frame = stack[stack.length - 1];
+                    if (frame.index < frame.kids.length) {
+                        var child = frame.kids[frame.index++];
+                        var type = h.nodeType(child);
+                        if (type === 3) frame.children += escText(h.get(child, 'textContent') || '', frame.childDepth > 0);
+                        else if (type === 1) stack[stack.length] = frameFor(child, frame.childDepth);
+                        continue;
+                    }
+                    var out = finish(frame.node, frame.tag, frame.children, frame.cells);
+                    stack.length = stack.length - 1;
+                    if (!stack.length) return out;
+                    var parent = stack[stack.length - 1];
+                    parent.children += out;
+                    if (parent.cells) parent.cells[parent.cells.length] = out;
+                }
+                return '';
+            }
+            function finish(el, tag, children, cells) {
                 children = h.mdCollapse(children);
                 switch(tag) {
                     case 'h1': return '\n# ' + h.trim(children) + '\n\n';
@@ -87,10 +125,7 @@ public static class MarkdownScript
                     case 'thead': case 'tbody': case 'tfoot': return children;
                     case 'tr':
                         var row = '';
-                        var tds = h.get(el, 'childNodes') || [];
-                        for (var j = 0, n = 0; j < tds.length; j++) {
-                            if (h.nodeType(tds[j]) === 1) row += (n++ ? ' | ' : '') + h.trim(toMd(tds[j], depth));
-                        }
+                        for (var j = 0; j < cells.length; j++) row += (j ? ' | ' : '') + h.trim(cells[j]);
                         return '| ' + row + ' |\n';
                     case 'th': case 'td': return children;
                     case 'script': case 'style': case 'noscript': case 'link': case 'meta': return '';
@@ -101,7 +136,7 @@ public static class MarkdownScript
                 }
             }
             var body = h.body() || h.documentElement();
-            var md = toMd(body, 0);
+            var md = toMd(body, 0, 0);
             md = h.trim(h.mdCollapse(md));
             return md;
         })()

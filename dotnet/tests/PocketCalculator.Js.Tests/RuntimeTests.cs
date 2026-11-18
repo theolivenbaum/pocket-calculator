@@ -16578,6 +16578,112 @@ public sealed partial class RuntimeTests
             result);
     }
 
+    private static string Markdown(RuntimeFixture fixture) =>
+        fixture.Runtime.EvaluateHost(MarkdownScript.HtmlToMarkdown)!.GetValue<string>();
+
+    // upstream 1ee3ac1: test_html_to_markdown_deep_dom
+    [Fact]
+    public void TestHtmlToMarkdownDeepDom()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
+        fixture.Runtime.Evaluate("""
+            (() => {
+                let child = document.createTextNode('deep leaf');
+                for (let i = 0; i < 12000; i++) {
+                    const parent = document.createElement('span');
+                    parent.appendChild(child);
+                    child = parent;
+                }
+                document.body.appendChild(child);
+            })()
+            """);
+        Assert.Equal("deep leaf", Markdown(fixture));
+    }
+
+    // upstream 1ee3ac1: test_html_to_markdown_deep_tables
+    [Fact]
+    public void TestHtmlToMarkdownDeepTables()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
+        fixture.Runtime.Evaluate("""
+            (() => {
+                let child = document.createTextNode('leaf');
+                for (let i = 0; i < 180; i++) {
+                    const table = document.createElement('table');
+                    const row = document.createElement('tr');
+                    const cell = document.createElement('td');
+                    cell.appendChild(child);
+                    row.appendChild(cell);
+                    table.appendChild(row);
+                    child = table;
+                }
+                document.body.appendChild(child);
+            })()
+            """);
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Equal(string.Concat(Enumerable.Repeat("| ", 180)) + "leaf" + string.Concat(Enumerable.Repeat(" |", 180)), Markdown(fixture));
+        // Converting every row's cells twice made this 2^180 work.
+        Assert.True(started.Elapsed < TimeSpan.FromSeconds(10), $"took {started.Elapsed}");
+    }
+
+    // upstream 1ee3ac1: test_html_to_markdown_deep_subtree_formatting
+    [Theory]
+    [InlineData(127)]
+    [InlineData(128)]
+    [InlineData(129)]
+    [InlineData(130)]
+    public void TestHtmlToMarkdownDeepSubtreeFormatting(int depth)
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
+        fixture.Runtime.Evaluate($$"""
+            (() => {
+                document.body.innerHTML = '';
+                let child = document.createElement('span');
+                child.innerHTML = '<h1>Title</h1><p>Hello <strong>world</strong></p><table><tr><td>A</td><td>B</td></tr></table>';
+                for (let i = 0; i < {{depth}}; i++) {
+                    const parent = document.createElement('span');
+                    parent.appendChild(child);
+                    child = parent;
+                }
+                document.body.appendChild(child);
+            })()
+            """);
+        Assert.Equal("# Title\n\nHello **world**\n\n| A | B |", Markdown(fixture));
+    }
+
+    // upstream 1ee3ac1: test_html_to_markdown_row_ignores_non_element_children
+    [Fact]
+    public void TestHtmlToMarkdownRowIgnoresNonElementChildren()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
+        fixture.Runtime.Evaluate("""
+            (() => {
+                const table = document.createElement('table');
+                const row = document.createElement('tr');
+                row.appendChild(document.createTextNode('ignored'));
+                row.appendChild(document.createComment('ignored'));
+                const cell = document.createElement('td');
+                cell.textContent = 'A';
+                row.appendChild(cell);
+                const span = document.createElement('span');
+                span.textContent = 'B';
+                row.appendChild(span);
+                table.appendChild(row);
+                document.body.appendChild(table);
+            })()
+            """);
+        Assert.Equal("| A | B |", Markdown(fixture));
+    }
+
+    // upstream 1ee3ac1: test_html_to_markdown_table_output
+    [Fact]
+    public void TestHtmlToMarkdownTableOutput()
+    {
+        using var fixture = RuntimeFixture.Setup(
+            "<html><body><table><tr><th>A</th><th>B</th></tr><tr><td>one <strong>bold</strong></td><td><a href='/two'>two</a></td></tr></table><p>tail</p></body></html>");
+        Assert.Equal("| A | B |\n| one **bold** | [two](/two) |\n\ntail", Markdown(fixture));
+    }
+
     [Fact]
     public void TestHtmlToMarkdownHeadings()
     {
