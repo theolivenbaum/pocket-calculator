@@ -140,6 +140,27 @@ public sealed class WordSpacingTests
         }
     }
 
+    /// <remarks>
+    /// Deviation from Rust, where controls inherit: Chromium's UA sheet resets
+    /// <c>word-spacing</c> on input, textarea, select and button (measured: 0px inside a
+    /// <c>word-spacing: 7px</c> paragraph).
+    /// </remarks>
+    [Fact]
+    public void FormControlsResetInheritedWordSpacing()
+    {
+        DomTree tree = HtmlParsing.ParseHtml("""
+            <p style="word-spacing:7px"><input id=i><button id=b>x</button><select id=s></select>
+            <textarea id=t></textarea><span id=sp>x</span></p>
+            """);
+        DomLayout layout = RenderDom.LayoutDom(tree, (800f, 200f));
+        foreach (string id in new[] { "i", "b", "s", "t" })
+        {
+            Assert.Equal(0f, layout.Styles[Id(tree, id)].WordSpacing);
+        }
+
+        Assert.Equal(7f, layout.Styles[Id(tree, "sp")].WordSpacing);
+    }
+
     [Theory]
     [InlineData("  A   B  C  ", "", 60f)]
     [InlineData("A&nbsp;B&nbsp;C", "", 60f)]

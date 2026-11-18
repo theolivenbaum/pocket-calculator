@@ -2373,6 +2373,9 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   overflow f32 (Chromium accepts `10%` and clamps `1e99px`), and neither reports
   `word-spacing` in getComputedStyle. Shaping adds the spacing in `TextShaper.ReadShapedGlyphs`
   (HarfBuzz) at the same place upstream's vendored cosmic-text `shape_fallback` does.
+- word-spacing on form controls: input, textarea, select and button reset it to 0 in their UA
+  arm (`ComputedStyle`), as Chromium's UA sheet does; upstream lets them inherit it. The same
+  UA rule resets `letter-spacing`, which both engines still inherit into controls.
 
 - Fetch main-document interception (`b76d966`, with the Continue profile part of `7341597`): a
   continued navigation keeps the navigation's own `ResourceRequest` (initiator, referrer, cookie

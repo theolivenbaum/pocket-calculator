@@ -249,6 +249,11 @@ public static partial class ComputedStyle
             style.FontFamily = "arial";
             style.FontFamilySpecified = "Arial";
             style.LineHeight = PocketCalculator.Render.LineHeight.Normal;
+            // DEVIATION from crates/obscura-render/src/style.rs (bf10c46), where a control
+            // inherits `word-spacing`: Chromium's UA sheet gives input, textarea, select and
+            // button `word-spacing: normal` (measured: a control in a `word-spacing: 7px`
+            // paragraph computes 0px). Set in every control arm below.
+            style.WordSpacing = 0f;
         }
         else if (tag is "meter" or "progress")
         {
@@ -272,6 +277,7 @@ public static partial class ComputedStyle
             style.FontFamily = "arial";
             style.FontFamilySpecified = "Arial";
             style.LineHeight = PocketCalculator.Render.LineHeight.Normal;
+            style.WordSpacing = 0f;
             style.Padding = new Edges(1.0f, 20.0f, 1.0f, 2.0f);
             style.Border = new Edges(1.0f, 1.0f, 1.0f, 1.0f);
             style.BorderModel = style.BorderModel with
@@ -296,6 +302,7 @@ public static partial class ComputedStyle
             style.FontFamily = "arial";
             style.FontFamilySpecified = "Arial";
             style.LineHeight = PocketCalculator.Render.LineHeight.Normal;
+            style.WordSpacing = 0f;
             style.Padding = new Edges(1.0f, 2.0f, 1.0f, 2.0f);
 
             // Chromium's UA sheet gives `input` `border: 2px inset ButtonBorder`, and on an
@@ -342,6 +349,7 @@ public static partial class ComputedStyle
             style.FontFamily = "monospace";
             style.FontFamilySpecified = "monospace";
             style.LineHeight = PocketCalculator.Render.LineHeight.Normal;
+            style.WordSpacing = 0f;
             style.WhiteSpace = PocketCalculator.Render.WhiteSpace.PreWrap;
             style.BoxSizing = BoxSizing.BorderBox;
             style.Padding = new Edges(2.0f, 2.0f, 2.0f, 2.0f);
