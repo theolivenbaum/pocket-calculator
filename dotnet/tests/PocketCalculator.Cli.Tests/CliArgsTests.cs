@@ -269,4 +269,12 @@ public sealed class CliArgsTests
         Assert.Equal("C", CliOptions.MergeUserAgent(null, "C"));
         Assert.Null(CliOptions.MergeUserAgent(null, null));
     }
+    // Upstream 5171717.
+    [Fact]
+    public void Parsed_mcp_accepts_repeated_font_directories()
+    {
+        var mcp = Assert.IsType<CliCommand.Mcp>(
+            Parse("obscura", "mcp", "--font-dir", "/fonts/cjk", "--font-dir", "/fonts/brand").Command);
+        Assert.Equal(["/fonts/cjk", "/fonts/brand"], mcp.FontDirs);
+    }
 }

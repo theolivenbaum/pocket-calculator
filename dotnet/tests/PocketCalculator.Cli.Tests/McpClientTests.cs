@@ -201,6 +201,23 @@ public sealed class McpClientTests
 
     // -- tests ----------------------------------------------------------------
 
+    // Upstream 5171717: a bad --font-dir fails before either transport starts.
+    [Fact]
+    public void Mcp_font_directory_is_validated_before_either_transport_starts()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), $"obscura-missing-fonts-{Environment.ProcessId}");
+        Assert.False(Directory.Exists(missing));
+        foreach (var http in new[] { false, true })
+        {
+            string[] arguments = http
+                ? ["mcp", "--font-dir", missing, "--http", "--port", "0"]
+                : ["mcp", "--font-dir", missing];
+            var run = CliProcess.Run(arguments);
+            Assert.False(run.Success);
+            Assert.Contains("Font directory does not exist", run.StdErr, StringComparison.Ordinal);
+        }
+    }
+
     // Upstream 604d30b: closing the stdio transport saves the cookies an agent set after
     // the last navigation into the --storage-dir profile.
     [Fact]

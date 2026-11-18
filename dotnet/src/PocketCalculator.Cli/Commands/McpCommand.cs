@@ -11,6 +11,7 @@ public static class McpCommand
     {
         var proxy = CliOptions.MergeProxy(args.Proxy, mcp.Proxy);
         var userAgent = CliOptions.MergeUserAgent(args.UserAgent, mcp.UserAgent);
+        CliOptions.ConfigureFontDirectories(mcp.FontDirs);
         HardDeadline.ArmHangExit();
         // `pocket-calculator mcp` builds its BrowserContext from the environment, so the
         // root profile flag is handed over explicitly (upstream 7500e6d).

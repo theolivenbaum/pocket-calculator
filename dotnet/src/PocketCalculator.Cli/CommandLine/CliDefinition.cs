@@ -239,6 +239,15 @@ public static class CliDefinition
 
     public static class Mcp
     {
+        // Upstream 5171717: the same repeatable flag `serve` has, validated before either
+        // transport starts.
+        public static readonly Option<string[]> FontDirs = new("--font-dir")
+        {
+            Description = "Recursively load additional font files before the first render.",
+            HelpName = "DIR",
+            Arity = ArgumentArity.ZeroOrMore,
+            AllowMultipleArgumentsPerToken = false,
+        };
         public static readonly Option<bool> Http = new("--http");
         public static readonly Option<string> Host = new("--host") { DefaultValueFactory = _ => "127.0.0.1" };
         public static readonly Option<int> Port = new("--port")
@@ -300,7 +309,7 @@ public static class CliDefinition
 
     private static Command BuildMcp() => new("mcp", "Run the MCP automation server")
     {
-        Mcp.Http, Mcp.Host, Mcp.Port, Mcp.Proxy, Mcp.UserAgent, Mcp.TlsCert, Mcp.TlsKey,
+        Mcp.FontDirs, Mcp.Http, Mcp.Host, Mcp.Port, Mcp.Proxy, Mcp.UserAgent, Mcp.TlsCert, Mcp.TlsKey,
     };
 
     /// <summary>

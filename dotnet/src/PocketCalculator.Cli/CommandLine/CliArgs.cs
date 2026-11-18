@@ -124,6 +124,9 @@ public abstract record CliCommand
         /// <summary><c>--http</c>.</summary>
         public bool Http { get; init; }
 
+        /// <summary><c>--font-dir</c>, in order (upstream 5171717).</summary>
+        public IReadOnlyList<string> FontDirs { get; init; } = [];
+
         /// <summary><c>--host</c>.</summary>
         public required string Host { get; init; }
 
@@ -255,6 +258,7 @@ public sealed record CliArgs
                 },
                 "mcp" => new CliCommand.Mcp
                 {
+                    FontDirs = result.GetValue(CliDefinition.Mcp.FontDirs) ?? [],
                     Http = result.GetValue(CliDefinition.Mcp.Http),
                     Host = result.GetValue(CliDefinition.Mcp.Host) ?? "127.0.0.1",
                     Port = result.GetValue(CliDefinition.Mcp.Port),
