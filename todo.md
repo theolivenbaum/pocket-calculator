@@ -331,7 +331,7 @@ Security (exposed today unless noted):
 - [x] `8162c0f` - cookie `Expires` year loop is unbounded (`CookieJar.TryParseHttpDate`),
       day 0 underflows; validate RFC 6265 ranges first. Also `Max-Age` overflow and the
       400-day cap; IP literals must not suffix-match in `DomainMatches`
-- [ ] `281470c` - grid `DistributeSpaceUpToLimits` can loop forever and has no
+- [x] `281470c` - grid `DistributeSpaceUpToLimits` can loop forever and has no
       `WorkCancellation` check; with `025088c` (`span 0` grid placements)
 - [ ] `e83d803` - CDP watchdog is not armed for a command that resumes a suspended page
 - [ ] `8dbf7e1`, `cf5067e`, `f2bf4c3`, `d45bee5`, `f152fcf`, `efb57d8` - serializer:

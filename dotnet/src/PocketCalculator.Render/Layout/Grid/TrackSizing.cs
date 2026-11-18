@@ -1410,7 +1410,7 @@ internal static class TrackSizing
     }
 
     /// <summary>Helper function for distributing space to tracks evenly.</summary>
-    private static float DistributeSpaceUpToLimits(
+    internal static float DistributeSpaceUpToLimits(
         float spaceToDistribute,
         TrackSlice tracks,
         Func<GridTrack, bool> trackIsAffected,
@@ -1423,6 +1423,12 @@ internal static class TrackSizing
 
         while (spaceToDistribute > Threshold)
         {
+            // upstream 281470c: an iteration that changes no track and leaves the remaining
+            // space where it was repeats forever when f32 rounding absorbs every increase.
+            // The watchdog cannot interrupt C#, so the loop also observes the pass's token.
+            PocketCalculator.Dom.WorkCancellation.ThrowIfCancellationRequested();
+            float spaceBefore = spaceToDistribute;
+            bool tracksChanged = false;
             float trackDistributionProportionSum = 0.0f;
             for (int i = 0; i < tracks.Count; i++)
             {
@@ -1482,9 +1488,18 @@ internal static class TrackSizing
                 float increase = iterationItemIncurredIncrease * trackDistributionProportion(track);
                 if (increase > 0.0f && currentSize + increase <= limit + Threshold)
                 {
+                    float previousIncrease = track.ItemIncurredIncrease;
                     track.ItemIncurredIncrease += increase;
+                    tracksChanged |= track.ItemIncurredIncrease != previousIncrease;
                     spaceToDistribute -= increase;
                 }
+            }
+
+            // Saturating a track is progress even if subtracting its small increase from the
+            // remaining space rounds away.
+            if (!tracksChanged && spaceToDistribute >= spaceBefore)
+            {
+                break;
             }
         }
 
