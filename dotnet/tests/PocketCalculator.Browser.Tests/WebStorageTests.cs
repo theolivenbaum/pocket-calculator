@@ -78,4 +78,33 @@ public sealed class WebStorageTests
                 })()
                 """));
     }
+
+    // upstream 677f6d2: origin_storage_rejects_over_budget_profiles_without_replacing_valid_data
+    // (the set path): at most 256 storage keys and 32 MiB across them, beside the per-key quota.
+    [Fact]
+    public void StorageSetIsBoundedAcrossOrigins()
+    {
+        var countLimited = new PocketCalculator.Js.Ops.WebStorage();
+        for (var i = 0; i < PocketCalculator.Js.Ops.WebStorage.MaxAreas; i++)
+        {
+            Assert.True(countLimited.Set($"https://origin-{i}.test", "key", "value"));
+        }
+
+        Assert.False(countLimited.Set("https://extra.test", "key", "value"));
+        Assert.Null(countLimited.Get("https://extra.test", "key"));
+        countLimited.Remove("https://origin-0.test", "key");
+        Assert.True(countLimited.Set("https://extra.test", "key", "value"), "an emptied origin frees its slot");
+
+        var totalLimited = new PocketCalculator.Js.Ops.WebStorage();
+        var big = new string('x', (int)PocketCalculator.Js.Ops.WebStorage.QuotaChars - 3);
+        for (var i = 0; i < 6; i++)
+        {
+            Assert.True(totalLimited.Set($"https://large-{i}.test", "key", big));
+        }
+
+        Assert.False(totalLimited.Set("https://extra.test", "key", big));
+        Assert.Null(totalLimited.Get("https://extra.test", "key"));
+        totalLimited.Clear("https://large-0.test");
+        Assert.True(totalLimited.Set("https://extra.test", "key", big), "clearing an origin returns its budget");
+    }
 }

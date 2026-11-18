@@ -352,7 +352,8 @@ Security (exposed today unless noted):
       every relayout
 - [x] `0e17221` + robots in `b3475a5`, `8dd9d48`, `9e0b8b6` - bounded robots cache, body
       cap, agent grouping and matching (rewrite `Robots.cs` once)
-- [ ] `677f6d2` budgets - Web Storage total and per-origin caps
+- [x] `677f6d2` budgets - Web Storage total and per-origin caps (persistence and retry parts
+      of `677f6d2` stay with `f661c2e` under Storage)
 - [x] `b3475a5`, `7a8c0e3`, `fd5c729` - cookie prefix rules on the import path; a
       public-suffix import is kept host-only instead of dropped
 - [x] `1922f4a` - loopback counts as a secure cookie context

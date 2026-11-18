@@ -19,6 +19,17 @@ public sealed class WebStorage
     /// <summary>Chromium's per-origin quota, in UTF-16 code units of keys plus values.</summary>
     public const long QuotaChars = 5L * 1024 * 1024;
 
+    /// <summary>
+    /// Budget across every storage key of this set (upstream 677f6d2: 32 MiB). Per-key quota
+    /// alone let iframes on many origins grow a long-lived context without bound.
+    /// </summary>
+    public const long TotalQuotaChars = 32L * 1024 * 1024;
+
+    /// <summary>Most storage keys one set holds (upstream 677f6d2).</summary>
+    public const int MaxAreas = 256;
+
+    private long _totalChars;
+
     private readonly Dictionary<string, Area> _areas = new(StringComparer.Ordinal);
     private readonly Lock _gate = new();
 
@@ -97,17 +108,30 @@ public sealed class WebStorage
         ArgumentNullException.ThrowIfNull(value);
         lock (_gate)
         {
-            if (!_areas.TryGetValue(storageKey, out var area))
+            var exists = _areas.TryGetValue(storageKey, out var area);
+            if (!exists && _areas.Count >= MaxAreas)
+            {
+                return false;
+            }
+
+            string? old = null;
+            if (area is not null && area.Items.TryGetValue(key, out old) && old == value)
+            {
+                return true;
+            }
+
+            long previous = old is null ? 0 : key.Length + old.Length;
+            long next = (area?.Chars ?? 0) - previous + key.Length + value.Length;
+            long nextTotal = _totalChars - previous + key.Length + value.Length;
+            if (next > QuotaChars || nextTotal > TotalQuotaChars)
+            {
+                return false;
+            }
+
+            if (area is null)
             {
                 area = new Area();
                 _areas[storageKey] = area;
-            }
-
-            long previous = area.Items.TryGetValue(key, out var old) ? key.Length + old.Length : 0;
-            long next = area.Chars - previous + key.Length + value.Length;
-            if (next > QuotaChars)
-            {
-                return false;
             }
 
             if (old is null)
@@ -117,6 +141,7 @@ public sealed class WebStorage
 
             area.Items[key] = value;
             area.Chars = next;
+            _totalChars = nextTotal;
             return true;
         }
     }
@@ -132,6 +157,11 @@ public sealed class WebStorage
             {
                 area.Order.Remove(key);
                 area.Chars -= key.Length + old.Length;
+                _totalChars -= key.Length + old.Length;
+                if (area.Order.Count == 0)
+                {
+                    _areas.Remove(storageKey);
+                }
             }
         }
     }
@@ -142,7 +172,10 @@ public sealed class WebStorage
         ArgumentNullException.ThrowIfNull(storageKey);
         lock (_gate)
         {
-            _areas.Remove(storageKey);
+            if (_areas.Remove(storageKey, out var area))
+            {
+                _totalChars -= area.Chars;
+            }
         }
     }
 }
