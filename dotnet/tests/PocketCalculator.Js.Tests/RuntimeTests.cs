@@ -17980,9 +17980,7 @@ public sealed partial class RuntimeTests
 
     /// Playwright >= 1.25 calls `element.checkVisibility(...)` before every
     /// input event. If the method isn't defined Playwright retries until its
-    /// action timeout fires. Without a layout engine we can't compute it
-    /// properly, so the stub always returns true — still strictly better
-    /// than the undefined path.
+    /// action timeout fires, so it must exist and be true for plain elements.
     [Fact]
     public void ElementCheckVisibilityIsCallable()
     {
@@ -18009,6 +18007,56 @@ public sealed partial class RuntimeTests
         Assert.Equal(
             "function",
             rt.Evaluate("typeof document.getElementById('x').checkVisibility")!.GetValue<string>());
+    }
+
+    /// Issue #1067 (upstream f019ebe): checkVisibility() follows the CSSOM View algorithm:
+    /// elements without a box (display:none on self or a flat-tree ancestor, display:contents,
+    /// disconnected) are hidden, and the opacity / visibility options are honored, including
+    /// their legacy aliases. The last three cases are the port's own; every value is Chromium
+    /// 157's for the same markup.
+    [Fact]
+    public void ElementCheckVisibilityFollowsCssBoxesAndOptions()
+    {
+        using var fixture = RuntimeFixture.Setup(
+            """
+            <div style="display:none"><a id="a" href="/x">hidden</a></div>
+            <div style="visibility:hidden"><a id="b" href="/x">invisible</a></div>
+            <div style="opacity:0"><span id="c">transparent</span></div>
+            <span id="e" style="display:contents">contents</span>
+            <span id="f" style="display:none">self none</span>
+            <div style="visibility:hidden"><span id="g" style="visibility:visible">back</span></div>
+            <a id="v" href="/x">visible</a>
+            <div id="host"></div>
+            """);
+        var result = fixture.Runtime.Evaluate(
+            """
+            (() => {
+              const $ = id => document.getElementById(id);
+              const root = $('host').attachShadow({mode: 'open'});
+              root.innerHTML = '<div style="display:none"><slot></slot></div><p id="sp" style="opacity:0">x</p>';
+              $('host').innerHTML = '<i id="slotted">s</i>';
+              return JSON.stringify([
+                $('a').checkVisibility(),
+                $('b').checkVisibility(),
+                $('b').checkVisibility({visibilityProperty: true}),
+                $('b').checkVisibility({checkVisibilityCSS: true}),
+                $('c').checkVisibility(),
+                $('c').checkVisibility({opacityProperty: true}),
+                $('c').checkVisibility({checkOpacity: true}),
+                $('e').checkVisibility(),
+                $('f').checkVisibility(),
+                $('g').checkVisibility({visibilityProperty: true}),
+                $('v').checkVisibility({visibilityProperty: true, opacityProperty: true}),
+                document.createElement('div').checkVisibility(),
+                $('slotted').checkVisibility(),
+                root.getElementById('sp').checkVisibility({checkOpacity: true}),
+                root.getElementById('sp').checkVisibility(),
+              ]);
+            })()
+            """)!.GetValue<string>();
+        Assert.Equal(
+            "[false,true,false,false,true,false,false,false,false,true,true,false,false,false,true]",
+            result);
     }
 
     /// Playwright's `getByRole` / `getByLabel` locators resolve via ARIA

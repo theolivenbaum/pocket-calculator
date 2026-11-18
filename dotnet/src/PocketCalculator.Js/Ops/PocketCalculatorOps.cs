@@ -378,6 +378,8 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
             nids => RenderOps.OpIntersectionObserverMeasurements(Page, S(nids))));
         Bind(ops, "op_computed_style", (Func<object?, string>)(
             nid => RenderOps.OpComputedStyle(Page, S(nid))));
+        Bind(ops, "op_check_visibility", (Func<object?, object?, object?, bool>)(
+            (nid, opacity, visibility) => RenderOps.OpCheckVisibility(Page, U32(nid), B(opacity), B(visibility))));
 
         // Additive: op_computed_style keeps its one-argument shape and its payload, because the
         // op protocol is a contract. getComputedStyle() only reaches for this second op when it
@@ -585,6 +587,8 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
             nids => RenderOps.OpIntersectionObserverMeasurements(document, S(nids))));
         Bind(ops, "op_computed_style", (Func<object?, string>)(
             nid => RenderOps.OpComputedStyle(document, S(nid))));
+        Bind(ops, "op_check_visibility", (Func<object?, object?, object?, bool>)(
+            (nid, opacity, visibility) => RenderOps.OpCheckVisibility(document, U32(nid), B(opacity), B(visibility))));
         Bind(ops, "op_computed_style_pseudo", (Func<object?, object?, string>)(
             (nid, pseudo) => RenderOps.OpComputedStylePseudo(document, S(nid), S(pseudo))));
         Bind(ops, "op_computed_style_static", (Func<object?, string>)(

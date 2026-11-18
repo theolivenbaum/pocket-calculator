@@ -587,6 +587,23 @@ public static class RenderOps
         ComputedStyleSnapshot(state, nidStr, null, "op_computed_style");
 
     /// <summary>
+    /// <c>op_check_visibility</c> (upstream f019ebe). <c>Element.checkVisibility()</c> in one
+    /// native call over the prepared render; Playwright calls it before every action.
+    /// </summary>
+    public static bool OpCheckVisibility(
+        PocketCalculatorState state, uint nid, bool checkOpacity, bool checkVisibilityCss) => OpGuard.Run(
+        "op_check_visibility",
+        () =>
+        {
+            ArgumentNullException.ThrowIfNull(state);
+            RenderState.SampleLiveDocumentAnimations(state);
+            return RenderState.EnsurePreparedRender(state) is { } prepared
+                && state.Dom is { } dom
+                && prepared.CheckVisibility(dom, NodeId.New(nid), checkOpacity, checkVisibilityCss);
+        },
+        false);
+
+    /// <summary>
     /// <c>op_computed_style_pseudo</c>. The same snapshot for one pseudo-element of a node.
     /// Separate from <c>op_computed_style</c> so that op keeps its one-argument shape and its
     /// payload byte for byte; an unrecognised pseudo-element name answers with the empty string,

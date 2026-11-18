@@ -2492,6 +2492,9 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   root-scrolled sticky box reports 80px where classic-scrollbar Chromium reports 78.5px.
   Sticky paint still uses the scrollport as the percentage basis (upstream changes only the
   computed value).
+- checkVisibility (`f019ebe`): `op_check_visibility` is also bound per frame document, so a
+  frame realm answers about its own nodes. Inherited computed visibility was already in the
+  port (`ComputedVisibilityHidden`). As upstream, `content-visibility: hidden` is not consulted.
 
 ### Operator font directories load per render pass, not into a cached base database
 

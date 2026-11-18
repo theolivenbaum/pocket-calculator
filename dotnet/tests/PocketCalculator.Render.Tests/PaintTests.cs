@@ -3986,6 +3986,54 @@ public class PaintTests
         Assert.Equal("0px", Computed("sub")["word-spacing"]);
     }
 
+    /// <summary>Upstream f019ebe: computed visibility is the inherited value.</summary>
+    [Fact]
+    public void ComputedVisibilityReportsInheritedValue()
+    {
+        DomTree tree = Parse(
+            """
+            <html><head><style>.h{visibility:hidden}</style></head><body>
+                <div class="h"><span id="inherited">a</span>
+                <span id="restored" style="visibility:visible">b</span></div>
+                <span id="plain">c</span></body></html>
+            """);
+        RenderResourceCache resources = new();
+        PreparedRender prepared = RenderPaint.PrepareDom(tree, (80f, 50f), null, resources)!;
+        string Visibility(string id) => prepared.ComputedStyle(ById(tree, id))!["visibility"];
+
+        Assert.Equal("hidden", Visibility("inherited"));
+        Assert.Equal("visible", Visibility("restored"));
+        Assert.Equal("visible", Visibility("plain"));
+    }
+
+    /// <summary>Upstream f019ebe: checkVisibility() over the retained cascade.</summary>
+    [Fact]
+    public void CheckVisibilityUsesAncestorDisplayOpacityAndComputedVisibility()
+    {
+        DomTree tree = Parse(
+            """
+            <html><head><style>.n{display:none}.h{visibility:hidden}.o{opacity:0}
+                .c{display:contents}</style></head><body>
+                <div class="n"><span id="under-none">a</span></div>
+                <div class="h"><span id="under-hidden">b</span></div>
+                <div class="o"><span id="under-transparent">c</span></div>
+                <span id="contents" class="c">d</span>
+                <span id="plain">e</span></body></html>
+            """);
+        RenderResourceCache resources = new();
+        PreparedRender prepared = RenderPaint.PrepareDom(tree, (80f, 50f), null, resources)!;
+        bool Check(string id, bool opacity, bool visibility) =>
+            prepared.CheckVisibility(tree, ById(tree, id), opacity, visibility);
+
+        Assert.False(Check("under-none", false, false));
+        Assert.True(Check("under-hidden", false, false));
+        Assert.False(Check("under-hidden", false, true));
+        Assert.True(Check("under-transparent", false, false));
+        Assert.False(Check("under-transparent", true, false));
+        Assert.False(Check("contents", false, false));
+        Assert.True(Check("plain", true, true));
+    }
+
     [Fact]
     public void PaintsInlineSvgWithFrameworkColonAttribute()
     {

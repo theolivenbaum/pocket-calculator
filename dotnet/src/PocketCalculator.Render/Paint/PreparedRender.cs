@@ -995,6 +995,43 @@ public sealed partial class PreparedRender
     public Dictionary<string, string>? ComputedStyle(NodeId id) => ComputedStyle(id, null);
 
     /// <summary>
+    /// CSSOM View <c>checkVisibility()</c> over the retained cascade (upstream f019ebe). An
+    /// element without a style, with <c>display: contents</c>, or under a <c>display: none</c>
+    /// flat-tree ancestor has no box. <c>content-visibility: hidden</c> is not consulted: the
+    /// renderer paints that content.
+    /// </summary>
+    /// <param name="tree">The document the render was prepared from.</param>
+    /// <param name="id">The element.</param>
+    /// <param name="checkOpacity">Whether an ancestor-or-self <c>opacity: 0</c> hides it.</param>
+    /// <param name="checkVisibilityCss">Whether a computed <c>visibility: hidden</c> hides it.</param>
+    public bool CheckVisibility(DomTree tree, NodeId id, bool checkOpacity, bool checkVisibilityCss)
+    {
+        ArgumentNullException.ThrowIfNull(tree);
+        if (!Layout.Styles.TryGetValue(id, out LayoutStyle? own)
+            || own.DisplayContents
+            || (checkVisibilityCss && own.ComputedVisibilityHidden))
+        {
+            return false;
+        }
+
+        NodeId document = tree.Document;
+        NodeId? current = id;
+        for (int guard = 0; guard <= tree.Count && current is { } node && node != document; guard++)
+        {
+            if (!Layout.Styles.TryGetValue(node, out LayoutStyle? style)
+                || style.Display == PocketCalculator.Render.Display.None
+                || (checkOpacity && style.Opacity is <= 0f))
+            {
+                return false;
+            }
+
+            current = DomTraversal.RenderedParent(tree, node);
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// A compact CSSOM snapshot for an element, or for one of its pseudo-elements.
     /// </summary>
     /// <param name="id">The originating element.</param>
