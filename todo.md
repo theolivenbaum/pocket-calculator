@@ -280,9 +280,11 @@ Correctness:
 - [ ] `729c264`, `00dd6c7`, `2e752b9` (Chromium casing), `25af144`, `f645df2`,
       `88d2174` - URL setters, btoa, fetch method, parsererror text, enumerable IDL
       operations, HTMLSlotElement
-- [ ] `ec62004`, `a161a8d`, `f81c296`, `403356f`, `94e857b`/`b0ccbbe`, `dfc546d`,
+- [ ] `ec62004`, `a161a8d`, `403356f`, `94e857b`/`b0ccbbe`, `dfc546d`,
       `20a3e02`, `4383793`, `dc88742`, `fa0362b` - CDP input, accessibility, sessions,
       handles, by-value undefined, Fetch domain, history navigation
+- [x] `f81c296` - accessible names and CSS visibility in the AX tree: came with `3c56f59`
+      (see the `1a3169d..4eb1235` MCP line)
 - [ ] `af955b3` - release memory after the last CDP client disconnects
 - [ ] `d1e3e77`, `9ced496`, `61f8e68`, `bf11721`, `d6c9ef5` - multi-valued headers,
       `OBSCURA_BLOCK_TRACKERS`, MCP network and console history, navigator plugin interfaces
@@ -405,8 +407,18 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       slot, `__obscura_mcp_expression`, which a page could forge; its final version uses the
       CDP path too), errors are tool errors; `browser_wait_for_function` pumps page tasks
       between polls. Still open from `7500e6d`: MCP `--storage-dir` (with `604d30b`)
+- [x] MCP `3c56f59`: bounded actionable snapshots. The accessibility tree moved to
+      `PocketCalculator.Browser/Accessibility.cs` (`AccessibilityTree`, `AccessibilityContext`),
+      shared by CDP `getFullAXTree` and MCP; it brought `f81c296` along (names from labels,
+      `aria-labelledby` and content, `hidden` / `aria-hidden` / CSS `display` and `visibility`
+      excluded, childIds from parentIds), plus live checked/indeterminate/value, ARIA
+      states, and no password value. `browser_snapshot` lists ref lines within one
+      `max_chars` budget with URL and title capped at 256; `browser_interactive_elements`
+      uses the same lines; `extract_text` skips hidden text and `template`. Tool JSON ported
+      byte for byte. Not ported: the render fast path `accessibility_styles_without_layout`
+      (see Known deviations)
 - [ ] MCP:
-      `604d30b`, `5c27e76`, `c6402a7` console feed, `a3aea0a`, `3c56f59`, `5171717`,
+      `604d30b`, `5c27e76`, `c6402a7` console feed, `a3aea0a`, `5171717`,
       `cbc2f97`; `9855ef4` web_search stays opt-in
 - [ ] CLI and workers: `11d6ea8` + `afb0d61`, `ec0186b`, `1949e9b`, `f2b9e99`, `4b14a76`,
       `0f27e69`, `9a6dd86`, `52d8ddd`, `1b259b9` failed-save log
@@ -2240,6 +2252,19 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   maps two-digit years (70-99 to 19xx, 0-69 to 20xx) like Chromium, where upstream rejects
   them; a pre-1970 date expires the cookie. Both `Expires` and `Max-Age` are capped at 400
   days (Chromium 104+); upstream stores any expiry.
+- Accessibility (`3c56f59`, with `f81c296`): CSS visibility comes from the prepared render
+  every time (`PocketCalculatorJsRuntime.AccessibilityStyles`). Upstream first tries
+  `accessibility_styles_without_layout`, a cascade-only read for documents without
+  animations, container queries or shadow-root styles; it is a memory and time saving with
+  the same answer, not ported yet. The read runs like a capture (isolate lock, work
+  cancellation, synchronous resource loading off).
+- Accessibility live control state: upstream reads `form_control_state` on the DOM tree. The
+  port reads the dirty value and checked maps `FormStateMirror` already mirrors, and adds a
+  third mirror for `_formIndeterminate` (op_dom `set_form_indeterminate`, a port-only command
+  bootstrap.js never calls), so an indeterminate checkbox reports `checked: mixed`.
+- AXNode key order: Rust's `serde_json` map sorts keys; the port keeps its own insertion order
+  (nodeId, ignored, role, parentId, name, value, properties, childIds, backendDOMNodeId), as
+  before. The values are the same.
 
 ### Operator font directories load per render pass, not into a cached base database
 

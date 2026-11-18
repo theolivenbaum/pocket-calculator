@@ -64,6 +64,7 @@ internal static class FormStateMirror
               });
               globalThis._formValues = mirror('set_form_value', (v) => toString(v));
               globalThis._formChecked = mirror('set_form_checked', (v) => (v ? 'true' : 'false'));
+              globalThis._formIndeterminate = mirror('set_form_indeterminate', (v) => (v ? 'true' : 'false'));
             })
             """ + "(" + id + ");");
     }

@@ -344,6 +344,156 @@ public sealed class LibTests
         Assert.StartsWith("condition met after ", result, StringComparison.Ordinal);
     }
 
+    private static IEnumerable<string> RefLines(string snapshot) =>
+        snapshot.Split('\n').Where(line => line.StartsWith("ref=", StringComparison.Ordinal));
+
+    private static string RefOf(string line) => line.Split(' ')[0]["ref=".Length..];
+
+    private static string SnapshotContent(string snapshot) =>
+        snapshot[(snapshot.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+
+    // upstream 3c56f59: snapshot_references_are_actionable_without_an_extra_listing
+    [Fact]
+    public async Task SnapshotReferencesAreActionableWithoutAnExtraListing()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync(
+            "data:text/html,<label for=q>Work email</label><input id=q><button aria-label='Save account' onclick='window.saved=true'>Unhelpful text</button>");
+        var snapshot = Tools.Snapshot(JsonNode.Parse("{}"), state);
+        var action = RefLines(snapshot).FirstOrDefault(line => line.Contains("Save account", StringComparison.Ordinal));
+        Assert.True(action is not null, "snapshot must include an accessible name and usable reference");
+        Assert.True(
+            RefLines(snapshot).Any(line => line.Contains("Work email", StringComparison.Ordinal)),
+            $"associated labels must name fields: {snapshot}");
+        await Tools.ClickAsync(new JsonObject { ["ref"] = RefOf(action) }, state);
+        Assert.True(state.PageMut().Evaluate("window.saved").AsBool());
+    }
+
+    // upstream 3c56f59: snapshot_exposes_live_states_without_password_values
+    [Fact]
+    public async Task SnapshotExposesLiveStatesWithoutPasswordValues()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync(
+            "data:text/html,<input id=c type=checkbox checked aria-label=Consent><input id=f value=old aria-label=Account><input id=p type=password aria-label=Password><button disabled>Blocked</button><div role=tab aria-selected=true>Overview</div><button aria-expanded=false>Details</button>");
+        state.PageMut().Evaluate(
+            "(function(){document.getElementById('c').checked=false;document.getElementById('f').value='fresh';document.getElementById('p').value='private-password';return true;})()");
+        var snapshot = Tools.Snapshot(JsonNode.Parse("{}"), state);
+        foreach (var (label, detail) in new[]
+        {
+            ("Consent", "checked=false"), ("Account", "value=\"fresh\""), ("Blocked", "disabled=true"),
+            ("Overview", "selected=true"), ("Details", "expanded=false"),
+        })
+        {
+            Assert.True(
+                RefLines(snapshot).Any(line => line.Contains(label, StringComparison.Ordinal) && line.Contains(detail, StringComparison.Ordinal)),
+                $"missing {label} {detail}: {snapshot}");
+        }
+
+        Assert.DoesNotContain("private-password", snapshot, StringComparison.Ordinal);
+    }
+
+    // upstream 3c56f59: snapshot_budget_bounds_metadata_and_never_splits_a_reference
+    [Fact]
+    public async Task SnapshotBudgetBoundsMetadataAndNeverSplitsAReference()
+    {
+        using var state = new BrowserState(null, null, false);
+        var html = $"<title>{string.Concat(Enumerable.Repeat("\u754c", 1000))}</title><button>Continue</button><p>{string.Concat(Enumerable.Repeat("Body ", 2000))}</p>";
+        await state.PageMut().NavigateAsync($"data:text/html,{html}");
+        var snapshot = Tools.Snapshot(JsonNode.Parse("""{"max_chars":96}"""), state);
+        Assert.True(
+            snapshot.EnumerateRunes().Count() < 900,
+            $"metadata must not bypass the content budget: {snapshot.EnumerateRunes().Count()} characters");
+        foreach (var line in RefLines(snapshot))
+        {
+            Assert.True(state.InteractiveRefs.ContainsKey(RefOf(line)), "a truncated ref must never be advertised");
+            Assert.True(line.Contains("Continue", StringComparison.Ordinal), "whole descriptions must fit or be omitted");
+        }
+
+        Assert.True(
+            snapshot.Contains("truncated", StringComparison.Ordinal) || snapshot.Contains("omitted", StringComparison.Ordinal),
+            "omission must be explicit");
+        var empty = Tools.Snapshot(JsonNode.Parse("""{"max_chars":0}"""), state);
+        Assert.Empty(RefLines(empty));
+        Assert.True(empty.EnumerateRunes().Count() < 800);
+    }
+
+    // upstream 3c56f59: snapshot_omits_hidden_content_and_controls
+    [Fact]
+    public async Task SnapshotOmitsHiddenContentAndControls()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync(
+            "data:text/html,<p>Visible</p><div hidden><button>Hidden action</button><p>Hidden body</p></div><div aria-hidden=true>Private panel</div>");
+        var content = SnapshotContent(Tools.Snapshot(JsonNode.Parse("{}"), state));
+        foreach (var hidden in new[] { "Hidden action", "Hidden body", "Private panel" })
+        {
+            Assert.False(
+                content.Contains(hidden, StringComparison.Ordinal),
+                $"hidden content must not be exposed as visible context: {content}");
+        }
+
+        Assert.Contains("Visible", content, StringComparison.Ordinal);
+    }
+
+    // upstream 3c56f59: snapshots_preserve_generic_interactive_text_and_hidden_referenced_names
+    [Fact]
+    public async Task SnapshotsPreserveGenericInteractiveTextAndHiddenReferencedNames()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync(
+            "data:text/html,<div tabindex=0 onclick='window.opened=true'>Open <b>folder</b></div><span id=label hidden>Accessible details</span><button aria-labelledby=label>Other text</button>");
+        var snapshot = Tools.Snapshot(JsonNode.Parse("{}"), state);
+        Assert.True(
+            RefLines(snapshot).Any(line => line.Contains("Open folder", StringComparison.Ordinal)),
+            $"unlabelled generic controls must keep their visible text: {snapshot}");
+        Assert.True(
+            RefLines(snapshot).Any(line => line.Contains("Accessible details", StringComparison.Ordinal)),
+            $"hidden referenced text still supplies the visible control's name: {snapshot}");
+    }
+
+    // upstream 3c56f59: snapshots_apply_css_visibility_without_hiding_visible_overrides
+    // (cfg(feature = "render") in Rust; the port always renders)
+    [Fact]
+    public async Task SnapshotsApplyCssVisibilityWithoutHidingVisibleOverrides()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync(
+            "data:text/html,<style>.gone{display:none}.invisible{visibility:hidden}.shown{visibility:visible}</style><div class=gone><button>CSS hidden action</button></div><div class=invisible>Hidden text<button class=shown>Visible override</button></div>");
+        var content = SnapshotContent(Tools.Snapshot(JsonNode.Parse("{}"), state));
+        Assert.False(
+            content.Contains("CSS hidden action", StringComparison.Ordinal) || content.Contains("Hidden text", StringComparison.Ordinal),
+            content);
+        Assert.True(
+            RefLines(content).Any(line => line.Contains("Visible override", StringComparison.Ordinal)),
+            $"a visible descendant must remain actionable: {content}");
+    }
+
+    /// <summary>
+    /// Not upstream: the exact line shape of <c>browser_interactive_elements</c>, which is wire
+    /// text (ref, tag, debug-quoted name, role, type, name, value, states).
+    /// </summary>
+    [Fact]
+    public async Task InteractiveElementLinesCarryRoleAttributesAndStates()
+    {
+        using var state = new BrowserState(null, null, false);
+        await state.PageMut().NavigateAsync(
+            "data:text/html,<input type=checkbox name=agree aria-label='I \"agree\"' required><input type=password name=pw value=secret>");
+        var listing = Tools.InteractiveElements(JsonNode.Parse("{}"), state);
+        var lines = listing.Split('\n');
+        Assert.Equal(2, lines.Length);
+        Assert.Matches(
+            "^ref=e[0-9]+-1 input \"I \\\\\"agree\\\\\"\" role=checkbox type=\"checkbox\" name=\"agree\" checked=false required=true$",
+            lines[0]);
+        Assert.Matches("^ref=e[0-9]+-2 input \"\" role=textbox type=\"password\" name=\"pw\"$", lines[1]);
+        var limited = Tools.InteractiveElements(JsonNode.Parse("""{"limit":1}"""), state);
+        Assert.DoesNotContain("\n", limited, StringComparison.Ordinal);
+        Assert.Contains("role=checkbox", limited, StringComparison.Ordinal);
+        Assert.Equal(
+            "No interactive elements on this page.",
+            Tools.InteractiveElements(JsonNode.Parse("""{"limit":0}"""), state));
+    }
+
     // upstream a449a80: element_refs_reject_copied_attributes_before_clicking
     [Theory]
     [InlineData("button.replaceWith(copy)")]

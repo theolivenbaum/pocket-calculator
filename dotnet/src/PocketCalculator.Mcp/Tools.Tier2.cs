@@ -494,7 +494,7 @@ internal static partial class Tools
 
         var page = state.PageMut();
         var bodyText = page.WithDom(dom =>
-            TryQuery(dom, "body") is { } body ? TextExtraction.ExtractText(dom, body) : string.Empty)
+            TryQuery(dom, "body") is { } body ? TextExtraction.ExtractText(dom, body, null) : string.Empty)
             ?? string.Empty;
 
         var body = Encoding.UTF8.GetBytes(bodyText);

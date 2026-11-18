@@ -476,6 +476,16 @@ public static class DomOps
                 return "null";
             }
 
+            // Same, for `_formIndeterminate`: the accessibility tree reports an indeterminate
+            // checkbox as checked=mixed (upstream 3c56f59 reads form_control_state).
+            case "set_form_indeterminate":
+            {
+                dom.SetDirtyFormIndeterminate(
+                    ParseNodeOrZero(arg1),
+                    string.Equals(arg2, "true", StringComparison.Ordinal));
+                return "null";
+            }
+
             // The port's own get_external_stylesheet_css / set_external_stylesheet_css used to
             // sit here. They returned any sheet's bytes, cross-origin ones included, and are
             // replaced by upstream 04418a5's op_external_stylesheet_* ops (StylesheetOps).

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using PocketCalculator.Browser;
 using PocketCalculator.Dom;
 
 namespace PocketCalculator.Mcp;
@@ -52,7 +53,7 @@ internal static class TextExtraction
         return $"{head}\n...(truncated, {remaining.ToString(CultureInfo.InvariantCulture)} more chars)";
     }
 
-    private static int CharCount(string text)
+    internal static int CharCount(string text)
     {
         var count = 0;
         foreach (var _ in text.EnumerateRunes())
@@ -61,6 +62,25 @@ internal static class TextExtraction
         }
 
         return count;
+    }
+
+    /// <summary>Rust's <c>chars().take(n).collect()</c>: the first <paramref name="count"/> scalar values.</summary>
+    internal static string TakeChars(string text, int count)
+    {
+        var taken = 0;
+        var end = 0;
+        foreach (var rune in text.EnumerateRunes())
+        {
+            if (taken == count)
+            {
+                return text[..end];
+            }
+
+            end += rune.Utf16SequenceLength;
+            taken++;
+        }
+
+        return text;
     }
 
     internal static void AppendTextSegment(StringBuilder result, ref bool pendingSpace, string contents)
@@ -95,10 +115,11 @@ internal static class TextExtraction
 
     /// <summary>
     /// The readable text of a subtree: block elements break lines, script / style /
-    /// noscript subtrees are dropped, and runs of HTML whitespace collapse to one
-    /// space.
+    /// noscript / template subtrees are dropped, and runs of HTML whitespace collapse to one
+    /// space. With an accessibility <paramref name="context"/>, text the context hides is
+    /// left out (upstream 3c56f59); <c>browser_search</c> passes none.
     /// </summary>
-    internal static string ExtractText(DomTree dom, NodeId nodeId)
+    internal static string ExtractText(DomTree dom, NodeId nodeId, AccessibilityContext? context)
     {
         var result = new StringBuilder();
         var pendingSpace = false;
@@ -130,13 +151,17 @@ internal static class TextExtraction
             switch (node.Data)
             {
                 case TextData text:
-                    AppendTextSegment(result, ref pendingSpace, text.Contents);
+                    if (context is null || !context.IsHidden(id))
+                    {
+                        AppendTextSegment(result, ref pendingSpace, text.Contents);
+                    }
+
                     break;
 
                 case ElementData element:
                 {
                     var tag = element.Name.Local;
-                    if (tag is "script" or "style" or "noscript")
+                    if (tag is "script" or "style" or "noscript" or "template")
                     {
                         continue;
                     }

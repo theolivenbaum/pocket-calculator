@@ -275,6 +275,37 @@ public sealed partial class PocketCalculatorJsRuntime
         });
 
     /// <summary>
+    /// The cascade's <c>display: none</c> and declared <c>visibility</c> for every styled
+    /// element, from the same prepared render CSSOM reads use. Port of
+    /// <c>accessibility_styles</c> (upstream f81c296, 3c56f59): the accessibility tree and the
+    /// MCP snapshot hide what CSS hides.
+    /// </summary>
+    /// <remarks>
+    /// Upstream 3c56f59 first tries <c>accessibility_styles_without_layout</c>, a cascade-only
+    /// read that skips layout for a document with no animations. The port always takes the
+    /// prepared render: the answer is the same, and the retained render is usually there
+    /// already. It runs like a capture, under the isolate lock and the work-cancellation scope,
+    /// with synchronous resource loading off.
+    /// </remarks>
+    public Dictionary<NodeId, AccessibilityStyle> AccessibilityStyles() =>
+        WithSyncRenderLoadingDisabled(State, state =>
+        {
+            RenderState.SampleLiveDocumentAnimations(state);
+            if (RenderState.EnsurePreparedRender(state) is not { } prepared)
+            {
+                return new Dictionary<NodeId, AccessibilityStyle>();
+            }
+
+            var styles = new Dictionary<NodeId, AccessibilityStyle>(prepared.Layout.Styles.Count);
+            foreach (var (id, style) in prepared.Layout.Styles)
+            {
+                styles[id] = new AccessibilityStyle(style.Display == Display.None, style.VisibilityHidden);
+            }
+
+            return styles;
+        });
+
+    /// <summary>
     /// Return the retained layout's scrollable document size without changing
     /// the live viewport or scroll position. PDF/full-document consumers use
     /// this to paginate document-space captures from the same geometry.

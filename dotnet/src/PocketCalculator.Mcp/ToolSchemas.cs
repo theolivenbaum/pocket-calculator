@@ -65,14 +65,14 @@ internal static class ToolSchemas
           },
           {
             "name": "browser_snapshot",
-            "description": "Get the current page content as text (title, URL, and readable body text)",
+            "description": "Get URL, title, actionable element references, control states, and visible body text",
             "inputSchema": {
               "type": "object",
               "properties": {
                 "max_chars": {
                   "type": "number",
                   "minimum": 0,
-                  "description": "Truncate readable body text to this many characters (default: 4000)"
+                  "description": "Character budget shared by whole control descriptions and visible body text (default: 4000); URL and title are separately capped at 256 characters each"
                 }
               },
               "additionalProperties": false

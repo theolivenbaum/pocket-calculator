@@ -34,6 +34,13 @@ public sealed partial class DomTree
     private Dictionary<NodeId, bool>? _dirtyFormChecked;
 
     /// <summary>
+    /// Checkboxes script set <c>indeterminate</c> on, mirrored from bootstrap.js's
+    /// <c>_formIndeterminate</c> like the two maps above. Upstream keeps it in
+    /// <c>form_control_state</c>; the accessibility tree reads it (upstream 3c56f59).
+    /// </summary>
+    private HashSet<NodeId>? _dirtyFormIndeterminate;
+
+    /// <summary>
     /// CSS that an element contributes to the cascade without being the text of a
     /// <c>&lt;style&gt;</c> element: the bytes fetched for a <c>&lt;link rel=stylesheet&gt;</c>, and the
     /// bytes fetched for the <c>@import</c> rules of an inline <c>&lt;style&gt;</c>. It is ordered
@@ -113,6 +120,22 @@ public sealed partial class DomTree
         return false;
     }
 
+    /// <summary>Record the state script assigned to a checkbox's <c>indeterminate</c> IDL attribute.</summary>
+    public void SetDirtyFormIndeterminate(NodeId id, bool state)
+    {
+        if (state)
+        {
+            (_dirtyFormIndeterminate ??= []).Add(id);
+        }
+        else
+        {
+            _dirtyFormIndeterminate?.Remove(id);
+        }
+    }
+
+    /// <summary>Whether script set <c>indeterminate</c> on the control.</summary>
+    public bool IsDirtyFormIndeterminate(NodeId id) => _dirtyFormIndeterminate?.Contains(id) ?? false;
+
     /// <summary>
     /// Record the CSS an element contributes to the cascade ahead of its own text, replacing
     /// what it had. Written for a <c>&lt;link rel=stylesheet&gt;</c> once its sheet is fetched,
@@ -187,6 +210,7 @@ public sealed partial class DomTree
     {
         _dirtyFormValues?.Remove(id);
         _dirtyFormChecked?.Remove(id);
+        _dirtyFormIndeterminate?.Remove(id);
     }
 
     /// <summary>Record whether the document was parsed in (full) quirks mode.</summary>

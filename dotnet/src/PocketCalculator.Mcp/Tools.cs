@@ -107,24 +107,52 @@ internal static partial class Tools
         return summary;
     }
 
+    /// <summary>
+    /// URL, title, the actionable controls with their refs and state, then the visible body
+    /// text, within one character budget (upstream 3c56f59). A control line is shown whole or
+    /// not at all, so a ref is never cut; URL and title are capped at 256 characters each.
+    /// </summary>
     internal static string Snapshot(JsonNode? args, BrowserState state)
     {
         var maxChars = ClampToInt(args.Get("max_chars").AsU64()) ?? McpServer.DefaultTextLimit;
         RebuildInteractiveRefs(state);
         var page = state.PageMut();
-        var url = page.UrlString();
-        var title = page.Title;
+        var url = TextExtraction.Truncate(page.UrlString(), 256);
+        var title = TextExtraction.Truncate(page.Title, 256);
+        if (maxChars == 0)
+        {
+            return $"URL: {url}\nTitle: {title}";
+        }
 
+        var context = AccessibilityContext.ForPage(page);
         var bodyText = page.WithDom(dom =>
-            TryQuery(dom, "body") is { } body ? TextExtraction.ExtractText(dom, body) : string.Empty)
+            TryQuery(dom, "body") is { } body ? TextExtraction.ExtractText(dom, body, context) : string.Empty)
             ?? string.Empty;
 
-        var refsSummary = state.InteractiveRefs.Count == 0
-            ? string.Empty
-            : $"\n\n{state.InteractiveRefs.Count.ToString(CultureInfo.InvariantCulture)} interactive element(s) registered. Call browser_interactive_elements to list, or pass `ref` to browser_click/browser_fill/browser_type.";
+        List<string> lines = context is null ? [] : InteractiveLines(state, context, int.MaxValue);
+        var content = new StringBuilder();
+        var remaining = maxChars;
+        var shown = 0;
+        foreach (var line in lines)
+        {
+            var cost = TextExtraction.CharCount(line) + 1;
+            if (cost > remaining)
+            {
+                break;
+            }
 
-        var body = TextExtraction.Truncate(bodyText.Trim(), maxChars);
-        return $"URL: {url}\nTitle: {title}\n\n{body}{refsSummary}";
+            content.Append(line).Append('\n');
+            remaining -= cost;
+            shown++;
+        }
+
+        if (shown < lines.Count)
+        {
+            content.Append(CultureInfo.InvariantCulture, $"...({lines.Count - shown} controls omitted; use browser_interactive_elements)\n");
+        }
+
+        content.Append(TextExtraction.Truncate(bodyText.Trim(), remaining));
+        return $"URL: {url}\nTitle: {title}\n\n{content}";
     }
 
     internal static async Task<string> ClickAsync(JsonNode? args, BrowserState state)
@@ -574,62 +602,94 @@ internal static partial class Tools
     /// </summary>
     internal static string InteractiveElements(JsonNode? args, BrowserState state)
     {
-        var limit = (long)Math.Min(args.Get("limit").AsU64() ?? 100, long.MaxValue);
+        var limit = (int)Math.Min(args.Get("limit").AsU64() ?? 100, int.MaxValue);
         RebuildInteractiveRefs(state);
-        if (state.InteractiveRefs.Count == 0)
+        var context = AccessibilityContext.ForPage(state.PageMut());
+        List<string> lines = context is null ? [] : InteractiveLines(state, context, limit);
+        return lines.Count == 0 ? "No interactive elements on this page." : string.Join("\n", lines);
+    }
+
+    /// <summary>
+    /// One line per visible ref'd control in document order: ref, tag, accessible name (or its
+    /// visible text), role, the <c>type</c> / <c>name</c> attributes, the live value (never a
+    /// password's) and its checked/disabled/required/expanded/selected/pressed states. Port of
+    /// <c>interactive_lines</c> (upstream 3c56f59). Managed code throughout: nothing here
+    /// reads a page-replaceable global (SECURITY.md L10).
+    /// </summary>
+    private static List<string> InteractiveLines(BrowserState state, AccessibilityContext context, int limit)
+    {
+        var refs = new Dictionary<uint, string>();
+        foreach (var (reference, id) in state.InteractiveRefs)
         {
-            return "No interactive elements on this page.";
+            refs[id.Raw] = reference;
         }
 
-        var page = state.PageMut();
-        var js = $$"""
-            (function(){
-                var h = __obscura_host.dom;
-                var els = h.querySelectorAll(h.document(), '[data-obscura-ref]');
-                var out = [];
-                for (var i = 0; i < els.length && out.length < {{limit.ToString(CultureInfo.InvariantCulture)}}; i++) {
-                    var e = els[i];
-                    var label = h.squash(h.get(e, 'innerText') || h.get(e, 'textContent') || h.getAttribute(e, 'aria-label') || h.getAttribute(e, 'placeholder') || h.getAttribute(e, 'value') || h.getAttribute(e, 'name') || '', 80);
-                    var role = h.getAttribute(e, 'role') || '';
-                    var typeAttr = h.getAttribute(e, 'type') || '';
-                    out[out.length] = {
-                        __proto__: null,
-                        ref: h.getAttribute(e, 'data-obscura-ref'),
-                        tag: h.lower(h.tagName(e)),
-                        type: typeAttr,
-                        role: role,
-                        name: h.getAttribute(e, 'name') || '',
-                        label: label,
-                    };
-                }
-                return out;
-            })()
-            """;
-        var val = page.EvaluateHost(js);
-        var arr = val.ArrayOrNull();
-        var lines = new List<string>();
-        if (arr is not null)
+        if (refs.Count == 0 || limit <= 0)
         {
-            foreach (var item in arr)
+            return [];
+        }
+
+        return state.PageMut().WithDom(dom =>
+        {
+            var lines = new List<string>();
+            foreach (var id in dom.Descendants(dom.Document))
             {
-                var reference = item.Get("ref").AsString() ?? "?";
-                var tag = item.Get("tag").AsString() ?? "?";
-                var ty = item.Get("type").AsString() ?? string.Empty;
-                var label = item.Get("label").AsString() ?? string.Empty;
-                var name = item.Get("name").AsString() ?? string.Empty;
-                var role = item.Get("role").AsString() ?? string.Empty;
-                var kind = ty.Length != 0 ? $"{tag}[{ty}]"
-                    : role.Length != 0 ? $"{tag}[role={role}]"
-                    : tag;
-                var detail = name.Length != 0
-                    ? $" name={TextExtraction.RustDebugString(name)}"
-                    : string.Empty;
-                lines.Add(
-                    $"ref={TextExtraction.PadRight(reference, 5)} {TextExtraction.PadRight(kind, 22)} {TextExtraction.RustDebugString(label)}{detail}");
-            }
-        }
+                if (lines.Count >= limit)
+                {
+                    break;
+                }
 
-        return string.Join("\n", lines);
+                if (!refs.TryGetValue(id.Raw, out var reference)
+                    || context.DescribeNode(dom, id) is not { } ax
+                    || dom.GetNode(id) is not { } node
+                    || node.AsElement() is not { } element)
+                {
+                    continue;
+                }
+
+                var label = ax["name"]?["value"]?.GetValue<string>()
+                    ?? TextExtraction.ExtractText(dom, id, context).Trim();
+                var role = ax["role"]?["value"]?.GetValue<string>() ?? "generic";
+                var line = new StringBuilder();
+                line.Append("ref=").Append(reference).Append(' ').Append(element.Name.Local).Append(' ')
+                    .Append(TextExtraction.RustDebugString(Preview(label))).Append(" role=").Append(role);
+                if (node.GetAttribute("type") is { } kind)
+                {
+                    line.Append(" type=").Append(TextExtraction.RustDebugString(Preview(kind)));
+                }
+
+                if (node.GetAttribute("name") is { } name)
+                {
+                    line.Append(" name=").Append(TextExtraction.RustDebugString(Preview(name)));
+                }
+
+                if (ax["value"]?["value"]?.GetValue<string>() is { } value)
+                {
+                    line.Append(" value=").Append(TextExtraction.RustDebugString(Preview(value)));
+                }
+
+                if (ax["properties"] is JsonArray properties)
+                {
+                    foreach (var property in properties)
+                    {
+                        var propertyName = property?["name"]?.GetValue<string>() ?? string.Empty;
+                        if (propertyName is "checked" or "disabled" or "required" or "expanded" or "selected" or "pressed")
+                        {
+                            // serde_json's Display: true, false, or "mixed" with its quotes.
+                            line.Append(' ').Append(propertyName).Append('=')
+                                .Append(property!["value"]?["value"]?.ToJsonString() ?? "null");
+                        }
+                    }
+                }
+
+                lines.Add(line.ToString());
+            }
+
+            return lines;
+        }) ?? [];
+
+        // Rust's value.chars().take(80).
+        static string Preview(string value) => TextExtraction.TakeChars(value, 80);
     }
 
     /// <summary>
