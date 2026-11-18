@@ -12389,10 +12389,6 @@ globalThis.getComputedStyle = (el, pseudoElt) => {
           return r.width != null ? `${r.width}px` : null;
         case 'height': case 'block-size':
           return r.height != null ? `${r.height}px` : null;
-        case 'left': return r.left != null ? `${r.left}px` : null;
-        case 'top': return r.top != null ? `${r.top}px` : null;
-        case 'right': return r.right != null ? `${r.right}px` : null;
-        case 'bottom': return r.bottom != null ? `${r.bottom}px` : null;
         case 'client-width': case 'offset-width':
           return r.width != null ? `${r.width}px` : null;
         case 'client-height': case 'offset-height':
@@ -12409,6 +12405,9 @@ globalThis.getComputedStyle = (el, pseudoElt) => {
     transition: 'none', animation: 'none',
     float: 'none', clear: 'none',
     margin: '0px', padding: '0px',
+    // upstream d40f503 / merge d04b661: an inset is not a viewport coordinate. Without a
+    // render snapshot an undeclared inset is `auto`, not the box's getBoundingClientRect edge.
+    top: 'auto', right: 'auto', bottom: 'auto', left: 'auto',
     'margin-top': '0px', 'margin-right': '0px', 'margin-bottom': '0px', 'margin-left': '0px',
     'padding-top': '0px', 'padding-right': '0px', 'padding-bottom': '0px', 'padding-left': '0px',
     'font-size': '16px', 'line-height': 'normal', 'font-weight': '400',

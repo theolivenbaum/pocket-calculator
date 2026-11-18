@@ -2478,6 +2478,11 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   top/middle/bottom/baseline. `list-style-type` reports the keywords the renderer draws
   (others read `disc`, as upstream). `el.style.cssFloat` also maps to `float`; upstream fixes
   only the computed read.
+- Computed insets (`d40f503`, merge `d04b661`, `1b6f423`): ported as upstream's
+  `resolved_insets`, which Chromium 147 matches. The port keeps its own used `auto` margins
+  for an absolute axis with both insets set (Chromium's `margin: 0 auto` answer). Open: the
+  port's layout ignores an authored root margin, so a fixed box with all-auto insets under
+  `html{margin:20px}` reports its static position as 0px, where Chromium reports 20px.
 
 ### Operator font directories load per render pass, not into a cached base database
 

@@ -1495,14 +1495,12 @@ public sealed partial class PreparedRender
     {
         string[] insetNames = ["top", "right", "bottom", "left"];
         float?[] usedAutoMargins = new float?[4];
-        float[]? usedInsets = isPseudo ? null : UsedInsets(id, style, rect, usedAutoMargins);
+        string[] insets = isPseudo
+            ? ResolvedInsets(id, style, null, usedAutoMargins)
+            : ResolvedInsets(id, style, rect, usedAutoMargins);
         for (int side = 0; side < insetNames.Length; side++)
         {
-            output[insetNames[side]] = usedInsets is { } used
-                ? PaintCssValues.CssPx(used[side])
-                : style.Inset[side] is { } inset
-                    ? PaintCssValues.DimensionCss(inset, "auto")
-                    : "auto";
+            output[insetNames[side]] = insets[side];
         }
 
         (string Name, float Value, bool Auto, float? Used)[] margins =
@@ -2001,80 +1999,140 @@ public sealed partial class PreparedRender
     }
 
     /// <summary>
-    /// The four used inset values of a positioned box, or <c>null</c> when the box is static
-    /// and its insets are reported as specified.
+    /// The four inset values getComputedStyle reports (top, right, bottom, left): the computed
+    /// value for a static, undisplayed or contents box, the used offsets otherwise.
     /// </summary>
     /// <remarks>
-    /// An absolutely positioned box is measured off its laid-out margin box, which is the only
-    /// place the resolved offsets exist; a relatively positioned one is its resolved offset and
-    /// the negation of it on the opposite side, which is what its box was shifted by.
+    /// Upstream d40f503 / merge d04b661 / 1b6f423 (<c>PreparedRender::resolved_insets</c>), whose
+    /// answers Chromium 147 agrees with: a specified side reports its value resolved against
+    /// the containing block, before transforms and scrolling. A relative box's auto side is the
+    /// negation of the opposite one; an absolute or fixed box's auto side follows from the
+    /// specified opposite side and the box size, or from the laid-out box when both are auto.
+    /// A non-atomic inline keeps a percentage, and the side opposite one, as specified (it is
+    /// not a box for this purpose). A percentage in a calc() stays an expression on a static
+    /// box (<c>calc(10% + 5px)</c>).
     /// </remarks>
     /// <remarks>
-    /// For an absolutely positioned or fixed box, an axis whose two insets are both set
-    /// reports them as specified (resolved against the containing block) and the used value
-    /// of any <c>auto</c> margin in that axis, which is what Chromium 141 answers for the
-    /// centred `left:0; right:0; margin:0 auto` pattern (`0px` insets, `260px` margins). An
-    /// axis with an <c>auto</c> inset has its auto margins at 0 (CSS 2.1 10.3.7/10.6.4), so
-    /// its offsets follow from the box. <paramref name="usedAutoMargins"/> receives the used
-    /// value of each auto margin resolved here (top, right, bottom, left), null otherwise.
+    /// The port's own addition: for an absolutely positioned or fixed box, an axis whose two
+    /// insets are both set also reports the used value of any <c>auto</c> margin in that axis,
+    /// which is what Chromium 141 answers for the centred `left:0; right:0; margin:0 auto`
+    /// pattern (`0px` insets, `260px` margins). An axis with an <c>auto</c> inset has its auto
+    /// margins at 0 (CSS 2.1 10.3.7/10.6.4). <paramref name="usedAutoMargins"/> receives the
+    /// used value of each auto margin resolved here (top, right, bottom, left), null otherwise.
     /// </remarks>
-    private float[]? UsedInsets(NodeId id, LayoutStyle style, Rect? rect, float?[] usedAutoMargins)
+    private string[] ResolvedInsets(NodeId id, LayoutStyle style, Rect? rect, float?[] usedAutoMargins)
     {
-        if (TreeValue is not { } tree)
+        string[] computed = new string[4];
+        bool[] percentage = new bool[4];
+        for (int index = 0; index < 4; index++)
         {
-            return null;
+            string? expression = style.InsetExpressions[index];
+            bool expressionPercent = expression is not null && expression.Contains('%', StringComparison.Ordinal);
+            computed[index] = expressionPercent
+                ? expression!
+                : style.Inset[index] is { } inset ? PaintCssValues.DimensionCss(inset, "auto") : "auto";
+            percentage[index] = expressionPercent || style.Inset[index] is { Kind: DimensionKind.Percent };
+        }
+
+        bool positioned = style.Position is not null || style.PositionFixed || style.PositionSticky;
+        if (!positioned
+            || style.PositionSticky
+            || TreeValue is not { } tree
+            || style.Display == PocketCalculator.Render.Display.None
+            || style.DisplayContents
+            || rect is not { } box)
+        {
+            return computed;
         }
 
         bool absolute = style.Position == TaffyPosition.Absolute || style.PositionFixed;
-        bool relative = !absolute && !style.PositionSticky && style.Position == TaffyPosition.Relative;
-        if ((!absolute && !relative)
-            || ContainingBlockBox(tree, id, absolute, style.PositionFixed) is not { } cb)
+        bool inline = style.IgnoresUsedBoxSizes();
+        bool anyPercentage = percentage[0] || percentage[1] || percentage[2] || percentage[3];
+        bool anyAuto = false;
+        for (int index = 0; index < 4; index++)
         {
-            return null;
+            anyAuto |= style.Inset[index] is null or { Kind: DimensionKind.Auto } && style.InsetExpressions[index] is null;
         }
 
-        if (relative)
-        {
-            float usedTop = ResolveInset(style, 0, cb.Height)
-                ?? (ResolveInset(style, 2, cb.Height) is { } bottom ? -bottom : 0f);
-            float usedLeft = ResolveInset(style, 3, cb.Width)
-                ?? (ResolveInset(style, 1, cb.Width) is { } right ? -right : 0f);
+        Rect containing = (!inline && anyPercentage) || (absolute && anyAuto)
+            ? InsetContainingBlock(tree, id, style, absolute, percentage)
+            : new Rect(0f, 0f, ViewportSize.Width, ViewportSize.Height);
 
-            return [usedTop, -usedLeft, -usedTop, usedLeft];
+        float?[] values = new float?[4];
+        for (int index = 0; index < 4; index++)
+        {
+            values[index] = inline && percentage[index]
+                ? null
+                : ResolveInset(style, index, index % 2 == 0 ? containing.Height : containing.Width);
         }
 
-        if (rect is not { } box)
+        string[] output = new string[4];
+        for (int index = 0; index < 4; index++)
         {
-            return null;
+            int opposite = (index + 2) % 4;
+            if (inline && (percentage[index] || percentage[opposite]))
+            {
+                output[index] = computed[index];
+            }
+            else if (values[index] is { } value)
+            {
+                output[index] = PaintCssValues.CssPx(value);
+            }
+            else if (style.PositionSticky)
+            {
+                output[index] = computed[index];
+            }
+            else if (!absolute)
+            {
+                output[index] = PaintCssValues.CssPx(-(values[opposite] ?? 0f));
+            }
+            else
+            {
+                output[index] = PaintCssValues.CssPx(AbsoluteAutoInset(style, box, containing, values, index));
+            }
         }
 
+        if (absolute)
+        {
+            UsedAutoMargins(style, box, containing, values, usedAutoMargins);
+        }
+
+        return output;
+    }
+
+    /// <summary>The used value of an absolute box's <c>auto</c> inset.</summary>
+    private static float AbsoluteAutoInset(LayoutStyle style, Rect box, Rect containing, float?[] values, int index)
+    {
         float marginTop = style.MarginAuto[0] ? 0f : style.Margin.Top;
-        float marginLeft = style.MarginAuto[3] ? 0f : style.Margin.Left;
-        float marginBottom = style.MarginAuto[2] ? 0f : style.Margin.Bottom;
         float marginRight = style.MarginAuto[1] ? 0f : style.Margin.Right;
-        float top = box.Y - marginTop - cb.Y;
-        float left = box.X - marginLeft - cb.X;
-        float[] used =
-        [
-            top,
-            cb.Width - left - (marginLeft + box.Width + marginRight),
-            cb.Height - top - (marginTop + box.Height + marginBottom),
-            left,
-        ];
-
-        if (SpecifiedInsetPair(style, 3, 1, cb.Width) is ({ } specLeft, { } specRight))
+        float marginBottom = style.MarginAuto[2] ? 0f : style.Margin.Bottom;
+        float marginLeft = style.MarginAuto[3] ? 0f : style.Margin.Left;
+        bool vertical = index % 2 == 0;
+        (float size, float boxSize, float startMargin, float endMargin) = vertical
+            ? (containing.Height, box.Height, marginTop, marginBottom)
+            : (containing.Width, box.Width, marginLeft, marginRight);
+        if (values[(index + 2) % 4] is { } other)
         {
-            used[3] = specLeft;
-            used[1] = specRight;
-            if (style.MarginAuto[3])
-            {
-                usedAutoMargins[3] = box.X - cb.X - specLeft;
-            }
+            return size - other - boxSize - startMargin - endMargin;
+        }
 
-            if (style.MarginAuto[1])
-            {
-                usedAutoMargins[1] = cb.X + cb.Width - specRight - box.X - box.Width;
-            }
+        return index switch
+        {
+            0 => box.Y - containing.Y - marginTop,
+            1 => containing.X + size - box.X - boxSize - marginRight,
+            2 => containing.Y + size - box.Y - boxSize - marginBottom,
+            _ => box.X - containing.X - marginLeft,
+        };
+    }
+
+    /// <summary>The used <c>auto</c> margins of an absolute box, axis by axis.</summary>
+    private static void UsedAutoMargins(
+        LayoutStyle style, Rect box, Rect containing, float?[] values, float?[] usedAutoMargins)
+    {
+        if (values[3] is { } left && values[1] is { } right)
+        {
+            usedAutoMargins[3] = style.MarginAuto[3] ? box.X - containing.X - left : null;
+            usedAutoMargins[1] = style.MarginAuto[1] ? containing.X + containing.Width - right - box.X - box.Width : null;
         }
         else
         {
@@ -2082,49 +2140,36 @@ public sealed partial class PreparedRender
             usedAutoMargins[1] = style.MarginAuto[1] ? 0f : null;
         }
 
-        if (SpecifiedInsetPair(style, 0, 2, cb.Height) is ({ } specTop, { } specBottom))
+        if (values[0] is { } top && values[2] is { } bottom)
         {
-            used[0] = specTop;
-            used[2] = specBottom;
-            if (style.MarginAuto[0])
-            {
-                usedAutoMargins[0] = box.Y - cb.Y - specTop;
-            }
-
-            if (style.MarginAuto[2])
-            {
-                usedAutoMargins[2] = cb.Y + cb.Height - specBottom - box.Y - box.Height;
-            }
+            usedAutoMargins[0] = style.MarginAuto[0] ? box.Y - containing.Y - top : null;
+            usedAutoMargins[2] = style.MarginAuto[2] ? containing.Y + containing.Height - bottom - box.Y - box.Height : null;
         }
         else
         {
             usedAutoMargins[0] = style.MarginAuto[0] ? 0f : null;
             usedAutoMargins[2] = style.MarginAuto[2] ? 0f : null;
         }
-
-        return used;
     }
 
     /// <summary>
-    /// Both insets of one axis resolved against the containing block, or nulls when either is
-    /// <c>auto</c> or is a late-resolved calc() whose flattened value is only approximate.
+    /// One inset resolved against its axis of the containing block: a functional expression
+    /// against <paramref name="basis"/> (the cascade's flattened value used an estimate of it),
+    /// a length as is, a percentage of the basis.
     /// </summary>
-    private (float? Start, float? End) SpecifiedInsetPair(LayoutStyle style, int start, int end, float basis)
-    {
-        if (style.InsetCalc is { } calc && (calc[start] is not null || calc[end] is not null))
-        {
-            return (null, null);
-        }
-
-        return ResolveInset(style, start, basis) is { } startValue
-            && ResolveInset(style, end, basis) is { } endValue
-            ? (startValue, endValue)
-            : (null, null);
-    }
-
-    /// <summary>One inset resolved against its axis of the containing block.</summary>
     private float? ResolveInset(LayoutStyle style, int side, float basis)
     {
+        if (style.InsetExpressions[side] is { } expression)
+        {
+            return PocketCalculator.Render.ComputedStyle.ResolveContextualLength(
+                expression,
+                FontUnits.ForStyle(style),
+                RootFontSize,
+                ViewportSize.Width / 100f,
+                ViewportSize.Height / 100f,
+                basis);
+        }
+
         if (style.Inset[side] is not { } inset)
         {
             return null;
@@ -2145,52 +2190,72 @@ public sealed partial class PreparedRender
     }
 
     /// <summary>
-    /// This element's containing block: the padding box of the nearest positioned ancestor for
-    /// an absolutely positioned box, the parent's content box otherwise, and the initial
-    /// containing block when neither exists.
+    /// The initial containing block: the viewport less the root's stable scrollbar gutters,
+    /// shifted right by the start gutter for <c>both-edges</c>. vw, vh and media queries keep
+    /// the full viewport (upstream 1b6f423, Chromium 147).
     /// </summary>
-    /// <remarks>
-    /// A fixed box skips positioned ancestors: only one that establishes a containing block
-    /// for fixed descendants (a transform, filter, contain and the like) captures it, and the
-    /// initial containing block takes it otherwise. Treating it like an absolute box measured
-    /// a `position: fixed; left: 0` box inside a 128px-offset relative wrapper as
-    /// `left: -128px`.
-    /// </remarks>
-    private Rect? ContainingBlockBox(DomTree tree, NodeId id, bool absolute, bool fixedPosition = false)
+    private Rect InitialContainingBlock(LayoutStyle rootStyle)
     {
-        NodeId? ancestor = DomTraversal.RenderedParent(tree, id);
-        while (ancestor is { } candidate)
-        {
-            if (Layout.Styles.TryGetValue(candidate, out LayoutStyle? ancestorStyle)
-                && Layout.Rects.TryGetValue(candidate, out Rect ancestorRect))
-            {
-                bool positioned = fixedPosition
-                    ? ancestorStyle.EstablishesPositioningContainingBlock()
-                    : ancestorStyle.Position is not null
-                        || ancestorStyle.PositionFixed
-                        || ancestorStyle.PositionSticky
-                        || ancestorStyle.EstablishesPositioningContainingBlock();
-                if (!absolute || positioned)
-                {
-                    Edges padding = absolute ? Edges.Zero : ancestorStyle.Padding;
-                    Edges ancestorBorder = ancestorStyle.UsedBorder;
-                    float left = ancestorBorder.Left + padding.Left;
-                    float top = ancestorBorder.Top + padding.Top;
-                    float right = ancestorBorder.Right + padding.Right;
-                    float bottom = ancestorBorder.Bottom + padding.Bottom;
+        int gutters = Math.Min(rootStyle.ScrollbarGutters, (byte)2);
+        return new Rect(
+            gutters == 2 ? LayoutStyle.ClassicScrollbarGutter : 0f,
+            0f,
+            F32.Max(ViewportSize.Width - (LayoutStyle.ClassicScrollbarGutter * gutters), 0f),
+            ViewportSize.Height);
+    }
 
-                    return new Rect(
-                        ancestorRect.X + left,
-                        ancestorRect.Y + top,
-                        F32.Max(ancestorRect.Width - left - right, 0f),
-                        F32.Max(ancestorRect.Height - top - bottom, 0f));
-                }
+    /// <summary>
+    /// The box insets resolve against: the padding box of the nearest ancestor that contains
+    /// an absolute box (for a fixed one, only an ancestor that establishes a containing block
+    /// for fixed descendants: a transform, filter, contain and the like), the content box of
+    /// the nearest block-level ancestor otherwise (an inline <c>&lt;span&gt;</c> does not
+    /// contain), and the initial containing block when neither exists.
+    /// </summary>
+    private Rect InsetContainingBlock(DomTree tree, NodeId id, LayoutStyle style, bool absolute, bool[] percentage)
+    {
+        _ = percentage;
+        Rect containing = new(0f, 0f, ViewportSize.Width, ViewportSize.Height);
+        NodeId? next = id;
+        for (int guard = 0; guard <= tree.Count && next is { } current; guard++)
+        {
+            next = DomTraversal.RenderedParent(tree, current);
+            if (!Layout.Styles.TryGetValue(current, out LayoutStyle? currentStyle))
+            {
+                continue;
             }
 
-            ancestor = DomTraversal.RenderedParent(tree, candidate);
+            if (next == tree.Document)
+            {
+                containing = InitialContainingBlock(currentStyle);
+            }
+
+            if (current == id || style.PositionSticky || currentStyle.DisplayContents)
+            {
+                continue;
+            }
+
+            bool contains = absolute
+                ? currentStyle.EstablishesPositioningContainingBlock()
+                    || (!style.PositionFixed
+                        && (currentStyle.Position is not null || currentStyle.PositionFixed || currentStyle.PositionSticky))
+                : !currentStyle.IgnoresUsedBoxSizes();
+            if (!contains || !Layout.Rects.TryGetValue(current, out Rect currentRect))
+            {
+                continue;
+            }
+
+            Edges border = currentStyle.UsedBorder;
+            Edges padding = absolute ? Edges.Zero : currentStyle.Padding;
+            float left = border.Left + padding.Left;
+            float top = border.Top + padding.Top;
+            return new Rect(
+                currentRect.X + left,
+                currentRect.Y + top,
+                F32.Max(currentRect.Width - left - border.Right - padding.Right, 0f),
+                F32.Max(currentRect.Height - top - border.Bottom - padding.Bottom, 0f));
         }
 
-        return new Rect(0f, 0f, ViewportSize.Width, ViewportSize.Height);
+        return containing;
     }
 
     /// <summary>CSS 1-to-4 collapsing of a top/right/bottom/left shorthand, CSSOM's rule.</summary>
