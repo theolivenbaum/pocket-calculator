@@ -65,8 +65,15 @@ public sealed class FloatContext
         public readonly bool FitsFloatWidth(Size<float> floatedBox, FloatDirection direction, float bfcWidth)
         {
             float slotInset = direction == FloatDirection.Left ? Inset0 : Inset1;
-            return slotInset == 0.0f || bfcWidth - floatedBox.Width - InsetSum() >= 0.0f;
+            return slotInset == 0.0f || bfcWidth - floatedBox.Width - InsetSum() >= -FitTolerance(bfcWidth);
         }
+
+        /// <summary>
+        /// upstream 9f64ce9: percentage sizes can meet at a band edge with a small f32 rounding
+        /// error; the allowance stays below a layout subpixel even at large coordinates.
+        /// </summary>
+        public static float FitTolerance(float bfcWidth) =>
+            Sys.F32Min(MathF.Abs(bfcWidth) * Sys.F32Epsilon, 1.0f / 1024.0f);
 
         /// <summary>The total space taken up by both insets.</summary>
         public readonly float InsetSum() => Inset0 + Inset1;
@@ -107,7 +114,7 @@ public sealed class FloatContext
 
         /// <summary>Whether there is an x position such that the box fits horizontally.</summary>
         public readonly bool FitsHorizontally(float width) =>
-            (Inset0 == 0.0f && Inset1 == 0.0f) || _bfcWidth - Inset0 - Inset1 - width >= 0.0f;
+            (Inset0 == 0.0f && Inset1 == 0.0f) || _bfcWidth - Inset0 - Inset1 - width >= -Segment.FitTolerance(_bfcWidth);
 
         /// <summary>Add the height of another segment.</summary>
         public void AddHeight(float height) => _slotHeight += height;
