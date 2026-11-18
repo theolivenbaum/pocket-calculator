@@ -315,6 +315,12 @@ public sealed partial class Page : IDisposable
 
     public List<string> InterceptBlockPatterns { get; } = [];
 
+    /// <summary>
+    /// The current document's MIME type when it is not the URL-derived default: set for a
+    /// plain-text document (upstream 22eb6b4), null otherwise.
+    /// </summary>
+    internal string? DocumentContentType { get; set; }
+
     public List<string> BlockedUrlPatterns { get; private set; } = [];
 
     /// <summary>
@@ -525,6 +531,7 @@ public sealed partial class Page : IDisposable
         rt.SetCookieJar(Context.CookieJar);
         rt.SetWebStorage(Context.LocalStorage, SessionStorage);
         rt.SetConsoleMessagesEnabled(ConsoleMessagesEnabled);
+        rt.SetDocumentContentType(DocumentContentType);
         rt.SetHttpClient(HttpClient);
         rt.SetCallbacks(_callbacks);
         rt.SetBlockedUrls(BlockedUrlPatterns);

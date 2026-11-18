@@ -532,10 +532,25 @@ public sealed partial class Page
         (string bodyText, string encodingName) =
             ContentEncoding.DecodeResponseWithName(response.Body, response.ContentType());
         Encoding = encodingName;
+        // upstream 22eb6b4 + 335f929: a text/plain or text/markdown response is a plain-text
+        // document, not HTML that happens to hold text: every <word> in a .txt or .md body
+        // would otherwise become an element. The markup is Chromium 1243's (measured): a
+        // color-scheme meta and one pre-wrap <pre>; upstream's lacks both.
+        DocumentContentType = PageHelpers.PlainTextDocumentType(response.ContentType());
+        if (DocumentContentType is not null)
+        {
+            bodyText = PageHelpers.PlainTextDocumentMarkup(bodyText);
+        }
+
         // Parse with the scripts running as the parser reaches them, through the load event:
         // see LoadDocumentAsync. The realm starts (InitJs) and the navigation commits once the
         // parser reaches the first script.
         await LoadDocumentAsync(bodyText, cancellationToken).ConfigureAwait(false);
+        if (DocumentContentType is not null)
+        {
+            // Chromium's plain-text document is in standards mode with no doctype node.
+            _ = Js?.WithDom(dom => { dom.SetQuirks(false); return 0; });
+        }
 
         // Page scripts and their bounded post-script event-loop pass can create
         // responsive images, inline styles and @font-face rules that did not exist

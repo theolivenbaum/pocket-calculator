@@ -989,6 +989,13 @@ public sealed partial class PocketCalculatorJsRuntime
     public void SetDocumentReadyState(string state) => SetHostVar("__documentReadyState__", state);
 
     /// <summary>
+    /// The MIME type of the document's main resource when it is not derived from the URL
+    /// (upstream 22eb6b4: a plain-text document reports <c>text/plain</c>). Null clears it.
+    /// </summary>
+    public void SetDocumentContentType(string? contentType) =>
+        SetHostVar("__documentContentType", contentType ?? string.Empty);
+
+    /// <summary>
     /// The node id <c>document.currentScript</c> answers for while a classic script runs;
     /// 0 when none. Upstream's page-visible <c>__currentScriptNid</c> global.
     /// </summary>

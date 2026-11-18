@@ -7691,6 +7691,10 @@ class Document extends Node {
     // XML document, so createCDATASection/etc. must not throw. Live documents
     // wrapped from the tree carry a real nid and fall through to URL-derived.
     if (this._nid === undefined || this._nid === null) return "application/xml";
+    // The main resource's type, when the host knows it (upstream 22eb6b4: text/plain).
+    if (this === (_realmDocument || globalThis.document) && _hostVars.__documentContentType) {
+      return _hostVars.__documentContentType;
+    }
     const url = this.URL || "";
     // data: URLs carry their MIME type explicitly.
     const dm = /^data:([^,;]+)/i.exec(url);

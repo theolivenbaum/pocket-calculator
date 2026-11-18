@@ -1114,6 +1114,46 @@ internal static partial class PageHelpers
 
     internal static bool ScriptResponseIsExecutable(int status) => status is >= 200 and <= 299;
 
+    /// <summary>
+    /// Rust <c>plain_text_document_type</c>: the parameter-free, lowercased type of a
+    /// <c>text/plain</c>, <c>text/markdown</c> or <c>text/x-markdown</c> response, else null.
+    /// </summary>
+    internal static string? PlainTextDocumentType(string? contentType)
+    {
+        if (contentType is null)
+        {
+            return null;
+        }
+
+        int semi = contentType.IndexOf(';');
+        string type = (semi < 0 ? contentType : contentType[..semi]).Trim().ToLowerInvariant();
+        return type is "text/plain" or "text/markdown" or "text/x-markdown" ? type : null;
+    }
+
+    /// <summary>
+    /// The document Chromium builds for a plain-text response (measured on 1243): a
+    /// <c>color-scheme</c> meta and the whole text in one <c>&lt;pre&gt;</c>. The newline
+    /// after <c>&lt;pre&gt;</c> is the one the parser discards, so the text keeps its own.
+    /// </summary>
+    internal static string PlainTextDocumentMarkup(string text)
+    {
+        var html = new System.Text.StringBuilder(text.Length + 160);
+        html.Append("<html><head><meta name=\"color-scheme\" content=\"light dark\"></head><body>");
+        if (text.Length != 0)
+        {
+            html.Append("<pre style=\"word-wrap: break-word; white-space: pre-wrap;\">\n");
+            foreach (char c in text)
+            {
+                html.Append(c switch { '&' => "&amp;", '<' => "&lt;", '>' => "&gt;", _ => c.ToString() });
+            }
+
+            html.Append("</pre>");
+        }
+
+        html.Append("</body></html>");
+        return html.ToString();
+    }
+
     internal static bool UrlMatchesCdpPattern(string pattern, string url)
     {
         if (string.Equals(pattern, "*", StringComparison.Ordinal))

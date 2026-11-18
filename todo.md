@@ -418,8 +418,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       then `3155d6a`, `a04e024`, `b223a2c`, `6234ed3`; `contain: size` from `542df14`
 - [ ] Computed style and visibility: `c280615`, `d40f503`/`1b6f423`, `7b632d9`, `f019ebe`
       `checkVisibility()`, `f32db47`, `2c81268` closed dialogs
+- [x] `22eb6b4` + `335f929`: text/plain and text/markdown responses build Chromium's plain-text
+      document (color-scheme meta, one pre-wrap `<pre>`, standards mode) and document.contentType
+      reports the type; upstream's markup lacks the meta and the pre style
 - [ ] History and navigation: `1a0773d` (+ `ba807f4`, `d01bc8d`), `0ecc417`, `8a7aa8c`,
-      `fb23f18`, `0a14a4c`, `22eb6b4` + `335f929`, `721e40f` (with open
+      `fb23f18`, `0a14a4c`, `721e40f` (with open
       `2b07b76`), `ee74973`, `60107d1`. Keep history helpers on `__obscura_host` and
       gate traversal through the `file://` check
 - [ ] Network fidelity: `359362f`, `3f37d91` + `73358fd` + `8440fe6`, `0155807`
