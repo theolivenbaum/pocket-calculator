@@ -344,31 +344,36 @@ internal static class ServerSupport
         CdpLog.Info(
             $"INTERCEPTION resolution: {method} for {requestId}, paused_count={interceptedPaused.Count}");
 
-        if (!interceptedPaused.Remove(requestId, out var resolver))
+        if (method is not ("Fetch.continueRequest" or "Fetch.fulfillRequest" or "Fetch.failRequest")
+            || !interceptedPaused.ContainsKey(requestId))
         {
             return false;
         }
 
         CdpLog.Info($"INTERCEPTION resolved: {requestId}");
+
+        // upstream 3f9acc2: the resolution is built before the pause is taken, so a malformed
+        // command is answered with -32602 and the request stays paused; a corrected command on
+        // the same requestId still drives the fetch.
         InterceptResolution resolution;
+        string? error = null;
         switch (method)
         {
             case "Fetch.continueRequest":
-                // Honor the client's overrides (Playwright route.continue,
-                // Puppeteer request.continue). The fetch op applies each and
-                // re-validates a rewritten URL through the SSRF gate. Leaving
-                // these null silently sent the request unmodified (issue #365).
+                // Honor the client's overrides (Playwright route.continue, Puppeteer
+                // request.continue). postData is CDP `binary`, so it arrives base64-encoded
+                // (upstream b1b3abe); the fetch op re-validates a rewritten URL.
                 resolution = new InterceptResolution.Continue(
                     req.Params.Get("url").AsString(),
                     req.Params.Get("method").AsString(),
                     ParseCdpHeaders(req.Params),
-                    req.Params.Get("postData").AsString());
+                    DecodeOptionalBinary(req.Params, "postData", "continueRequest postData", ref error));
                 break;
 
             case "Fetch.fulfillRequest":
             {
                 var status = (int)(req.Params.Get("responseCode").AsU64() ?? 200);
-                var body = DecodeBase64(req.Params.Get("body").AsStringOr(string.Empty));
+                byte[]? bytes = DecodeOptionalBinary(req.Params, "body", "fulfillRequest body", ref error);
                 Dictionary<string, string> headers = new(StringComparer.Ordinal);
                 if (req.Params.Get("responseHeaders").AsJsonArray() is { } array)
                 {
@@ -382,26 +387,72 @@ internal static class ServerSupport
                     }
                 }
 
-                resolution = new InterceptResolution.Fulfill(status, headers, body);
+                resolution = new InterceptResolution.Fulfill(
+                    status, headers, bytes is null ? string.Empty : Encoding.UTF8.GetString(bytes));
                 break;
             }
 
-            case "Fetch.failRequest":
+            default:
                 resolution = new InterceptResolution.Fail(
                     req.Params.Get("errorReason").AsStringOr("Failed"));
                 break;
-
-            default:
-                // Put the resolver back: this frame is not a resolution, so the
-                // request is still parked and its real answer is still coming.
-                interceptedPaused[requestId] = resolver;
-                return false;
         }
 
-        resolver.TrySetResult(resolution);
+        if (error is not null)
+        {
+            replyTx.TryWrite(CdpResponse.Failure(req.Id, -32602, error, req.SessionId).ToJson());
+            return true;
+        }
+
+        interceptedPaused.Remove(requestId, out var resolver);
+        resolver!.TrySetResult(resolution);
         replyTx.TryWrite(
             CdpResponse.Success(req.Id, new JsonObject(), req.SessionId).ToJson());
         return true;
+    }
+
+    /// <summary>
+    /// Rust <c>decode_optional_binary</c>: an absent field is null (leave the body alone); a
+    /// present one must be a strict standard base64 string, else <paramref name="error"/> is set.
+    /// The reason text after the colon is the port's, not the Rust base64 crate's.
+    /// </summary>
+    internal static byte[]? DecodeOptionalBinary(JsonNode? parameters, string field, string what, ref string? error)
+    {
+        if (parameters is not JsonObject obj || !obj.TryGetPropertyValue(field, out JsonNode? value))
+        {
+            return null;
+        }
+
+        if (value.AsString() is not { } raw)
+        {
+            error ??= $"{what} must be a base64 string";
+            return null;
+        }
+
+        if (raw.Length % 4 != 0)
+        {
+            error ??= $"{what} is not valid base64: invalid length";
+            return null;
+        }
+
+        foreach (char c in raw)
+        {
+            if (!(char.IsAsciiLetterOrDigit(c) || c is '+' or '/' or '='))
+            {
+                error ??= $"{what} is not valid base64: invalid symbol";
+                return null;
+            }
+        }
+
+        try
+        {
+            return Convert.FromBase64String(raw);
+        }
+        catch (FormatException)
+        {
+            error ??= $"{what} is not valid base64: invalid padding";
+            return null;
+        }
     }
 
     internal static string Utf8Preview(string text, int maxBytes) =>

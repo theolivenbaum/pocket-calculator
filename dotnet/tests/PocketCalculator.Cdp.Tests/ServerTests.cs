@@ -588,6 +588,62 @@ public sealed class ServerTests
         Assert.False(replies.Reader.TryRead(out _), "must not emit a duplicate response");
     }
 
+    private static (TaskCompletionSource<InterceptResolution> Resolution, Dictionary<string, TaskCompletionSource<InterceptResolution>> Paused, Channel<string> Replies) PausedRequest()
+    {
+        var resolution = new TaskCompletionSource<InterceptResolution>();
+        Dictionary<string, TaskCompletionSource<InterceptResolution>> paused =
+            new(StringComparer.Ordinal) { ["request-1"] = resolution };
+        return (resolution, paused, Channel.CreateUnbounded<string>());
+    }
+
+    // upstream b1b3abe: continue_request_decodes_a_base64_post_data
+    [Fact]
+    public void ContinueRequestDecodesABase64PostData()
+    {
+        var (resolution, paused, replies) = PausedRequest();
+        Assert.True(ServerSupport.HandleFetchResolution(
+            """{"id":1,"method":"Fetch.continueRequest","params":{"requestId":"request-1","postData":"eyJhIjoxfQ=="}}""",
+            CdpContext.New(), replies.Writer, paused));
+        var cont = Assert.IsType<InterceptResolution.Continue>(resolution.Task.Result);
+        Assert.Equal("""{"a":1}"""u8.ToArray(), cont.Body);
+    }
+
+    // upstream b1b3abe: continue_request_without_post_data_leaves_the_body_alone
+    [Fact]
+    public void ContinueRequestWithoutPostDataLeavesTheBodyAlone()
+    {
+        var (resolution, paused, replies) = PausedRequest();
+        Assert.True(ServerSupport.HandleFetchResolution(
+            """{"id":1,"method":"Fetch.continueRequest","params":{"requestId":"request-1"}}""",
+            CdpContext.New(), replies.Writer, paused));
+        Assert.Null(Assert.IsType<InterceptResolution.Continue>(resolution.Task.Result).Body);
+    }
+
+    // upstream 3f9acc2: binary bodies survive as bytes, and invalid base64 is refused with
+    // -32602 while the request stays paused for a corrected command.
+    [Fact]
+    public void InvalidBase64IsRefusedAndTheRequestStaysPaused()
+    {
+        var (resolution, paused, replies) = PausedRequest();
+        foreach (var bad in new[] { "not base64!", "abc", "ab=c" })
+        {
+            Assert.True(ServerSupport.HandleFetchResolution(
+                $$$"""{"id":2,"method":"Fetch.continueRequest","params":{"requestId":"request-1","postData":"{{{bad}}}"}}""",
+                CdpContext.New(), replies.Writer, paused));
+            Assert.True(replies.Reader.TryRead(out var raw));
+            var reply = CdpJson.Parse(raw);
+            Assert.Equal(-32602L, reply.Get("error").Get("code").AsI64());
+            Assert.Contains("continueRequest postData", reply.Get("error").Get("message").AsString(), StringComparison.Ordinal);
+            Assert.True(paused.ContainsKey("request-1"));
+            Assert.False(resolution.Task.IsCompleted);
+        }
+
+        Assert.True(ServerSupport.HandleFetchResolution(
+            """{"id":3,"method":"Fetch.continueRequest","params":{"requestId":"request-1","postData":"AID/"}}""",
+            CdpContext.New(), replies.Writer, paused));
+        Assert.Equal(new byte[] { 0x00, 0x80, 0xFF }, Assert.IsType<InterceptResolution.Continue>(resolution.Task.Result).Body);
+    }
+
     /// <summary>
     /// A <c>Fetch.*</c> frame that is not a resolution must leave the paused
     /// request parked.

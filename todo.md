@@ -379,7 +379,11 @@ Security (exposed today unless noted):
 
 Correctness, by area (order and grouping as in the review's per-area "suggested port order"):
 
-- [ ] CDP Fetch: `b1b3abe` + `3f9acc2` (byte bodies, strict base64), `b76d966`
+- [x] CDP Fetch `b1b3abe` + `3f9acc2`: postData is decoded from base64 as bytes
+      (`InterceptResolution.Continue.Body` is `byte[]?`, a library type change, as upstream);
+      continue and fulfill bodies must be strict base64, else -32602 with the request kept
+      paused. The error text after "is not valid base64:" is the port's own wording
+- [ ] CDP Fetch: `b76d966`
       (main-document interception), `2d323dd` (patterns), `5e58c86`; with open `dfc546d`
 - [ ] CDP Playwright/go-rod blockers: `939086a`/`e70183d` setBypassCSP, `e5bcd75`
       Page.close/stopLoading, `48953ef`, `28756b4` + `c05cf3b`, `192561c`, `361f15d`

@@ -629,11 +629,15 @@ public abstract record InterceptResolution
     {
     }
 
+    /// <summary>
+    /// Continue, optionally rewriting the request. <paramref name="Body"/> is bytes (upstream
+    /// 3f9acc2): a rewritten protobuf, gzip or multipart body must reach the wire unchanged.
+    /// </summary>
     public sealed record Continue(
         string? Url,
         string? Method,
         IReadOnlyDictionary<string, string>? Headers,
-        string? Body) : InterceptResolution;
+        byte[]? Body) : InterceptResolution;
 
     public sealed record Fulfill(
         int Status,

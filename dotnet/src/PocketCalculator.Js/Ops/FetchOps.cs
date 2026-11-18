@@ -551,7 +551,7 @@ public static partial class FetchOps
                             overrideUrl = cont.Url;
                             overrideMethod = cont.Method;
                             overrideHeaders = cont.Headers;
-                            overrideBody = cont.Body is { } text ? Encoding.UTF8.GetBytes(text) : null;
+                            overrideBody = cont.Body;
                             break;
                     }
                 }
