@@ -1267,15 +1267,43 @@ public static partial class Page
             case "removeScriptToEvaluateOnNewDocument":
             {
                 string identifier = parameters.Get("identifier").AsString() ?? string.Empty;
-                ctx.PreloadScripts.RemoveAll(entry =>
+                int removed = ctx.PreloadScripts.RemoveAll(entry =>
                     string.Equals(entry.Identifier, identifier, StringComparison.Ordinal));
-                ctx.WorldPreloadScripts.RemoveAll(entry =>
+                removed += ctx.WorldPreloadScripts.RemoveAll(entry =>
                     string.Equals(entry.Identifier, identifier, StringComparison.Ordinal));
-                return DomainResult.Empty();
+                // upstream 192561c: Chrome reports an unknown or already removed id as an error.
+                return removed == 0 ? DomainResult.Err("Script not found") : DomainResult.Empty();
             }
 
             case "setInterceptFileChooserDialog":
                 return DomainResult.Empty();
+
+            // upstream 939086a / e70183d (#1224): the engine enforces no Content-Security-Policy,
+            // so there is nothing to bypass; ack it (Playwright's bypassCSP contexts send it on
+            // every new page), but validate the parameter as Chrome does.
+            case "setBypassCSP":
+                return parameters.Get("enabled").AsBool() is null
+                    ? DomainResult.Err("enabled must be a boolean")
+                    : DomainResult.Empty();
+
+            // upstream e5bcd75: go-rod calls these. stopLoading drops a navigation the page has
+            // queued but not started; close closes the session's target. Not yet ported: the
+            // beforeunload confirmation of upstream 361f15d, and cancelling in-flight render
+            // resource loads.
+            case "stopLoading":
+            {
+                BrowserPage page = ctx.GetSessionPageMut(sessionId) ?? throw new DomainError("No page for session");
+                _ = page.TakePendingNavigation();
+                return DomainResult.Empty();
+            }
+
+            case "close":
+            {
+                BrowserPage page = ctx.GetSessionPage(sessionId) ?? throw new DomainError("No page for session");
+                DomainResult closed = await Target.HandleAsync(
+                    "closeTarget", new JsonObject { ["targetId"] = page.Id }, ctx, sessionId).ConfigureAwait(false);
+                return closed.IsOk ? DomainResult.Empty() : closed;
+            }
 
             // Obscura does not download files to disk, so there is no behavior to
             // configure; ack it so clients that set it do not warn (issue #340).

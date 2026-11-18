@@ -385,8 +385,12 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       paused. The error text after "is not valid base64:" is the port's own wording
 - [ ] CDP Fetch: `b76d966`
       (main-document interception), `2d323dd` (patterns), `5e58c86`; with open `dfc546d`
-- [ ] CDP Playwright/go-rod blockers: `939086a`/`e70183d` setBypassCSP, `e5bcd75`
-      Page.close/stopLoading, `48953ef`, `28756b4` + `c05cf3b`, `192561c`, `361f15d`
+- [x] `939086a`/`e70183d` setBypassCSP (validated ack), `e5bcd75` Page.close and stopLoading
+      (stopLoading drops a queued navigation; in-flight render loads are not cancelled),
+      `192561c` removeScriptToEvaluateOnNewDocument errors on an unknown id (preload scripts
+      are still connection-wide, `7034ad6`)
+- [ ] CDP Playwright/go-rod blockers: `48953ef`, `28756b4` + `c05cf3b`, `361f15d` (beforeunload
+      on Page.close)
 - [ ] CDP input editing: `aa4b4e7`, `d132880`, `3f7cccd`, `d88df74`, `8fe6d99` + `2e0b63f`,
       `c714042`; with open `ec62004` / `a156914`
 - [ ] CDP lifecycle and sessions: `3f8a8d1` + `de227e9`, `1959c5e`, `a74e050`, `b8586de` +

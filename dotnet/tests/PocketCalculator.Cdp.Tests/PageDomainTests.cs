@@ -183,6 +183,34 @@ public sealed class PageDomainTests
             e.Method is not ("Page.frameNavigated" or "Page.lifecycleEvent")));
     }
 
+    // upstream 939086a / e70183d (#1224), e5bcd75, 192561c: commands Playwright and go-rod send.
+    [Fact]
+    public async Task BypassCspStopLoadingCloseAndScriptRemovalAnswerAsChromeDoes()
+    {
+        var ctx = CdpContext.New();
+        using IDisposable owned = CoreCdp.Owned(ctx);
+        string pageId = ctx.CreatePage();
+        string session = $"{pageId}-session";
+        ctx.Sessions[session] = pageId;
+
+        CdpDomainFixtures.Unwrap(await PageDomain.HandleAsync("setBypassCSP", new JsonObject { ["enabled"] = true }, ctx, session));
+        Assert.Contains("boolean", CdpDomainFixtures.ErrorOf(
+            await PageDomain.HandleAsync("setBypassCSP", new JsonObject { ["enabled"] = "yes" }, ctx, session)), StringComparison.Ordinal);
+
+        JsonNode added = CdpDomainFixtures.Unwrap(await PageDomain.HandleAsync(
+            "addScriptToEvaluateOnNewDocument", new JsonObject { ["source"] = "1" }, ctx, session));
+        string identifier = added["identifier"]!.GetValue<string>();
+        CdpDomainFixtures.Unwrap(await PageDomain.HandleAsync(
+            "removeScriptToEvaluateOnNewDocument", new JsonObject { ["identifier"] = identifier }, ctx, session));
+        Assert.Equal("Script not found", CdpDomainFixtures.ErrorOf(await PageDomain.HandleAsync(
+            "removeScriptToEvaluateOnNewDocument", new JsonObject { ["identifier"] = identifier }, ctx, session)));
+
+        CdpDomainFixtures.Unwrap(await PageDomain.HandleAsync("stopLoading", new JsonObject(), ctx, session));
+        CdpDomainFixtures.Unwrap(await PageDomain.HandleAsync("close", new JsonObject(), ctx, session));
+        Assert.Null(ctx.GetPage(pageId));
+        Assert.Contains(ctx.PendingEvents, e => e.Method == "Target.targetDestroyed");
+    }
+
     [Fact]
     public async Task GetLayoutMetricsReturnsChromeDefaultViewport()
     {
