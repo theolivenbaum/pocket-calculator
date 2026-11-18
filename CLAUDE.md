@@ -135,7 +135,7 @@ README.md                       the C# port's README
 LICENSE                         MIT, for the port (Copyright Curiosity GmbH)
 NOTICE                          attributions: Obscura, Taffy, cosmic-text, the fonts
 todo.md                         port status, open issues, known deviations
-.devops/build-nuget.yml         the only build definition: build, test, pack, push
+.devops/build-nuget.yml         the only build definition: build, pack, push
 .reference/
   README.md                     what is vendored and why
   obscura/                      the original Rust Obscura at the synced commit (read-only)
@@ -477,7 +477,7 @@ The last review (upstream `727cc46..1a3169d`, 57 commits) is recorded in
 - **Publishing.** `.devops/build-nuget.yml` is an Azure DevOps pipeline on a push
   to `main`, and it is the only thing that publishes; upstream's GitHub
   workflows sit disabled under `.reference/obscura/.github/`. It restores,
-  builds, runs the whole suite, packs and pushes through the
+  builds, packs and pushes through the
   `nuget-curiosity-org` service connection, so no API key lives in the
   repository. The version is CalVer computed in the pipeline,
   `yy.M.<build id mod 65536>`; the `0.1.0` in `Directory.Build.props` is only the
