@@ -453,9 +453,13 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       eval, page-replaced or captured), so a global `let`/`const`/`class` persists to the next
       call, as in Chromium; the completion or thrown value enters the realm's handle store from
       the host, and a promise completion is awaited as before
-- [ ] CDP DOM domain and evaluation: `717dd92` + `229d1ed` (`DOM.getDocument` with `pierce`
-      reports no `shadowRoots` either), `579e1cb` (`let`
-      persists), `f66ac0a` (`__proto__` in JSON args), `7a2b9ae`
+- [x] `717dd92`: per-session `DOM.getDocument` state, with `DOM.requestChildNodes` and
+      `requestNode` pushing `DOM.setChildNodes` once per parent, `getNodeForLocation`'s
+      `nodeId` only for a session holding the document, `DOM.getAttributes`, `DOM.disable`,
+      `DOM.documentUpdated` on a new document, and qualified attribute names. Shadow roots are
+      reported (`shadowRoots`, expanded with `pierce`) and pushed through, as Chromium does
+      (see Known deviations)
+- [ ] CDP DOM domain and evaluation: `229d1ed`, `f66ac0a` (`__proto__` in JSON args), `7a2b9ae`
 - [x] CDP control plane: `1faf17f` allowlist part (`POCKETCALCULATOR_CDP_ALLOWED_ORIGINS`, like
       Chromium's --remote-allow-origins); its default acceptance of the endpoint's own Origin is
       declined: Chromium 1243 refuses every Origin without the flag (measured 2026-11-18).
@@ -2718,6 +2722,28 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   fires a trusted `blur` and `focusout` at it first, while it is still connected and with
   `activeElement` already the body, as Chromium 1243 does; upstream clears focus after the
   mutation and fires nothing (its test asserts no events; the ported test asserts Chromium's).
+
+- Light-DOM node queries (`717dd92`), measured against Chromium 1243 over raw CDP:
+  - Shadow roots are reported, where upstream reports none: a host carries `shadowRoots`
+    (`nodeType` 11, `#document-fragment`, `shadowRootType` open or closed) in `getDocument`,
+    `describeNode` and `setChildNodes` pushes, with or without `pierce`, as Chromium does; a
+    root's contents are expanded only with `pierce` (also honoured by `describeNode`, which
+    upstream ignores). A shadow root's own node reports as `#document-fragment`, not
+    `#document`.
+  - `DOM.requestNode` and `getNodeForLocation` push a node inside a shadow tree through its
+    root (the root's children go out with the root as `parentId`), as Chromium does; upstream
+    refuses anything outside the light DOM.
+  - `requestChildNodes{pierce:true}` descends into the shadow roots the session was given.
+    It is refused, as upstream refuses every shadow root, only for a root attached after its
+    host was sent (no `DOM.shadowRootPushed` yet) and for frames (no `contentDocument`).
+  - `requestNode` checks a genuine node of the page's document through a closure helper
+    (`__obscura_cdp.nodeIdOf`: boot-time `Node.prototype` and the wrapper cache) where
+    upstream checks `instanceof Node` against page-visible globals; a child frame's node is
+    refused, and `getNodeForLocation` gives a hit in a child frame no `nodeId`.
+  - Not matched yet, here or upstream: Chromium's frame-crossing `contentDocument` with
+    `pierce`, user-agent shadow roots, `assignedSlot`/`distributedNodes`, `parentId`, the
+    inlined lone text child, `children: []` on empty nodes, and the mutation events
+    (`childNodeInserted`, `shadowRootPushed`) that would publish nodes added later.
 
 ### Operator font directories load per render pass, not into a cached base database
 

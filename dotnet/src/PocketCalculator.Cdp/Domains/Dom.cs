@@ -13,7 +13,7 @@ namespace PocketCalculator.Cdp.Domains;
 /// The CDP <c>DOM</c> domain: the node tree, selector queries, node resolution
 /// and box models.
 /// </summary>
-public static class Dom
+public static partial class Dom
 {
     /// <summary>
     /// Hard cap on how deep a getDocument/describeNode response may nest, independent
@@ -65,17 +65,23 @@ public static class Dom
             case "enable":
                 return DomainResult.Empty();
 
+            case "disable":
+                // upstream 717dd92: the session's published nodes are forgotten.
+                ctx.DomDocuments.Remove(DocumentKey(sessionId));
+                return DomainResult.Empty();
+
             case "getDocument":
             {
                 BrowserPage page = ctx.GetSessionPage(sessionId) ?? throw new DomainError("No page");
                 long depth = parameters.Get("depth").AsI64() ?? 2;
+                bool pierce = parameters.Get("pierce").AsBool() == true;
                 JsonNode? root = null;
                 bool hasDom = page.WithDom(dom =>
                 {
                     // Chromium's DOM agent drops its node bindings when the document is
                     // requested again; so do the pins that stand for them.
                     dom.UnpinAll(ctx);
-                    root = SerializeNode(dom, dom.Document, unchecked((uint)depth), 0, ctx);
+                    root = SerializeNode(dom, dom.Document, unchecked((uint)depth), 0, ctx, pierce);
                     return true;
                 });
                 if (!hasDom)
@@ -83,7 +89,75 @@ public static class Dom
                     throw new DomainError("No DOM loaded");
                 }
 
+                // upstream 717dd92: remember what this session was given, for the
+                // setChildNodes pushes that requestChildNodes and requestNode make.
+                var state = new DomDocument(page.Id, sessionId);
+                state.Remember(root);
+                ctx.DomDocuments[DocumentKey(sessionId)] = state;
                 return DomainResult.Ok(new JsonObject { ["root"] = root });
+            }
+
+            case "getAttributes":
+            {
+                NodeId nodeId = NodeIdParam(parameters);
+                BrowserPage page = ctx.GetSessionPage(sessionId) ?? throw new DomainError("No page");
+                JsonArray attributes = page.WithDom(dom =>
+                {
+                    Node node = dom.GetNode(nodeId) ?? throw new DomainError("No node with given id found");
+                    ElementData element = node.AsElement() ?? throw new DomainError("Node is not an Element");
+                    var pairs = new JsonArray();
+                    foreach (DomAttribute attribute in element.Attrs)
+                    {
+                        pairs.Add(attribute.QualifiedName);
+                        pairs.Add(attribute.Value);
+                    }
+
+                    return pairs;
+                }) ?? throw new DomainError("No DOM loaded");
+                return DomainResult.Ok(new JsonObject { ["attributes"] = attributes });
+            }
+
+            case "requestChildNodes":
+            {
+                NodeId node = NodeIdParam(parameters);
+                uint depth = 1;
+                if (parameters is JsonObject request && request.TryGetPropertyValue("depth", out JsonNode? rawDepth))
+                {
+                    depth = rawDepth.AsI64() switch
+                    {
+                        -1 => uint.MaxValue,
+                        > 0 and var value => value > uint.MaxValue ? uint.MaxValue : (uint)value,
+                        _ => throw new DomainError("depth must be positive or -1"),
+                    };
+                }
+
+                bool pierce = parameters.Get("pierce").AsBool() == true;
+                ctx.DomDocuments.TryGetValue(DocumentKey(sessionId), out DomDocument? state);
+                BrowserPage? page = ctx.GetSessionPage(sessionId);
+                if (pierce && page is not null
+                    && page.WithDom(dom => UnservedPierceRoot(dom, state, node, depth)) is { } refusal)
+                {
+                    throw new DomainError(refusal);
+                }
+
+                if (state is not null && page is not null)
+                {
+                    List<(NodeId Parent, JsonArray Nodes)> pushes = [];
+                    try
+                    {
+                        page.WithDom(dom =>
+                        {
+                            PushChildren(dom, state, node, depth, pierce, ctx, pushes);
+                            return true;
+                        });
+                    }
+                    finally
+                    {
+                        EmitPushes(ctx, page, sessionId, pushes);
+                    }
+                }
+
+                return DomainResult.Empty();
             }
 
             case "querySelector":
@@ -154,6 +228,9 @@ public static class Dom
             {
                 BrowserPage page = ctx.GetSessionPageMut(sessionId) ?? throw new DomainError("No page");
                 long depth = parameters.Get("depth").AsI64() ?? 0;
+                // Port addition, with the shadowRoots in SerializeNode: Chromium's describeNode
+                // takes pierce too; upstream ignores it.
+                bool pierce = parameters.Get("pierce").AsBool() == true;
 
                 ulong nodeId;
                 uint document = 0;
@@ -181,7 +258,7 @@ public static class Dom
                 JsonNode? node = null;
                 page.WithFrameDom(document, dom =>
                 {
-                    node = SerializeNode(dom, NodeId.New((uint)nodeId), unchecked((uint)depth), 0, ctx);
+                    node = SerializeNode(dom, NodeId.New((uint)nodeId), unchecked((uint)depth), 0, ctx, pierce);
                     return true;
                 });
                 AddContentFrameId(page, document, node);
@@ -273,20 +350,27 @@ public static class Dom
                 });
             }
 
-            // The node behind a remote object, from whichever realm minted it. Node ids
-            // here are backend node ids, which every world shares. Port addition: the Rust
-            // engine has no DOM.requestNode.
+            // The node behind a remote object, from any world of the page's document. Node ids
+            // here are backend node ids, which every world shares. upstream 717dd92: 0 until
+            // the session has requested the document, then the node's path is pushed to it.
             case "requestNode":
             {
                 BrowserPage page = ctx.GetSessionPageMut(sessionId) ?? throw new DomainError("No page");
-                if (parameters.Get("objectId").AsString() is null)
+                string objectId = parameters.Get("objectId").AsString()
+                    ?? throw new DomainError("objectId required");
+                double? resolved = page.EvaluateInObjectRealm(
+                    objectId, $"__obscura_cdp.nodeIdOf({CdpUtil.ObjectIdLiteral(objectId)})").AsF64();
+                // A child frame's node ids are its own document's, which the session was not
+                // given (upstream: "o.ownerDocument === document").
+                if (resolved is not { } nid || nid < 0 || nid > uint.MaxValue || nid != Math.Floor(nid)
+                    || page.FrameIdOfObject(objectId) != 0)
                 {
-                    throw new DomainError("objectId required");
+                    throw new DomainError("Object id does not reference a Node in this document");
                 }
 
-                ulong nodeId = ResolveNodeId(page, parameters);
-                page.WithDom(dom => Pinned(dom, ctx, NodeId.New((uint)nodeId)));
-                return DomainResult.Ok(new JsonObject { ["nodeId"] = nodeId });
+                var node = NodeId.New((uint)nid);
+                page.WithDom(dom => Pinned(dom, ctx, node));
+                return DomainResult.Ok(new JsonObject { ["nodeId"] = PushNode(ctx, sessionId, page, node) });
             }
 
             case "setAttributeValue":
@@ -548,12 +632,20 @@ public static class Dom
 
                 ulong nodeId = (ulong)nid;
                 page.WithFrameDom(frameId, dom => Pinned(dom, ctx, NodeId.New((uint)nodeId)));
-                return DomainResult.Ok(new JsonObject
+                var result = new JsonObject
                 {
                     ["backendNodeId"] = nodeId,
                     ["frameId"] = frameId == 0 ? page.FrameId : Page.ChildFrameId(page.FrameId, frameId),
-                    ["nodeId"] = nodeId,
-                });
+                };
+                // upstream 717dd92: a nodeId only for a session holding the document, and the
+                // node is pushed to it, as Chromium does. A hit in a child frame gets none: the
+                // frame's document is not part of what the session was given.
+                if (frameId == 0 && ctx.DomDocuments.ContainsKey(DocumentKey(sessionId)))
+                {
+                    result["nodeId"] = PushNode(ctx, sessionId, page, NodeId.New((uint)nodeId));
+                }
+
+                return DomainResult.Ok(result);
             }
 
             case "getContentQuads":
@@ -789,6 +881,15 @@ public static class Dom
 
         switch (node.Data)
         {
+            // A shadow root's backing node is a document in the native tree. Port addition
+            // (upstream reports it as a #document): Chromium's DocumentFragment, with its mode.
+            case DocumentData when dom.ShadowRootInfo(nodeId) is { } shadow:
+                result["nodeType"] = 11;
+                result["nodeName"] = "#document-fragment";
+                result["localName"] = "";
+                result["nodeValue"] = "";
+                result["shadowRootType"] = shadow.Mode == ShadowRootMode.Open ? "open" : "closed";
+                break;
             case DocumentData:
                 result["nodeType"] = 9;
                 result["nodeName"] = "#document";
@@ -815,7 +916,8 @@ public static class Dom
                 var attributes = new JsonArray();
                 foreach (DomAttribute attribute in element.Attrs)
                 {
-                    attributes.Add(attribute.Name.Local);
+                    // upstream 717dd92: the qualified name, so `x:flag` keeps its prefix.
+                    attributes.Add(attribute.QualifiedName);
                     attributes.Add(attribute.Value);
                 }
 
@@ -888,13 +990,23 @@ public static class Dom
     /// Serialize a node and its descendants into the CDP Node tree, iteratively.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The requested <paramref name="maxDepth"/> is clamped to
     /// <paramref name="currentDepth"/> + <see cref="MaxSerializeDepth"/> so a
     /// <c>depth:-1</c> request on a very deep DOM cannot produce a value that overflows
     /// the stack when it is later serialized. An explicit heap worklist keeps the builder
     /// itself off the call stack.
+    /// </para>
+    /// <para>
+    /// Port addition: a shadow host carries <c>shadowRoots</c>, as Chromium reports them (open
+    /// and closed alike, with or without <c>pierce</c>; measured against Chromium 1243). The
+    /// root sits one level below its host, and its contents are only expanded with
+    /// <paramref name="pierce"/>. Upstream reports no shadow roots at all, so its
+    /// <c>getDocument{pierce:true}</c> silently leaves shadow trees out.
+    /// </para>
     /// </remarks>
-    internal static JsonNode? SerializeNode(DomTree dom, NodeId nodeId, uint maxDepth, uint currentDepth, object? pinOwner = null)
+    internal static JsonNode? SerializeNode(
+        DomTree dom, NodeId nodeId, uint maxDepth, uint currentDepth, object? pinOwner = null, bool pierce = false)
     {
         uint clamped = Math.Min(
             maxDepth,
@@ -915,6 +1027,7 @@ public static class Dom
                 Built = [],
                 Depth = currentDepth,
                 Expand = currentDepth < clamped && root.Children.Count > 0,
+                Shadow = dom.ShadowRootOf(nodeId),
             },
         };
 
@@ -922,15 +1035,21 @@ public static class Dom
         {
             Frame top = stack[^1];
             NodeId? nextChild = null;
+            bool isShadow = false;
             if (top.Expand && top.Next < top.Children.Count)
             {
                 nextChild = top.Children[top.Next];
                 top.Next++;
             }
+            else if (top.Shadow is { } shadow && top.ShadowValue is null)
+            {
+                nextChild = shadow;
+                isShadow = true;
+            }
 
             if (nextChild is { } childId)
             {
-                uint childDepth = stack[^1].Depth + 1;
+                uint childDepth = top.Depth + 1;
                 if (NodeValue(dom, childId, pinOwner) is { } child)
                 {
                     stack.Add(new Frame
@@ -940,13 +1059,19 @@ public static class Dom
                         Next = 0,
                         Built = [],
                         Depth = childDepth,
-                        Expand = childDepth < clamped && child.Children.Count > 0,
+                        Expand = (!isShadow || pierce) && childDepth < clamped && child.Children.Count > 0,
+                        Shadow = isShadow ? null : dom.ShadowRootOf(childId),
+                        IsShadowRoot = isShadow,
                     });
+                }
+                else if (isShadow)
+                {
+                    top.Shadow = null;
                 }
                 else
                 {
                     // Missing child: match the recursive behavior of emitting null.
-                    stack[^1].Built.Add(null);
+                    top.Built.Add(null);
                 }
 
                 continue;
@@ -966,12 +1091,24 @@ public static class Dom
                 frame.Value["children"] = children;
             }
 
+            if (frame.ShadowValue is { } shadowValue)
+            {
+                frame.Value["shadowRoots"] = new JsonArray(shadowValue);
+            }
+
             if (stack.Count == 0)
             {
                 return frame.Value;
             }
 
-            stack[^1].Built.Add(frame.Value);
+            if (frame.IsShadowRoot)
+            {
+                stack[^1].ShadowValue = frame.Value;
+            }
+            else
+            {
+                stack[^1].Built.Add(frame.Value);
+            }
         }
     }
 
@@ -988,6 +1125,13 @@ public static class Dom
         internal required uint Depth { get; init; }
 
         internal required bool Expand { get; init; }
+
+        /// <summary>The host's shadow root, still to be serialized while <see cref="ShadowValue"/> is null.</summary>
+        internal NodeId? Shadow { get; set; }
+
+        internal JsonObject? ShadowValue { get; set; }
+
+        internal bool IsShadowRoot { get; init; }
     }
 
     /// <summary>

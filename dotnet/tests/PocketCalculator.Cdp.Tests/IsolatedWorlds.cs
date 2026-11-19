@@ -241,6 +241,8 @@ public sealed class IsolatedWorlds
         Assert.Equal(fromMain["node"]!["backendNodeId"].AsI64(), backend);
         Assert.Equal("P", fromWorld["node"]!["nodeName"].AsString());
 
+        // requestNode answers 0 until the session holds the document (upstream 717dd92, Chromium).
+        await CoreCdp.CdpAsync(ctx, 66, "DOM.getDocument", new JsonObject { ["depth"] = 0 }, page.Session);
         JsonNode requested = await CoreCdp.CdpAsync(ctx, 62, "DOM.requestNode", new JsonObject { ["objectId"] = worldId }, page.Session);
         Assert.Equal(backend, requested["nodeId"].AsI64());
 

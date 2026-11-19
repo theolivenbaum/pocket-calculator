@@ -27908,6 +27908,13 @@ const _cdpHost = _objectFreeze({
     const o = _cdpObjects[id];
     return (o && typeof o._nid === 'number') ? o._nid : -1;
   },
+  // The node id behind a handle that is a genuine node of this realm, or -1: DOM.requestNode
+  // (upstream 717dd92) rejects `({_nid: 1})`. Upstream checks `o instanceof Node` against the
+  // page-visible globals; this checks the boot-time prototype and the wrapper cache instead.
+  nodeIdOf: (id) => {
+    const o = _cdpObjects[id];
+    return _isNodeTarget(o) && _wrap(o._nid) === o ? o._nid : -1;
+  },
   wrap: (nid) => _wrap(nid),
   // upstream f66ac0a: callFunctionOn's JSON `value` arguments are parsed, not pasted as an
   // object literal, so a "__proto__" key is an own property rather than the prototype.

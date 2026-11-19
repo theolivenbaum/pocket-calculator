@@ -111,6 +111,40 @@ public sealed class CdpContext
     public List<CdpEvent> PendingEvents { get; } = [];
 
     /// <summary>
+    /// The document each session last requested with <c>DOM.getDocument</c>, keyed by
+    /// <see cref="Dom.DocumentKey"/> (upstream 717dd92). Released by <c>DOM.disable</c>,
+    /// a new document (with <c>DOM.documentUpdated</c>), detach and close.
+    /// </summary>
+    internal Dictionary<string, DomDocument> DomDocuments { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Drops the DOM documents of a page, telling each session when asked to.</summary>
+    private void ReleaseDomDocuments(string pageId, bool notify)
+    {
+        List<string> released = [];
+        foreach (var (key, document) in DomDocuments)
+        {
+            if (string.Equals(document.PageId, pageId, StringComparison.Ordinal))
+            {
+                released.Add(key);
+                if (notify)
+                {
+                    PendingEvents.Add(new CdpEvent
+                    {
+                        Method = "DOM.documentUpdated",
+                        Params = new JsonObject(),
+                        SessionId = document.SessionId,
+                    });
+                }
+            }
+        }
+
+        foreach (var key in released)
+        {
+            DomDocuments.Remove(key);
+        }
+    }
+
+    /// <summary>
     /// Targets whose <c>Page.close</c> is waiting on a beforeunload confirmation, with the
     /// session that asked, which <c>Page.javascriptDialogClosed</c> goes to (upstream 361f15d).
     /// </summary>
@@ -617,6 +651,7 @@ public sealed class CdpContext
 
     public void RemovePage(string id)
     {
+        ReleaseDomDocuments(id, notify: false);
         PendingBeforeunloadClose.Remove(id);
         List<string> removedSessions = [];
         foreach (var (sessionId, pageId) in Sessions)
@@ -752,6 +787,8 @@ public sealed class CdpContext
         string frameId,
         string origin)
     {
+        // upstream 717dd92: node ids published from the old document are void.
+        ReleaseDomDocuments(pageId, notify: true);
         if (_pageContexts.Remove(pageId, out var previous))
         {
             foreach (var id in previous)

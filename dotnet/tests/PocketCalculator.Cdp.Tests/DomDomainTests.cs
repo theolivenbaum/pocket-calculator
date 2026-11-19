@@ -23,6 +23,41 @@ namespace PocketCalculator.Cdp.Tests;
 public sealed class DomDomainTests
 {
     /// <summary>
+    /// upstream 717dd92: a session's published node ids go with a new document (announced
+    /// with DOM.documentUpdated), with the session, and with the target.
+    /// </summary>
+    [Fact]
+    public async Task DomNodeTrackingIsReleasedOnNavigationDetachAndClose()
+    {
+        var ctx = CdpContext.New();
+        using IDisposable owned = CoreCdp.Owned(ctx);
+        string page = ctx.CreatePage();
+        string session = $"{page}-session";
+        ctx.Sessions[session] = page;
+        CdpDomainFixtures.Unwrap(await PageDomain.HandleAsync(
+            "navigate", new JsonObject { ["url"] = "data:text/html,<p>first</p>" }, ctx, session));
+        CdpDomainFixtures.Unwrap(await DomDomain.HandleAsync(
+            "getDocument", new JsonObject { ["depth"] = -1 }, ctx, session));
+        ctx.PendingEvents.Clear();
+        CdpDomainFixtures.Unwrap(await PageDomain.HandleAsync(
+            "navigate", new JsonObject { ["url"] = "data:text/html,<p>second</p>" }, ctx, session));
+        Assert.True(ctx.DomDocuments.Count == 0, "navigation must release the old node cache");
+        Assert.Contains(ctx.PendingEvents, e => e.Method == "DOM.documentUpdated" && e.SessionId == session);
+
+        CdpDomainFixtures.Unwrap(await DomDomain.HandleAsync("getDocument", new JsonObject(), ctx, session));
+        CdpDomainFixtures.Unwrap(await PocketCalculator.Cdp.Domains.Target.HandleAsync(
+            "detachFromTarget", new JsonObject { ["sessionId"] = session }, ctx, null));
+        Assert.True(ctx.DomDocuments.Count == 0, "detach must release session-owned nodes");
+
+        const string closing = "closing";
+        ctx.Sessions[closing] = page;
+        CdpDomainFixtures.Unwrap(await DomDomain.HandleAsync("getDocument", new JsonObject(), ctx, closing));
+        Assert.Single(ctx.DomDocuments);
+        ctx.RemovePage(page);
+        Assert.True(ctx.DomDocuments.Count == 0, "close must release the target's node cache");
+    }
+
+    /// <summary>
     /// CDP clients (browser-use) focus an input via DOM.focus before typing;
     /// dispatchKeyEvent then targets document.activeElement. DOM.focus must actually move
     /// focus or keystrokes land on nothing.
