@@ -7573,8 +7573,9 @@ function _convertNodes(nodes) {
     return Number.isFinite(n) ? n : null;
   };
   // IDL `long` conversion (ToInt32): finite, truncated, wrapped to 32-bit signed.
+  // `+v` rather than Number(v), so a BigInt is a TypeError as in WebIDL (upstream 2f302d9).
   const toLong = (v) => {
-    let n = Number(v);
+    let n = +v;
     if (!Number.isFinite(n)) n = 0;
     n = Math.trunc(n) % 4294967296;
     if (n >= 2147483648) n -= 4294967296;
@@ -24640,6 +24641,25 @@ const _svgMemberOwners = {
   const TextArea = globalThis.HTMLTextAreaElement;
   def(TextArea, 'defaultValue', function () { return this.textContent; }, function (v) { this.textContent = _String(v); });
   def(TextArea, 'textLength', function () { return _String(this.value).length; });
+})();
+// upstream 2f302d9: HTMLLIElement.value reflects the value attribute as a long, default 0
+// (Chromium 157). It used to share the form controls' string `value`. Defined before the
+// members are distributed, which leave an interface's own member in place.
+(function _listItemValue() {
+  const parse = /^[\t\n\f\r ]*([-+]?)([0-9]+)/;
+  const getter = { get value() {
+    const v = _elCall('getAttribute', this, ['value']);
+    const m = v === null ? null : _reflectApply(RegExp.prototype.exec, parse, [v]);
+    if (!m) return 0;
+    const n = m[1] === '-' ? -m[2] : +m[2];
+    return n >= -2147483648 && n <= 2147483647 ? n : 0;
+  } };
+  const setter = { set value(v) { _elCall('setAttribute', this, ['value', _String(+v | 0)]); } };
+  _defineProperty(HTMLLIElement.prototype, 'value', {
+    get: _markNative(_getOwnPropertyDescriptor(getter, 'value').get),
+    set: _markNative(_getOwnPropertyDescriptor(setter, 'value').set),
+    enumerable: true, configurable: true,
+  });
 })();
 (function _distributeInterfaceMembers() {
   const EP = Element.prototype;
