@@ -139,10 +139,7 @@ public sealed partial class Page
         {
             return;
         }
-        string encoded = base64Encoded
-            ? Convert.ToBase64String(body)
-            : System.Text.Encoding.UTF8.GetString(body);
-        _responseBodies[requestId] = new StoredResponseBody(encoded, base64Encoded);
+        _responseBodies[requestId] = new StoredResponseBody(body, base64Encoded);
         _responseBodyOrder.AddLast(requestId);
         while (_responseBodyOrder.Count > maxEntries)
         {
@@ -158,11 +155,15 @@ public sealed partial class Page
         int maxEntries = PageHelpers.ResponseBodyEntryLimit();
         foreach (var (requestId, body) in bodies)
         {
+            if (StoredResponseBody.FromRuntime(body) is not { } raw)
+            {
+                continue;
+            }
             if (_responseBodies.ContainsKey(requestId))
             {
                 _responseBodyOrder.Remove(requestId);
             }
-            _responseBodies[requestId] = new StoredResponseBody(body.Body, body.Base64Encoded);
+            _responseBodies[requestId] = raw;
             _responseBodyOrder.AddLast(requestId);
         }
         while (_responseBodyOrder.Count > maxEntries && _responseBodyOrder.First is { } oldest)
@@ -179,7 +180,7 @@ public sealed partial class Page
             return stored;
         }
         StoredNetworkResponseBody? body = Js?.GetNetworkResponseBody(requestId);
-        return body is null ? null : new StoredResponseBody(body.Body, body.Base64Encoded);
+        return body is null ? null : StoredResponseBody.FromRuntime(body);
     }
 
     /// <summary>
@@ -189,8 +190,8 @@ public sealed partial class Page
     /// <remarks>
     /// Removes it from the in-memory cache and transfers ownership to the caller, so
     /// a large body is held once and freed when the stream closes rather than
-    /// lingering in this long-running process. Binary bodies are stored base64
-    /// (byte-exact); text bodies return their UTF-8 bytes. Returns null when the body
+    /// lingering in this long-running process. The bytes are the response's own, as
+    /// stored (upstream 3a4a0b5). Returns null when the body
     /// was never cached (it exceeded <c>POCKETCALCULATOR_NETWORK_BODY_BUFFER_BYTES</c>) or the
     /// id is unknown.
     /// </remarks>
@@ -214,25 +215,11 @@ public sealed partial class Page
         else
         {
             StoredNetworkResponseBody? body = Js?.GetNetworkResponseBody(requestId);
-            stored = body is null ? null : new StoredResponseBody(body.Body, body.Base64Encoded);
+            stored = body is null ? null : StoredResponseBody.FromRuntime(body);
         }
 
-        if (stored is null)
-        {
-            return null;
-        }
-        if (!stored.Base64Encoded)
-        {
-            return System.Text.Encoding.UTF8.GetBytes(stored.Body);
-        }
-        try
-        {
-            return Convert.FromBase64String(stored.Body);
-        }
-        catch (FormatException)
-        {
-            return null;
-        }
+        // Raw bytes are what is stored; the base64 flag only says how CDP reports the body.
+        return stored?.Body;
     }
 
     /// <summary>

@@ -290,7 +290,7 @@ public static class Network
                     ? DomainResult.Err($"No response body found for requestId {requestId}")
                     : DomainResult.Ok(new JsonObject
                     {
-                        ["body"] = body.Body,
+                        ["body"] = body.CdpBody(),
                         ["base64Encoded"] = body.Base64Encoded,
                     });
             }

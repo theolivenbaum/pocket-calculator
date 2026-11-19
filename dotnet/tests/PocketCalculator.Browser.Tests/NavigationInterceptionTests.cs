@@ -45,7 +45,7 @@ public sealed class NavigationInterceptionTests
         Assert.Equal(201, document.Status);
         Assert.True(document.Intercepted);
         Assert.Equal(request.RequestId, document.RequestId);
-        Assert.Equal(Encoding.UTF8.GetString(bytes), page.GetResponseBody(document.RequestId)!.Body);
+        Assert.Equal(Encoding.UTF8.GetString(bytes), page.GetResponseBody(document.RequestId)!.CdpBody());
         string[] setCookies = document.ResponseHeaders["set-cookie"].Split('\n');
         Array.Sort(setCookies, StringComparer.Ordinal);
         Assert.Equal(["first=1; Path=/", "second=2; Path=/"], setCookies);

@@ -79,6 +79,37 @@ public sealed class ModuleNetworkEvents
         Assert.Equal("net::ERR_FAILED", failure.ErrorText);
     }
 
+    // Upstream 3a4a0b5 (module_body_buffer_preserves_non_utf8_bytes): bodies are kept as
+    // their raw bytes, and the CDP form is produced on read, before and after suspension.
+    [Fact]
+    public async Task Non_utf8_module_bodies_keep_their_raw_bytes()
+    {
+        byte[] raw = [.. "// "u8, 0xE9, .. "\nglobalThis.nonUtf8ModuleRan=true;"u8];
+        using TestHttpServer server = TestHttpServer.Start(request => request.Path switch
+        {
+            "/raw.js" => new TestResponse("text/javascript", raw, "200 OK", []),
+            _ => TestResponse.Html("<html><head><script type=module src=/raw.js></script></head><body></body></html>"),
+        });
+        using Page page = PageFixtures.NewPage("module-network-raw");
+        await page.NavigateAsync($"{server.Origin}/");
+        page.SyncJsNetworkEvents();
+        var id = Assert.Single(page.NetworkEvents, e => e.Url == server.Origin + "/raw.js").RequestId;
+
+        var live = page.GetResponseBody(id);
+        Assert.NotNull(live);
+        Assert.True(live!.Base64Encoded);
+        Assert.Equal(Convert.ToBase64String(raw), live.CdpBody());
+
+        page.SuspendJs();
+        var retained = page.GetResponseBody(id);
+        Assert.NotNull(retained);
+        Assert.True(retained!.Base64Encoded);
+        Assert.Equal(raw, retained.Body);
+        Assert.Equal(Convert.ToBase64String(raw), retained.CdpBody());
+        Assert.Equal(raw, page.TakeResponseBodyRaw(id));
+        Assert.Null(page.GetResponseBody(id));
+    }
+
     private static void AssertModule(
         Page page, TestHttpServer server, string path, int status, string body, string resourceType = "Script")
     {
@@ -91,7 +122,7 @@ public sealed class ModuleNetworkEvents
             networkEvent.ResponseHeaders.First(h => h.Key.Equals("x-module-probe", StringComparison.OrdinalIgnoreCase)).Value);
         var stored = page.GetResponseBody(networkEvent.RequestId);
         Assert.NotNull(stored);
-        Assert.Equal(body, stored!.Body);
+        Assert.Equal(body, stored!.CdpBody());
         Assert.False(stored.Base64Encoded);
     }
 }

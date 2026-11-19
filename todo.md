@@ -688,7 +688,12 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       the same state. Behaviour unchanged; interleaved runs of 5 x (2,000 nested appends + a
       layout + 300 appends) show no measurable difference (medians 2,129 vs 2,193 ms on a loaded
       host, within noise)
-- [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `35b9448`, `3a4a0b5`,
+- [x] `3a4a0b5`: the page keeps response bodies as raw bytes (`StoredResponseBody.Body` is
+      `byte[]`); `Network.getResponseBody` produces the lossy text or base64 form on read
+      (`CdpBody()`), and `takeResponseBodyAsStream` returns the stored bytes, so a non-UTF-8
+      text body now streams byte-exact. Interleaved, 12 runs each, a page with 20 x 1.8 MB
+      non-ASCII scripts: median 714 ms before, 643 ms after
+- [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `35b9448`,
       `3a9eb06`, `8310ebf`
 
 Parity against a reference built at `4eb1235` (2026-11-18): 377 of 385 cases identical. The

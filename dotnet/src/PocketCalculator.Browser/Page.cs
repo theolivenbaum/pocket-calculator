@@ -68,7 +68,38 @@ public sealed class NetworkEvent
 public sealed record NetworkRedirect(string Url, int Status, IReadOnlyDictionary<string, string> Headers);
 
 /// <summary>A response body retained for <c>Network.getResponseBody</c>.</summary>
-public sealed record StoredResponseBody(string Body, bool Base64Encoded);
+/// <remarks>
+/// upstream 3a4a0b5: the raw response bytes. The CDP wire form (lossy text or base64, per
+/// <see cref="Base64Encoded"/>) is produced on read by <see cref="CdpBody"/>, so a body no
+/// client asks for pays no decode at store time and is held once.
+/// </remarks>
+public sealed record StoredResponseBody(byte[] Body, bool Base64Encoded)
+{
+    /// <summary>The body as CDP <c>Network.getResponseBody</c> reports it.</summary>
+    public string CdpBody() => Base64Encoded
+        ? Convert.ToBase64String(Body)
+        : System.Text.Encoding.UTF8.GetString(Body);
+
+    /// <summary>
+    /// A runtime-side body, which holds the CDP text form, as raw bytes; null when a base64
+    /// form does not decode.
+    /// </summary>
+    internal static StoredResponseBody? FromRuntime(PocketCalculator.Js.Ops.StoredNetworkResponseBody body)
+    {
+        if (!body.Base64Encoded)
+        {
+            return new StoredResponseBody(System.Text.Encoding.UTF8.GetBytes(body.Body), false);
+        }
+        try
+        {
+            return new StoredResponseBody(Convert.FromBase64String(body.Body), true);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+    }
+}
 
 /// <summary>Which <c>PageError</c> variant a <see cref="PageException"/> carries.</summary>
 public enum PageErrorKind
