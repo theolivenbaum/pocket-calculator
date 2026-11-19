@@ -16166,14 +16166,19 @@ Object.defineProperty(Storage.prototype, 'length', { get: function() {
   return r === 'none' ? Object.keys(this._data).length : +r;
 }, configurable: true });
 _defineProperty(Storage, 'prototype', { writable: false });
+// upstream 1e4238e (#1500): the prototype is captured at boot, so a page that replaces the
+// global constructor (`window.Storage = {}`) keeps working storage, as in Chromium. Upstream
+// captures it when the store is made, which is after such a replacement if the page does it
+// before first touching localStorage.
+const _storagePrototype = Storage.prototype;
 
 const _mkStore = (kind) => {
-  const target = Object.create(Storage.prototype);
+  const target = Object.create(_storagePrototype);
   Object.defineProperty(target, '_data', { value: Object.create(null), writable: true, enumerable: false, configurable: true });
   Object.defineProperty(target, '_kind', { value: kind, writable: false, enumerable: false, configurable: true });
   // undefined until the first call answers whether the host keeps this document's area.
   Object.defineProperty(target, '_host', { value: undefined, writable: true, enumerable: false, configurable: true });
-  const isReal = (p) => p === '_data' || p === '_kind' || p === '_host' || p === 'constructor' || (p in Storage.prototype);
+  const isReal = (p) => p === '_data' || p === '_kind' || p === '_host' || p === 'constructor' || (p in _storagePrototype);
   return new Proxy(target, {
     get(t, p, recv) { if (typeof p === 'symbol' || isReal(p)) return Reflect.get(t, p, recv); const v = _storageGet(t, p); return v === null ? undefined : v; },
     set(t, p, v, recv) { if (typeof p === 'symbol' || isReal(p)) return Reflect.set(t, p, v, recv); t.setItem(p, v); return true; },

@@ -479,8 +479,9 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       request (the op is cancelled, Network.loadingFailed net::ERR_ABORTED), an unread body
       errors on abort, Request has its own following signal, private signal state, trusted
       abort events, ReadableStream drain/error order. XHR abort still lets its request run
-- [ ] Storage: `f661c2e` persistence, `677f6d2`, `9a5d9c6`, `3dea548` IndexedDB,
-      `1e4238e`
+- [x] `1e4238e`: Web Storage keeps working after `window.Storage` is replaced (the prototype is
+      captured at boot; upstream captures it per store, after such a replacement)
+- [ ] Storage: `f661c2e` persistence, `677f6d2`, `9a5d9c6`, `3dea548` IndexedDB
 - [ ] Frames (within the separate-engine design): `20299be`, `12b40f6` + `bcf6d03`,
       `8dddc6f`, `47a3431`, `6d25c43`, `667eb59`, `e4f11db`; a real-realm
       `contentWindow` (`24d8742`, `911c45c`) needs a design decision first
