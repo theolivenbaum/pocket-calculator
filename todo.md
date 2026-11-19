@@ -413,7 +413,14 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       readonly Backspace and textarea Enter. (Delete-key editing is not in the port at all.)
 - [x] `8fe6d99` + `2e0b63f`: a click on a details element's first summary toggles it (el.click()
       and CDP mouse), open changes queue one coalescing toggle event (matches Chromium 1243)
-- [ ] CDP input editing: `d88df74`, `c714042`; with open `ec62004` / `a156914`
+- [x] `c714042`: `scrollIntoView` scrolls every scrollable ancestor (innermost first) before the
+      viewport, `scrollIntoViewIfNeeded` exists (and backs `DOM.scrollIntoViewIfNeeded`), the
+      nearest alignment handles a box larger than its scrollport, and removing the focused
+      element's subtree (remove, replace, move, `innerHTML`/`textContent`) resets focus to the
+      body. With it, `Element.clientTop`/`clientLeft`, which the shim lacked. Open: Chromium
+      counts a last child's trailing margin in a block's scrollable overflow, the port does not
+      (`scrollHeight` 336 vs 352 with a 16px-margin `<p>` at the end)
+- [ ] CDP input editing: `d88df74`; with open `ec62004` / `a156914`
 - [x] `3f8a8d1` + `de227e9` + `1959c5e`: `Page.setLifecycleEventsEnabled` is a real, validated
       subscription (off the fast path), independent of `Runtime.enable`; a reopened document's
       `Page.lifecycleEvent`s go only to subscribers, and enabling replays the current
@@ -2700,6 +2707,11 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   back as a resource (upstream) cost two ops per fetch, measured at about 40% on 100
   concurrent small JSON fetches in a first run; with this, interleaved runs against the
   pre-port build are within noise for large, concurrent small and sequential small fetches.
+
+- Focus on removal (`c714042`): a mutation that takes the focused element out of the tree
+  fires a trusted `blur` and `focusout` at it first, while it is still connected and with
+  `activeElement` already the body, as Chromium 1243 does; upstream clears focus after the
+  mutation and fires nothing (its test asserts no events; the ported test asserts Chromium's).
 
 ### Operator font directories load per render pass, not into a cached base database
 

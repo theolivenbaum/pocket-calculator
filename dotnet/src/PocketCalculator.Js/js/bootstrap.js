@@ -370,7 +370,29 @@ let _realmIsolatedWorld = false;
 // page-writable globalThis.document (SECURITY.md L10).
 let _realmDocument = null;
 
+// upstream c714042, with Chromium's events: a mutation that takes the focused element out
+// of its tree (removal, a move, or its container's markup replaced) first resets focus to
+// the body and fires a trusted blur and focusout at the element while it is still connected
+// (Chromium 1243; upstream clears focus after the mutation and fires nothing).
+function _blurBeforeRemoval(cmd, a1, a2) {
+  let root, inclusive = true;
+  if (cmd === "remove_child" || cmd === "insert_before" || cmd === "adopt_node") root = a1;
+  else if (cmd === "append_child") root = a2;
+  else if (cmd === "set_inner_html" || cmd === "set_inner_html_context"
+    || cmd === "set_fragment_html_executable" || cmd === "set_text_content") { root = a1; inclusive = false; }
+  else return;
+  const focused = _getFocused();
+  if (focused === null || focused === undefined || typeof focused._nid !== 'number') return;
+  const rootNid = _String(root ?? "");
+  const focusedNid = _String(focused._nid);
+  if (rootNid === focusedNid ? !inclusive
+      : __obscuraCore.ops.op_dom("contains", rootNid, focusedNid, _realmFrameId) !== "true") return;
+  if (__obscuraCore.ops.op_dom("is_connected", focusedNid, "", _realmFrameId) !== "true") return;
+  _setFocused(null);
+  if (_focusBridge === null) _fireFocusChange(focused, null);
+}
 const _dom = (cmd, a1, a2) => {
+  if (_setHas(_DOM_TREE_MUTATION_COMMANDS, cmd) || cmd === "set_text_content") _blurBeforeRemoval(cmd, a1, a2);
   const result = __obscuraCore.ops.op_dom(cmd, _String(a1 ?? ""), _String(a2 ?? ""), _realmFrameId);
   // DEVIATION (SECURITY.md M7): the host refused a mutation that would take the
   // document past its byte budget, and changed nothing. Rust has no budget;
@@ -6821,6 +6843,18 @@ class Element extends Node {
     const metrics = this._renderClientMetrics();
     return metrics ? metrics.height : 20;
   }
+  // CSSOM View: the top and left border widths, as used, and 0 for a box-less or inline
+  // element. The shim had neither, so scrollIntoView's nested-scrollport offsets were NaN.
+  get clientTop() { return this._clientBorder('borderTopWidth'); }
+  get clientLeft() { return this._clientBorder('borderLeftWidth'); }
+  _clientBorder(side) {
+    if (this._renderBoxGeometry() === null) return 0;
+    const style = globalThis.getComputedStyle(this);
+    if (style.display === 'inline' || style.display === 'contents') return 0;
+    // Chromium snaps a border width to whole pixels, down, and a non-zero one to at least 1.
+    const width = parseFloat(style[side]) || 0;
+    return width > 0 && width < 1 ? 1 : Math.floor(width);
+  }
   _renderClientMetrics() {
     if (typeof __obscuraCore.ops.op_layout_geometry !== 'function') return null;
     try {
@@ -7113,38 +7147,70 @@ class Element extends Node {
   get ariaSelected() { return this.getAttribute('aria-selected'); }
   set ariaSelected(v) { if (v == null) this.removeAttribute('aria-selected'); else this.setAttribute('aria-selected', String(v)); }
   scrollIntoView(arg) {
-    _clickTarget = this;
-    const rect = this.getBoundingClientRect();
-    // A viewport-fixed subtree is already expressed in the viewport's
-    // coordinate space and cannot be brought closer by moving the document.
-    if (_rectIsViewportFixed(rect)) return;
-
     let block = "start", inline = "nearest";
     if (arg === false) block = "end";
     else if (arg && typeof arg === "object") {
       if (["start", "center", "end", "nearest"].includes(arg.block)) block = arg.block;
       if (["start", "center", "end", "nearest"].includes(arg.inline)) inline = arg.inline;
     }
-    const currentX = globalThis.scrollX || 0;
-    const currentY = globalThis.scrollY || 0;
-    const vw = globalThis.innerWidth || 1280;
-    const vh = globalThis.innerHeight || 720;
+    this._scrollIntoView(block, inline, false, arg && arg.behavior);
+  }
+  // upstream c714042: the WebKit extension Chromium keeps. A box already in view stays put;
+  // otherwise it is centred (or brought to the nearest edge with false).
+  scrollIntoViewIfNeeded(centerIfNeeded = true) {
+    const alignment = centerIfNeeded ? "center" : "nearest";
+    this._scrollIntoView(alignment, alignment, true);
+  }
+  _scrollIntoView(block, inline, onlyIfNeeded, behavior) {
+    _clickTarget = this;
     const align = (mode, start, end, size, viewportSize, current) => {
+      if (onlyIfNeeded && start >= 0 && end <= viewportSize) return current;
       if (mode === "start") return current + start;
       if (mode === "center") return current + start - (viewportSize - size) / 2;
       if (mode === "end") return current + end - viewportSize;
       // CSSOM View's nearest alignment: do nothing when fully visible or when
-      // the box spans both viewport edges; otherwise move the closer edge in.
+      // the box spans both viewport edges; otherwise move the closer edge in, or for a
+      // box larger than the scrollport the farther one.
       if ((start >= 0 && end <= viewportSize) || (start < 0 && end > viewportSize)) {
         return current;
       }
-      if (start < 0) return current + start;
-      if (end > viewportSize) return current + end - viewportSize;
+      if (start < 0) return current + (size <= viewportSize ? start : end - viewportSize);
+      if (end > viewportSize) return current + (size <= viewportSize ? end - viewportSize : start);
       return current;
     };
+    // upstream c714042: scroll every scrollable ancestor first, from the innermost out, using
+    // the renderer's retained scroll ranges (a clipped box that does not scroll has none).
+    const viewportFixed = _rectIsViewportFixed(this.getBoundingClientRect());
+    for (let ancestor = this.parentElement;
+         typeof __obscuraCore.ops.op_element_scroll_metrics === 'function' && ancestor && !ancestor._isViewportRoot();
+         ancestor = ancestor.parentElement) {
+      const metrics = ancestor._renderElementScrollMetrics();
+      if (metrics && (metrics.maxX > 0 || metrics.maxY > 0)) {
+        const rect = this.getBoundingClientRect();
+        const port = ancestor.getBoundingClientRect();
+        const x = port.left + ancestor.clientLeft;
+        const y = port.top + ancestor.clientTop;
+        ancestor.scrollTo({
+          left: align(inline, rect.left - x, rect.right - x, rect.width, metrics.clientWidth, metrics.x),
+          top: align(block, rect.top - y, rect.bottom - y, rect.height, metrics.clientHeight, metrics.y),
+          behavior,
+        });
+      }
+      // A fixed scrollport scrolls its contents, but moving ancestors outside its fixed
+      // containing block cannot bring the target into view.
+      if (viewportFixed && globalThis.getComputedStyle(ancestor).position === 'fixed') break;
+    }
+    const rect = this.getBoundingClientRect();
+    // A viewport-fixed subtree is already expressed in the viewport's
+    // coordinate space and cannot be brought closer by moving the document.
+    if (_rectIsViewportFixed(rect)) return;
+    const currentX = globalThis.scrollX || 0;
+    const currentY = globalThis.scrollY || 0;
+    const vw = globalThis.innerWidth || 1280;
+    const vh = globalThis.innerHeight || 720;
     const left = align(inline, rect.left, rect.right, rect.width, vw, currentX);
     const top = align(block, rect.top, rect.bottom, rect.height, vh, currentY);
-    globalThis.scrollTo({ left, top, behavior: arg && arg.behavior });
+    globalThis.scrollTo({ left, top, behavior });
   }
   // scrollTo/scrollBy/scroll accept either (x, y) or a ScrollToOptions object.
   // The setters fire a scroll event of their own, so suppress the per-axis ones

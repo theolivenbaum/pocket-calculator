@@ -316,12 +316,12 @@ public static class Dom
             {
                 BrowserPage page = ctx.GetSessionPageMut(sessionId) ?? throw new DomainError("No page");
                 ulong nodeId = ResolveNodeId(page, parameters);
-                // Obscura has no layout viewport to move, but the JS shim records this
-                // element for the hit testing used by subsequent input events.
+                // upstream c714042: the shim's if-needed scroll, nested scrollports included. A
+                // fully visible box stays put; a clipped one is centred only where needed.
                 string code =
                     $"(function() {{ var h = __obscura_host.dom; var el = h.wrap({nodeId}); "
-                    + "if (!el || !h.has(el, 'scrollIntoView')) return false; "
-                    + "h.call(el, 'scrollIntoView', []); return true; })()";
+                    + "if (!el || !h.has(el, 'scrollIntoViewIfNeeded')) return false; "
+                    + "h.call(el, 'scrollIntoViewIfNeeded', []); return true; })()";
                 bool didScroll = page.EvaluateHostIn(DocumentOf(page, parameters), code).AsBool() ?? false;
                 if (!didScroll)
                 {
