@@ -10958,7 +10958,7 @@ function _fetchLocalScheme(url, method) {
     const blob = _blobUrlObjects.get(url.split('#')[0]);
     if (blob === undefined || method !== 'GET') return Promise.reject(_fetchFailed());
     const headers = { 'content-type': blob.type || '', 'content-length': _String(blob.size) };
-    return Promise.resolve(new Response(blob, { status: 200, statusText: 'OK', headers, type: 'basic', url }));
+    return Promise.resolve(_createInternalResponse(blob, { status: 200, statusText: 'OK', headers, type: 'basic', url }));
   }
   if (lower !== 'data:') return null;
   // The data: URL processor (Fetch 4.2): everything after "data:" up to the fragment.
@@ -10984,7 +10984,7 @@ function _fetchLocalScheme(url, method) {
   }
   if (mime.charAt(0) === ';') mime = 'text/plain' + mime;
   const type = _parseMimeType(mime) || 'text/plain;charset=US-ASCII';
-  return Promise.resolve(new Response(bytes, { status: 200, statusText: 'OK', headers: { 'content-type': type }, type: 'basic', url }));
+  return Promise.resolve(_createInternalResponse(bytes, { status: 200, statusText: 'OK', headers: { 'content-type': type }, type: 'basic', url }));
 }
 
 // upstream 359362f: the destination (Fetch, or XHR for XMLHttpRequest) reaches the op, so
@@ -11100,7 +11100,7 @@ async function _fetchWithDestination(input, init, resourceType) {
   const responseBody = respType === "opaque"
     ? null
     : (parsed.bodyBase64 ? _base64ToUint8Array(parsed.bodyBase64) : (parsed.body || ""));
-  const response = new Response(responseBody, {
+  const response = _createInternalResponse(responseBody, {
     status: parsed.status,
     statusText: "",
     headers: parsed.headers || {},
@@ -11840,19 +11840,62 @@ function _decodeBodyWithCharset(bytes, headers) {
   catch (e) { return new TextDecoder().decode(bytes); }
 }
 
+// upstream cbcafc1: responses the engine makes (fetch, data: and blob: loads, clone(),
+// Response.error()) carry a type, URL, redirect flag and status page script cannot give
+// one. _createInternalResponse sets a flag the constructor reads (and clears) first, so the
+// page's `new Response(body, {type, url, redirected})` gets a "default" response with no
+// network metadata, and a status outside 200-599 is a RangeError, as in Chromium 157.
+let _responseInternal = false;
+let _ResponseClass = null;
+function _createInternalResponse(body, init) {
+  _responseInternal = true;
+  try { return new _ResponseClass(body, init); } finally { _responseInternal = false; }
+}
 if (typeof Response === 'undefined') {
   globalThis.Response = class Response {
     constructor(body, init = {}) {
+      const internal = _responseInternal;
+      _responseInternal = false;
+      if (init === null || init === undefined) init = {};
+      if (typeof init !== 'object' && typeof init !== 'function') {
+        throw new TypeError("Failed to construct 'Response': The provided value is not of type 'ResponseInit'.");
+      }
+      // ResponseInit members are read once each, in WebIDL's (lexicographic) order.
+      const initHeaders = init.headers;
+      const initStatus = init.status;
+      const initStatusText = init.statusText;
+      const status = initStatus === undefined ? 200 : (internal ? initStatus : (+initStatus & 0xffff));
+      const statusText = initStatusText === undefined ? '' : `${initStatusText}`;
+      if (!internal) {
+        if (status < 200 || status > 599) {
+          throw new RangeError("Failed to construct 'Response': The status provided (" + status + ") is outside the range [200, 599].");
+        }
+        for (let i = 0; i < statusText.length; i++) {
+          const c = _stringCharCodeAt(statusText, i);
+          if (!(c === 9 || (c >= 0x20 && c <= 0x7e) || (c >= 0x80 && c <= 0xff))) {
+            throw new TypeError("Failed to construct 'Response': Invalid statusText");
+          }
+        }
+        if (body !== null && body !== undefined && (status === 204 || status === 205 || status === 304)) {
+          throw new TypeError("Failed to construct 'Response': Response with null body status cannot have body");
+        }
+      } else if (status === 204 || status === 205 || status === 304) {
+        body = null;
+      }
       // upstream a1dd711: a ReadableStream body is the response's body as it is, read on
       // demand; a locked or disturbed one is refused. Port: only the shim's own streams
       // are recognised (by their private record), so a page's replaced global cannot pass.
       const stream = body !== null && typeof body === 'object' && _weakMapGet(_readableStreamRecords, body) !== undefined ? body : null;
       if (stream !== null && (stream.locked || stream._disturbed)) throw new TypeError("Failed to construct 'Response': Response body object should not be disturbed or locked");
       this._streamSource = stream;
-      this._bodyBytes = stream !== null ? new Uint8Array() : _bodyToUint8Array(body); this._status = init.status === undefined ? 200 : Number(init.status); this._statusText = init.statusText || '';
+      this._bodyBytes = stream !== null ? new Uint8Array() : _bodyToUint8Array(body); this._status = status; this._statusText = statusText;
       this._ok = this._status >= 200 && this._status < 300;
-      this._headers = new Headers(init.headers);
-      this._type = init.type || 'basic'; this._url = init.url || ''; this._redirected = !!init.redirected;
+      this._headers = new Headers(initHeaders);
+      // DEVIATION from crates/obscura-js/js/bootstrap.js before cbcafc1: page script could
+      // set type, url and redirected; only the engine's own responses carry them now.
+      this._type = internal ? (init.type || 'default') : 'default';
+      this._url = internal ? (init.url || '') : '';
+      this._redirected = internal && !!init.redirected;
       // #818: body/bodyUsed. A null-body response (null or no body passed)
       // has body === null; every other body is a one-chunk stream, created
       // lazily so merely touching .body does not copy the bytes.
@@ -11918,12 +11961,12 @@ if (typeof Response === 'undefined') {
         // and Chromium does; upstream shares them.
         const [left, right] = this._streamSource._tee(true);
         this._streamSource = left;
-        const teed = new Response(right, { status: this.status, statusText: this.statusText, headers: this.headers, type: this.type, url: this.url, redirected: this.redirected });
+        const teed = _createInternalResponse(right, { status: this.status, statusText: this.statusText, headers: this.headers, type: this.type, url: this.url, redirected: this.redirected });
         const teedGuard = _headersGuards.get(this.headers);
         if (teedGuard) _headersGuards.set(teed.headers, teedGuard);
         return teed;
       }
-      const copy = new Response(this._bodyNull ? null : this._bodyBytes, { status: this.status, statusText: this.statusText, headers: this.headers, type: this.type, url: this.url, redirected: this.redirected });
+      const copy = _createInternalResponse(this._bodyNull ? null : this._bodyBytes, { status: this.status, statusText: this.statusText, headers: this.headers, type: this.type, url: this.url, redirected: this.redirected });
       // upstream 3aa2f59: a clone of a fetch() response shares its body resource, counted,
       // and gets its own copy of the bytes.
       if (this._fetchBody) {
@@ -11940,10 +11983,33 @@ if (typeof Response === 'undefined') {
       return copy;
     }
     // Response.error() and Response.redirect() have immutable headers (Fetch, Chromium).
-    static error() { const r = new Response(null, { status: 0 }); _headersGuards.set(r.headers, 'immutable'); return r; }
-    static redirect(url, status) { const r = new Response(null, { status: status || 302, headers: { Location: url } }); _headersGuards.set(r.headers, 'immutable'); return r; }
-    static json(data, init) { return new Response(_JSONstringify(data), { ...init, headers: { 'content-type': 'application/json', ...(init?.headers || {}) } }); }
+    static error() { const r = _createInternalResponse(null, { status: 0, type: 'error' }); _headersGuards.set(r.headers, 'immutable'); return r; }
+    // upstream cbcafc1: the URL is parsed against the document's base URL (TypeError when it
+    // does not parse) and the status must be a redirect status (RangeError).
+    static redirect(url, status = 302) {
+      url = `${url}`;
+      status = +status & 0xffff;
+      let parsed;
+      try { parsed = new URL(url, document.baseURI).href; }
+      catch (_) { throw new TypeError("Failed to execute 'redirect' on 'Response': Failed to parse URL from " + url); }
+      if (status !== 301 && status !== 302 && status !== 303 && status !== 307 && status !== 308) {
+        throw new RangeError("Failed to execute 'redirect' on 'Response': Invalid status code");
+      }
+      const r = _createInternalResponse(null, { status, headers: { Location: parsed } });
+      _headersGuards.set(r.headers, 'immutable');
+      return r;
+    }
+    // upstream cbcafc1: undefined (or anything JSON cannot serialize) is a TypeError, a null
+    // body status refuses the body, and the init's own headers are kept.
+    static json(data, init) {
+      const json = _JSONstringify(data);
+      if (json === undefined) throw new TypeError("Failed to execute 'json' on 'Response': The data is not JSON serializable");
+      const response = new Response(new TextEncoder().encode(json), init);
+      if (!response.headers.has('content-type')) response.headers.set('content-type', 'application/json');
+      return response;
+    }
   };
+  _ResponseClass = globalThis.Response;
   _defineFieldGetters(Response, ["ok", "status", "statusText", "headers", "type", "url", "redirected"]);
 }
 
