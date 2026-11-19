@@ -194,6 +194,16 @@ let _focusedElement = null;
 let _clickTarget = null;
 let _focusBridge = null;
 function _getFocused() { return _focusBridge ? _focusBridge.get() : _focusedElement; }
+// upstream d88df74: checkedness and indeterminateness as native activation reads and writes
+// them, bypassing author-defined IDL accessors. Kept in the shim's closure; upstream also
+// publishes them as page-visible __obscura_* globals.
+function _inputChecked(el) {
+  if (_formChecked[el._nid] !== undefined) return _formChecked[el._nid];
+  return _elCall('hasAttribute', el, ["checked"]);
+}
+function _setInputChecked(el, value) { _formChecked[el._nid] = !!value; }
+function _inputIndeterminate(el) { return _formIndeterminate[el._nid] === true; }
+function _setInputIndeterminate(el, value) { _formIndeterminate[el._nid] = !!value; }
 // Port addition (SECURITY.md M6): listeners CDP isolated worlds registered on this
 // document's nodes. Null while no world of this document listens for anything; else the
 // event types some world listens for, pushed by the host (worldListenTypes). While it is
@@ -5850,8 +5860,10 @@ class Element extends Node {
     }
     let _oldChecked = false, _oldIndeterminate = false, _radioStates = null;
     if (_checkable) {
-      _oldChecked = !!this.checked;
-      _oldIndeterminate = !!this.indeterminate;
+      // upstream d88df74: native activation reads and writes checkedness directly, never
+      // through the IDL accessors, which a framework may have replaced to track assignments.
+      _oldChecked = _inputChecked(this);
+      _oldIndeterminate = _inputIndeterminate(this);
       if (_type === 'radio') {
         const _name = this.getAttribute('name') || '';
         if (_name) {
@@ -5861,18 +5873,18 @@ class Element extends Node {
             const r = _all[i];
             if (((r.getAttribute('type') || '').toLowerCase()) !== 'radio') continue;
             if ((r.getAttribute('name') || '') !== _name || r.form !== this.form) continue;
-            _radioStates.push([r, !!r.checked]);
-            if (r !== this) r.checked = false;
+            _radioStates.push([r, _inputChecked(r)]);
+            if (r !== this) _setInputChecked(r, false);
           }
         }
-        this.checked = true;
+        _setInputChecked(this, true);
       } else {
         // Legacy-pre-activation behaviour (HTML spec): a checkbox toggles its
         // checkedness *and* drops indeterminateness. Clearing it here, not on
         // `change`, is what lets the cancelled-activation path put the old
         // flag back instead of leaving it stuck off.
-        this.checked = !_oldChecked;
-        this.indeterminate = false;
+        _setInputChecked(this, !_oldChecked);
+        _setInputIndeterminate(this, false);
       }
     }
     // Composed, as Chromium's (a click inside a shadow tree reaches the document).
@@ -5882,11 +5894,11 @@ class Element extends Node {
     if (_trusted) _markTrusted(_clickEvent);
     const cancelled = !_dispatch(this, _clickEvent);
     if (cancelled) {
-      if (_radioStates) { for (let i = 0; i < _radioStates.length; i++) _radioStates[i][0].checked = _radioStates[i][1]; }
-      else if (_checkable) { this.checked = _oldChecked; this.indeterminate = _oldIndeterminate; }
+      if (_radioStates) { for (let i = 0; i < _radioStates.length; i++) _setInputChecked(_radioStates[i][0], _radioStates[i][1]); }
+      else if (_checkable) { _setInputChecked(this, _oldChecked); _setInputIndeterminate(this, _oldIndeterminate); }
       return;
     }
-    if (_checkable && this.checked !== _oldChecked) {
+    if (_checkable && _inputChecked(this) !== _oldChecked) {
       for (const _type of ['input', 'change']) {
         const _e = new Event(_type, {bubbles: true});
         if (_trusted) _markTrusted(_e);
@@ -6269,18 +6281,15 @@ class Element extends Node {
     if (!isNaN(effMax) && value > effMax) value = effMax;
     this.value = _inputFormatNumber(t, value);
   }
-  get checked() {
-    if (_formChecked[this._nid] !== undefined) return _formChecked[this._nid];
-    return _elCall('hasAttribute', this, ["checked"]);
-  }
-  set checked(v) { _formChecked[this._nid] = !!v; }
+  get checked() { return _inputChecked(this); }
+  set checked(v) { _setInputChecked(this, v); }
   // `indeterminate` is IDL-only: it has no content attribute to reflect, so
   // the property itself must exist on the prototype for `'indeterminate' in
   // el` to be true on a freshly created element. It is node-keyed like
   // `checked` because element wrappers are rebuilt on each lookup, so a
   // per-instance field would not survive getElementById returning a new one.
-  get indeterminate() { return _formIndeterminate[this._nid] === true; }
-  set indeterminate(v) { _formIndeterminate[this._nid] = !!v; }
+  get indeterminate() { return _inputIndeterminate(this); }
+  set indeterminate(v) { _setInputIndeterminate(this, v); }
   get selected() {
     if (this._selected !== undefined) return this._selected;
     return _elCall('hasAttribute', this, ["selected"]);

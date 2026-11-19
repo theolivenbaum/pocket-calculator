@@ -316,7 +316,9 @@ Found during the review, not from upstream:
 - [ ] Timing-sensitive tests under heavy host load (the two worst IntersectionObserver ones now wait for the event instead of a fixed window): the IntersectionObserver/ResizeObserver
       group in `RuntimeTests` (25/60 ms timer windows) and
       `ConcurrentConnectionsHeavyPageDoNotAbortV8`, and `InlineImportsFetchInOrderAndMaterializeBeforeSourceStyle`
-      (Browser.Tests; fails in some full runs since 2026-11-18, passes alone); all pass alone and fail on the
+      (Browser.Tests; fails in some full runs since 2026-11-18, passes alone), and
+  `RejectionEventTests.Rejection_reporting_resumes_after_the_termination_is_cleared` (Js.Tests; once
+  ran nearly 10 minutes in a full run while two other builds ran, passes alone in about 1 s); all pass alone and fail on the
       unmodified base under the same load. `ForwardWaapiSampleUpdatesRetainedStyleAndPaint`
       was reported failing on the base at low load once; it passes in full runs here
 
@@ -420,7 +422,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       body. With it, `Element.clientTop`/`clientLeft`, which the shim lacked. Open: Chromium
       counts a last child's trailing margin in a block's scrollable overflow, the port does not
       (`scrollHeight` 336 vs 352 with a 16px-margin `<p>` at the end)
-- [ ] CDP input editing: `d88df74`; with open `ec62004` / `a156914`
+- [x] `d88df74`: `el.click()` activation reads and writes checkedness and indeterminateness
+      directly, never through author-replaced `checked`/`indeterminate` accessors (Chromium
+      measured: no accessor call); the helpers stay in the shim's closure, where upstream adds
+      four page-visible globals
+- [ ] CDP input editing: open `ec62004` / `a156914`
 - [x] `3f8a8d1` + `de227e9` + `1959c5e`: `Page.setLifecycleEventsEnabled` is a real, validated
       subscription (off the fast path), independent of `Runtime.enable`; a reopened document's
       `Page.lifecycleEvent`s go only to subscribers, and enabling replays the current
