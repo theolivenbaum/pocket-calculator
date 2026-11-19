@@ -34,6 +34,15 @@ public sealed partial class DomTree
     private Dictionary<NodeId, bool>? _dirtyFormChecked;
 
     /// <summary>
+    /// The focused text control whose caret the renderer draws, and the caret's offset in UTF-16
+    /// units of its value (-1 for the end). Port addition: bootstrap.js reports it through
+    /// <c>op_dom('set_caret')</c>; the Rust engine paints no caret. See "Known deviations" in todo.md.
+    /// </summary>
+    private NodeId? _caretNode;
+
+    private int _caretOffset;
+
+    /// <summary>
     /// CSS that an element contributes to the cascade without being the text of a
     /// <c>&lt;style&gt;</c> element: the bytes fetched for a <c>&lt;link rel=stylesheet&gt;</c>, and the
     /// bytes fetched for the <c>@import</c> rules of an inline <c>&lt;style&gt;</c>. It is ordered
@@ -187,6 +196,35 @@ public sealed partial class DomTree
     {
         _dirtyFormValues?.Remove(id);
         _dirtyFormChecked?.Remove(id);
+        if (_caretNode == id)
+        {
+            _caretNode = null;
+        }
+    }
+
+    /// <summary>
+    /// Record the caret to draw: in <paramref name="node"/> at <paramref name="offset"/>, or none
+    /// for a null node. Answers whether that changed what is drawn.
+    /// </summary>
+    public bool SetCaret(NodeId? node, int offset)
+    {
+        offset = node is null ? 0 : offset;
+        if (_caretNode == node && _caretOffset == offset)
+        {
+            return false;
+        }
+
+        _caretNode = node;
+        _caretOffset = offset;
+        return true;
+    }
+
+    /// <summary>The caret to draw, if a focused text control has one.</summary>
+    public bool TryGetCaret(out NodeId node, out int offset)
+    {
+        node = _caretNode ?? default;
+        offset = _caretOffset;
+        return _caretNode is not null;
     }
 
     /// <summary>Record whether the document was parsed in (full) quirks mode.</summary>

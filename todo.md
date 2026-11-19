@@ -6952,3 +6952,40 @@ answered every request with 407. `PocketCalculatorHttpClient.CreateProxy` now mo
 percent-decoded user info into `WebProxy.Credentials`, which both runtimes use. `SocketsHttpHandler` sends them
 once the proxy answers 407 with `Proxy-Authenticate` rather than up front, which costs one round trip
 per connection and also answers a Digest, NTLM or Negotiate challenge. Pinned by `ProxyCredentialsTests`.
+
+### A mask that is a pixel-aligned rectangle is drawn as a clip
+
+`Surface.Draw` used to isolate every draw under a coverage mask in a full-surface layer and blend the
+whole mask over it with `DstIn`: three full-surface passes, plus a copy of the mask, per primitive.
+Every box inside a scroll container is drawn under its overflow clip, so a 1280x800 frame of a page
+with a few thousand rows in a scroll container took about a second, against 120 ms with the
+container's `overflow` removed. tiny-skia multiplies the mask's coverage into each pixel as it
+blends, which for full coverage over a pixel-aligned rectangle is that rectangle as a hard clip.
+`Mask.Shape` classifies the coverage once per change (empty, rectangle, irregular); an empty mask
+paints nothing and a rectangle clips, while any other mask (rounded corners, `clip-path`) takes the
+layer path as before. Screenshots of a scroll-container page and of a page mixing rectangular,
+rounded, fractional and `clip-path` clips with `mix-blend-mode` are pixel-identical before and after.
+Pinned by `MaskShapeTests`.
+
+### Input commands leave their screencast frame to the pump
+
+The reference renders a screencast frame inline after every command that can change one. For
+`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Input.dispatchTouchEvent` and `Input.insertText`
+the port marks the stream's frame pending instead (`Page.CommandDefersScreencastFrame`), and the
+autonomous pump draws it once the queued input has been read, as Chromium draws input on its next
+compositor frame. Inline, a key press cost a key-down and a key-up render before the next key was
+read. `Input.insertText` was not in the list at all, so typed text reached the screen only when the
+activity generation happened to move. Pinned by `InputCaretPlacement.InputCommandsLeaveTheirScreencastFrameToThePump`.
+
+### Text controls paint a caret, and the editing keys move it
+
+The reference paints no caret. bootstrap.js reports the focused text control's collapsed caret to the
+host (`_reportCaret`, `op_dom('set_caret')`) whenever focus or the selection moves; `DomTree` holds it,
+the activity generation moves with it, and `PaintNativeControls.PaintCaret` draws a one-pixel bar the
+height of the line before the character at the caret, measured with `DrawText`'s own advance loop
+(`PaintText.TextAdvance`). Readonly and disabled controls, and a range selection, show none; email and
+number inputs, which have no selection API, show it at the end of the value. It does not blink. A
+`<textarea>`'s caret is not painted: its value is laid-out text, and placing a caret in it needs the
+line geometry. `Input.dispatchKeyEvent` also implements ArrowLeft, ArrowRight, Home, End and Delete in
+a text control (the reference has Backspace and Enter alone); Home and End go to the ends of the whole
+value, also in a textarea. Pinned by `InputCaretPlacement`.

@@ -104,6 +104,62 @@ public static class Input
         + "h.dispatch(t, h.event('Event', 'input', {__proto__:null,bubbles:true}, true));"
         + "})()";
 
+    // Port addition: the forward delete Chromium does in a text control. The reference
+    // implements Backspace alone.
+    private const string DeleteJs = "(function() {"
+        + "var h = __obscura_host.dom;"
+        + "var t = h.activeElement();"
+        + "var tag = h.localName(t);"
+        + "if (!t || (tag !== 'input' && tag !== 'textarea')) return;"
+        + "var v = h.get(t, 'value') || '';"
+        + "var s = h.get(t, 'selectionStart'), e = h.get(t, 'selectionEnd');"
+        + "if (s == null) return;"
+        + "s = h.max(0, h.min(s, v.length));"
+        + "e = (e == null) ? s : h.max(0, h.min(e, v.length));"
+        + "var lo = h.min(s, e), hi = h.max(s, e);"
+        + "if (lo === hi) { if (hi >= v.length) return; hi = hi + 1; }"
+        + "__obscura_host.setFieldValue(t, 'value', h.slice(v, 0, lo) + h.slice(v, hi));"
+        + "h.call(t, 'setSelectionRange', [lo, lo]);"
+        + "h.dispatch(t, h.event('Event', 'input', {__proto__:null,bubbles:true}, true));"
+        + "})()";
+
+    /// <summary>
+    /// Port addition: the caret movement Chromium does in a text control for ArrowLeft,
+    /// ArrowRight, Home and End, which the reference does not implement. A range selection
+    /// collapses to its start or end first, as in Chromium; Home and End go to the start and end
+    /// of the whole value, also in a textarea, where Chromium stops at the line.
+    /// </summary>
+    private static string? CaretKeyJs(string key)
+    {
+        string? move = key switch
+        {
+            "ArrowLeft" => "lo === hi ? h.max(0, lo - 1) : lo",
+            "ArrowRight" => "lo === hi ? h.min(v.length, hi + 1) : hi",
+            "Home" => "0",
+            "End" => "v.length",
+            _ => null,
+        };
+        if (move is null)
+        {
+            return null;
+        }
+
+        return "(function() {"
+            + "var h = __obscura_host.dom;"
+            + "var t = h.activeElement();"
+            + "var tag = h.localName(t);"
+            + "if (!t || (tag !== 'input' && tag !== 'textarea')) return;"
+            + "var v = h.get(t, 'value') || '';"
+            + "var s = h.get(t, 'selectionStart'), e = h.get(t, 'selectionEnd');"
+            + "if (s == null) return;"
+            + "s = h.max(0, h.min(s, v.length));"
+            + "e = (e == null) ? s : h.max(0, h.min(e, v.length));"
+            + "var lo = h.min(s, e), hi = h.max(s, e);"
+            + "var c = " + move + ";"
+            + "h.call(t, 'setSelectionRange', [c, c]);"
+            + "})()";
+    }
+
     private const string EnterJs = "(function() {"
         + "var h = __obscura_host.dom;"
         + "var target = h.activeElement();"
@@ -368,6 +424,16 @@ public static class Input
                             if (key == "Backspace")
                             {
                                 page.EvaluateHostIn(focused, BackspaceJs);
+                            }
+
+                            if (key == "Delete")
+                            {
+                                page.EvaluateHostIn(focused, DeleteJs);
+                            }
+
+                            if (CaretKeyJs(key) is { } caretKey)
+                            {
+                                page.EvaluateHostIn(focused, caretKey);
                             }
 
                             break;

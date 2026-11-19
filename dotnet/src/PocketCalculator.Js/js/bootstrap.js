@@ -210,6 +210,7 @@ function _setFocused(node) {
   if (_focusBridge) { _focusBridge.set(node); return; }
   _focusedElement = node;
   if (node) { try { __obscuraCore.ops.op_dom('note_focus', '', '', _realmFrameId); } catch (_) {} }
+  _reportCaret();
 }
 function _queryImpl(root, all) {
   if (!_queryImpls || root === null || typeof root !== 'object' || typeof root._nid !== 'number') return null;
@@ -22650,6 +22651,40 @@ function _caretToEndOnValueChange(el, before, after) {
   _ns_selectionStart.set(el, after.length);
   _ns_selectionEnd.set(el, after.length);
   _ns_selectionDir.set(el, 'none');
+  _reportCaret();
+}
+
+// Port addition: the caret of the focused text control, for the renderer to draw (Chromium
+// paints one; the Rust engine paints none). Reported to the host, as op_dom 'set_caret' with the
+// control's node id and the caret's offset in UTF-16 units of its value, whenever focus or the
+// selection moves; an empty id says there is none to draw (no editable text control has focus,
+// or its selection is a range). -1 is the end of the value: email and number inputs have no
+// selection API, and typing into them appends.
+const _CARET_END_INPUT_TYPES = { __proto__: null, email: 1, number: 1 };
+let _caretReported = ':';
+function _reportCaret() {
+  if (_focusBridge) return;
+  let nid = '', offset = '';
+  try {
+    const el = _focusedElement;
+    if (el && typeof el._nid === 'number' && (el.localName === 'input' || el.localName === 'textarea')
+        && _hostDom.getAttribute(el, 'readonly') == null && _hostDom.getAttribute(el, 'disabled') == null) {
+      if (_hasTextSelection(el)) {
+        const start = _ns_selectionStart.get(el) ?? 0;
+        const end = _ns_selectionEnd.get(el) ?? start;
+        if (start === end) { nid = _String(el._nid); offset = _String(start); }
+      } else if (el.localName === 'input'
+          && _CARET_END_INPUT_TYPES[_stringToLowerCase(_String(_hostDom.getAttribute(el, 'type') || ''))] === 1) {
+        nid = _String(el._nid); offset = '-1';
+      }
+    }
+  } catch (_) {
+    // Focus can move while this file is still running, before the selection maps exist.
+  }
+  const key = nid + ':' + offset;
+  if (key === _caretReported) return;
+  _caretReported = key;
+  try { __obscuraCore.ops.op_dom('set_caret', nid, offset, _realmFrameId); } catch (_) {}
 }
 
 // Element.prototype.selectionStart - get/set selection start position
@@ -22662,6 +22697,7 @@ if (!Element.prototype.selectionStart) {
     },
     set: function(v) {
       _ns_selectionStart.set(this, v == null ? null : Math.max(0, parseInt(v, 10) || 0));
+      _reportCaret();
     },
     enumerable: true,
     configurable: true
@@ -22678,6 +22714,7 @@ if (!Element.prototype.selectionEnd) {
     },
     set: function(v) {
       _ns_selectionEnd.set(this, v == null ? null : Math.max(0, parseInt(v, 10) || 0));
+      _reportCaret();
     },
     enumerable: true,
     configurable: true
@@ -22707,6 +22744,7 @@ if (!Element.prototype.setSelectionRange) {
     _ns_selectionStart.set(this, start);
     _ns_selectionEnd.set(this, end);
     _ns_selectionDir.set(this, direction);
+    _reportCaret();
   };
   _markNative(Element.prototype.setSelectionRange);
 }
@@ -22737,6 +22775,7 @@ if (!Element.prototype.setRangeText) {
       _ns_selectionEnd.set(this, start + replLen);
       _ns_selectionDir.set(this, 'none');
     }
+    _reportCaret();
   };
   _markNative(Element.prototype.setRangeText);
 }
@@ -22750,6 +22789,7 @@ if (!Element.prototype.select) {
     _ns_selectionStart.set(this, 0);
     _ns_selectionEnd.set(this, len);
     _ns_selectionDir.set(this, 'none');
+    _reportCaret();
   };
   _markNative(Element.prototype.select);
 }

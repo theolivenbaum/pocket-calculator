@@ -58,6 +58,29 @@ internal static class Surface
                 return;
             }
 
+            // tiny-skia multiplies a mask's coverage into each pixel as it blends, so a mask of
+            // full coverage over a pixel-aligned rectangle is that rectangle as a hard clip, and an
+            // empty one paints nothing. Deviation from the general path below, which isolates the
+            // draw in a full-surface layer and blends the mask over it: three full-surface passes per
+            // primitive, which made every box inside a scroll container cost a frame's worth of
+            // raster work.
+            MaskShape shape = mask.Shape;
+            if (shape.Kind == MaskShapeKind.Empty)
+            {
+                return;
+            }
+
+            if (shape.Kind == MaskShapeKind.Rectangle)
+            {
+                int clipped = canvas.Save();
+                canvas.ResetMatrix();
+                canvas.ClipRect(SKRect.Create(shape.Bounds.Left, shape.Bounds.Top, shape.Bounds.Width, shape.Bounds.Height), SKClipOperation.Intersect, antialias: false);
+                canvas.SetMatrix(ToMatrix(transform));
+                draw(canvas);
+                canvas.RestoreToCount(clipped);
+                return;
+            }
+
             using SKImage? maskImage = mask.ToImage();
             if (maskImage is null)
             {
