@@ -409,7 +409,10 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       own document
 - [x] `361f15d` beforeunload on Page.close (Page.javascriptDialogOpening, handleJavaScriptDialog),
       stopLoading and close cancel an in-flight navigation and the document's image/font loads
-- [ ] the rest of `f66ac0a` (native function invocation)
+- [x] the rest of `f66ac0a`: `callFunctionOn` compiles the declaration through the eval the
+      shim captured at boot and applies it with the captured `apply`, so a page that replaces
+      `eval`, `Function.prototype.apply` or `call` cannot intercept it; upstream reaches the
+      same through V8's native API. Nothing further to port
 - [x] `aa4b4e7` canceled keydown suppresses editing defaults; `d132880` beforeinput (cancelable,
       disabled/readonly guards, InputEvent input, IME caret on Input.insertText); `3f7cccd`
       readonly Backspace and textarea Enter. (Delete-key editing is not in the port at all.)
@@ -465,7 +468,9 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `setChildNodes` tree carries its live child `frameId`, not only a described root; a
       removed owner reports none. A reinserted owner keeps its old frame id (see Known
       deviations)
-- [ ] CDP DOM domain and evaluation: `f66ac0a` (`__proto__` in JSON args), `7a2b9ae`
+- [x] CDP DOM domain and evaluation, remainder: `f66ac0a`'s `__proto__` stays an own property
+      (object and array `value`s go through the captured `JSON.parse`) and `objectId` wins over
+      `value`, both already in place; `7a2b9ae` already (child-frame worlds)
 - [x] CDP control plane: `1faf17f` allowlist part (`POCKETCALCULATOR_CDP_ALLOWED_ORIGINS`, like
       Chromium's --remote-allow-origins); its default acceptance of the endpoint's own Origin is
       declined: Chromium 1243 refuses every Origin without the flag (measured 2026-11-18).
