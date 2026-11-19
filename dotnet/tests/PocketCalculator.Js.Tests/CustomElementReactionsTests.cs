@@ -646,4 +646,194 @@ public sealed class CustomElementReactionsTests
             """);
         Assert.Equal("before none 2\nafter flex 1 u1", result);
     }
+
+    // upstream cfce062, runtime.rs: custom_elements_connect_and_upgrade_on_insertion.
+    [Fact]
+    public void CustomElementsConnectAndUpgradeOnInsertion() => UpstreamScript.AssertChromium(
+        """
+        <html><body></body></html>
+        """,
+        """
+        (function() {
+            const log = [];
+            class XEl extends HTMLElement {
+                constructor() { super(); log.push('ctor'); }
+                connectedCallback() {
+                    log.push('connected');
+                    if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
+                }
+                disconnectedCallback() { log.push('disconnected'); }
+            }
+            customElements.define('x-el', XEl);
+            const created = document.createElement('x-el');
+            log.push('created');
+            document.body.appendChild(created);
+            log.push('appended:' + (created.shadowRoot !== null));
+            const holder = document.createElement('div');
+            holder.innerHTML = '<x-el></x-el>';
+            log.push('parsed:' + (holder.firstChild instanceof XEl));
+            document.body.appendChild(holder);
+            log.push('inner:' + (holder.firstChild.shadowRoot !== null));
+            document.body.innerHTML = '<x-el></x-el>';
+            log.push('set:' + (document.body.firstChild instanceof XEl));
+            document.body.firstChild.remove();
+            return log;
+        })()
+        """,
+        """
+        ["ctor","created","connected","appended:true","ctor","parsed:true","connected","inner:true","ctor","connected","disconnected","disconnected","set:true","disconnected"]
+        """);
+
+    // upstream cfce062, runtime.rs: custom_elements_get_reactions_for_moves_and_observed_attributes.
+    [Fact]
+    public void CustomElementsGetReactionsForMovesAndObservedAttributes() => UpstreamScript.AssertChromium(
+        """
+        <html><body><a-el id="a" mode="x" other="y"></a-el><p id="p"></p></body></html>
+        """,
+        """
+        (function() {
+            const log = [];
+            class AEl extends HTMLElement {
+                static get observedAttributes() { return ['mode']; }
+                attributeChangedCallback(name, oldValue, newValue) {
+                    log.push(name + ':' + oldValue + '>' + newValue);
+                }
+                connectedCallback() { log.push('connected'); }
+                disconnectedCallback() { log.push('disconnected'); }
+            }
+            customElements.define('a-el', AEl);
+            const a = document.getElementById('a');
+            a.setAttribute('mode', 'y');
+            a.setAttribute('other', 'z');
+            a.removeAttribute('mode');
+            a.removeAttribute('mode');
+            document.getElementById('p').appendChild(a);
+            const detached = document.createElement('div');
+            detached.appendChild(a);
+            detached.removeChild(a);
+            return log;
+        })()
+        """,
+        """
+        ["mode:null>x","connected","mode:x>y","mode:y>null","disconnected","connected","disconnected"]
+        """);
+
+    // upstream cfce062, runtime.rs: custom_elements_in_a_connected_shadow_tree_connect.
+    [Fact]
+    public void CustomElementsInAConnectedShadowTreeConnect() => UpstreamScript.AssertChromium(
+        """
+        <html><body></body></html>
+        """,
+        """
+        (function() {
+            const log = [];
+            class InEl extends HTMLElement {
+                connectedCallback() { log.push('inner'); }
+            }
+            class OutEl extends HTMLElement {
+                connectedCallback() {
+                    const root = this.attachShadow({ mode: 'open' });
+                    root.innerHTML = '<in-el></in-el>';
+                    log.push('outer');
+                }
+            }
+            customElements.define('in-el', InEl);
+            customElements.define('out-el', OutEl);
+            const host = document.createElement('out-el');
+            document.body.appendChild(host);
+            host.shadowRoot.appendChild(document.createElement('in-el'));
+            return [log, host.shadowRoot.firstChild instanceof InEl];
+        })()
+        """,
+        """
+        [["inner","outer","inner"],true]
+        """);
+
+    // upstream cfce062, runtime.rs: throwing_connected_callback_is_reported_not_thrown.
+    [Fact]
+    public void ThrowingConnectedCallbackIsReportedNotThrown() => UpstreamScript.AssertChromium(
+        """
+        <html><body></body></html>
+        """,
+        """
+        (function() {
+            const reported = [];
+            globalThis.reportError = (e) => reported.push(e.message);
+            class BadEl extends HTMLElement {
+                connectedCallback() { throw new Error('connect failed'); }
+            }
+            customElements.define('bad-el', BadEl);
+            const el = document.createElement('bad-el');
+            document.body.appendChild(el);
+            return [el.isConnected, reported];
+        })()
+        """,
+        """
+        [true,[]]
+        """);
+
+    // upstream 8ba9e5e, runtime.rs: custom_element_attribute_reactions_observe_removal_and_can_restore_the_attribute.
+    [Fact]
+    public void CustomElementAttributeReactionsObserveRemovalAndCanRestoreTheAttribute() => UpstreamScript.AssertChromium(
+        """
+        <html><body></body></html>
+        """,
+        """
+        (function() {
+            const log = [];
+            class RestoreEl extends HTMLElement {
+                static get observedAttributes() { return ['mode']; }
+                attributeChangedCallback(name, oldValue, newValue) {
+                    log.push([oldValue, newValue, this.getAttribute(name)]);
+                    if (newValue === null) this.setAttribute(name, 'restored');
+                }
+            }
+            customElements.define('restore-el', RestoreEl);
+            const results = [];
+            for (const remove of [
+                el => el.removeAttribute('mode'),
+                el => el.toggleAttribute('mode', false),
+                el => el.removeAttributeNS(null, 'mode'),
+            ]) {
+                const el = document.createElement('restore-el');
+                el.setAttribute('mode', 'before');
+                log.length = 0;
+                remove(el);
+                results.push([log.slice(), el.getAttribute('mode'), el.getAttributeNS(null, 'mode')]);
+            }
+            return results;
+        })()
+        """,
+        """
+        [[[["before",null,null],[null,"restored","restored"]],"restored","restored"],[[["before",null,null],[null,"restored","restored"]],"restored","restored"],[[["before",null,null],[null,"restored","restored"]],"restored","restored"]]
+        """);
+
+    // upstream 8ba9e5e, runtime.rs: custom_element_namespace_reactions_observe_updated_attributes_and_style.
+    [Fact]
+    public void CustomElementNamespaceReactionsObserveUpdatedAttributesAndStyle() => UpstreamScript.AssertChromium(
+        """
+        <html><body></body></html>
+        """,
+        """
+        (function() {
+            const log = [];
+            class StyledEl extends HTMLElement {
+                static get observedAttributes() { return ['style']; }
+                attributeChangedCallback(name, oldValue, newValue) {
+                    log.push([newValue, this.getAttribute(name), this.style.color]);
+                    if (newValue === null) this.setAttribute('style', 'color: red');
+                }
+            }
+            customElements.define('styled-el', StyledEl);
+            const el = document.createElement('styled-el');
+            el.setAttribute('style', 'color: blue');
+            log.length = 0;
+            el.setAttributeNS(null, 'style', 'color: green');
+            el.removeAttributeNS(null, 'style');
+            return [log, el.getAttribute('style'), el.style.color];
+        })()
+        """,
+        """
+        [[["color: green","color: green","green"],[null,null,""],["color: red","color: red","red"]],"color: red","red"]
+        """);
 }
