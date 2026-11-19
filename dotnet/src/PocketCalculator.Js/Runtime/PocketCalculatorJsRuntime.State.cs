@@ -488,8 +488,73 @@ public sealed partial class PocketCalculatorJsRuntime
         return name.Length == 0 || name.Contains(' ', StringComparison.Ordinal) ? "Error" : name;
     }
 
-    public StoredNetworkResponseBody? GetNetworkResponseBody(string requestId) =>
-        State.NetworkResponseBodies.GetValueOrDefault(requestId);
+    public StoredNetworkResponseBody? GetNetworkResponseBody(string requestId)
+    {
+        DrainModuleResponses();
+        return State.NetworkResponseBodies.GetValueOrDefault(requestId);
+    }
+
+    // upstream 3f37d91: module responses, recorded by the loader on whichever thread fetched
+    // them and moved into the page state on the page thread when events or bodies are read.
+    private readonly System.Collections.Concurrent.ConcurrentQueue<(JsNetworkEvent Event, StoredNetworkResponseBody Body, int Bytes)>
+        _moduleResponses = new();
+
+    private static long s_nextModuleRequestId;
+
+    private void RecordModuleResponse(Response response)
+    {
+        var requestId = "module-" + Interlocked.Increment(ref s_nextModuleRequestId).ToString(CultureInfo.InvariantCulture);
+        string body;
+        bool base64;
+        try
+        {
+            body = new System.Text.UTF8Encoding(false, true).GetString(response.Body);
+            base64 = false;
+        }
+        catch (System.Text.DecoderFallbackException)
+        {
+            body = Convert.ToBase64String(response.Body);
+            base64 = true;
+        }
+        _moduleResponses.Enqueue((new JsNetworkEvent
+        {
+            RequestId = requestId,
+            Url = response.Url.AbsoluteUri,
+            Method = "GET",
+            ResourceType = "Script",
+            Status = response.Status,
+            ResponseHeaders = new Dictionary<string, string>(response.Headers, StringComparer.Ordinal),
+            BodySize = response.Body.Length,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+        }, new StoredNetworkResponseBody(body, base64), response.Body.Length));
+    }
+
+    private void DrainModuleResponses()
+    {
+        while (_moduleResponses.TryDequeue(out var recorded))
+        {
+            FetchOps.RecordNetworkCompletion(State, recorded.Event, recorded.Body, recorded.Bytes);
+        }
+    }
+
+    /// <summary>
+    /// Move the retained bodies out, in completion order, before the runtime is suspended
+    /// (upstream 73358fd).
+    /// </summary>
+    public IReadOnlyList<(string RequestId, StoredNetworkResponseBody Body)> TakeNetworkResponseBodies()
+    {
+        DrainModuleResponses();
+        var taken = new List<(string, StoredNetworkResponseBody)>(State.NetworkResponseBodyOrder.Count);
+        while (State.NetworkResponseBodyOrder.TryDequeue(out var id))
+        {
+            if (State.NetworkResponseBodies.Remove(id, out var body))
+            {
+                taken.Add((id, body));
+            }
+        }
+        State.NetworkResponseBodies.Clear();
+        return taken;
+    }
 
     public void ClearNetworkResponseBodies()
     {
@@ -562,6 +627,7 @@ public sealed partial class PocketCalculatorJsRuntime
 
     public IReadOnlyList<JsNetworkEvent> TakeJsNetworkEvents()
     {
+        DrainModuleResponses();
         var events = State.JsNetworkEvents.ToArray();
         State.JsNetworkEvents.Clear();
         return events;

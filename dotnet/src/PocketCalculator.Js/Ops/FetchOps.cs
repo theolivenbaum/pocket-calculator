@@ -233,6 +233,31 @@ public static partial class FetchOps
     internal static bool IsInternalDestination(string? destination) =>
         destination is "Script" or "Stylesheet" or "Document";
 
+    /// <summary>
+    /// Rust <c>record_network_completion</c>: store <paramref name="body"/> under the event's
+    /// id, bounded like a transport response's, and queue the event for the CDP layer.
+    /// </summary>
+    internal static void RecordNetworkCompletion(
+        PocketCalculatorState gs, JsNetworkEvent networkEvent, StoredNetworkResponseBody body, int bytes)
+    {
+        var maxEntries = ResponseBodyEntryLimit();
+        var maxBytes = ResponseBodyByteLimit();
+        if (maxEntries > 0 && maxBytes > 0 && bytes <= maxBytes)
+        {
+            gs.NetworkResponseBodies[networkEvent.RequestId] = body;
+            gs.NetworkResponseBodyOrder.Enqueue(networkEvent.RequestId);
+            while (gs.NetworkResponseBodyOrder.Count > maxEntries)
+            {
+                gs.NetworkResponseBodies.Remove(gs.NetworkResponseBodyOrder.Dequeue());
+            }
+        }
+        gs.JsNetworkEvents.Add(networkEvent);
+        if (gs.JsNetworkEvents.Count > MaxJsNetworkEvents)
+        {
+            gs.JsNetworkEvents.RemoveRange(0, gs.JsNetworkEvents.Count - MaxJsNetworkEvents);
+        }
+    }
+
     internal static void RecordInterceptedCompletion(
         PocketCalculatorState gs,
         string requestId,

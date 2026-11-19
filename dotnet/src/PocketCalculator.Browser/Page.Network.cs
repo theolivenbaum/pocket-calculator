@@ -152,6 +152,26 @@ public sealed partial class Page
         }
     }
 
+    /// <summary>Keep a suspending runtime's stored bodies on the page, bounded as usual.</summary>
+    private void AdoptResponseBodies(IReadOnlyList<(string RequestId, StoredNetworkResponseBody Body)> bodies)
+    {
+        int maxEntries = PageHelpers.ResponseBodyEntryLimit();
+        foreach (var (requestId, body) in bodies)
+        {
+            if (_responseBodies.ContainsKey(requestId))
+            {
+                _responseBodyOrder.Remove(requestId);
+            }
+            _responseBodies[requestId] = new StoredResponseBody(body.Body, body.Base64Encoded);
+            _responseBodyOrder.AddLast(requestId);
+        }
+        while (_responseBodyOrder.Count > maxEntries && _responseBodyOrder.First is { } oldest)
+        {
+            _responseBodyOrder.RemoveFirst();
+            _responseBodies.Remove(oldest.Value);
+        }
+    }
+
     public StoredResponseBody? GetResponseBody(string requestId)
     {
         if (_responseBodies.TryGetValue(requestId, out StoredResponseBody? stored))

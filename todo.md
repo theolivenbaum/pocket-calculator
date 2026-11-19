@@ -468,7 +468,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `Document`, `XHR`, `Fetch`, or `{cancel_rid, destination}`), so a dynamic script, a frame
       document, a host stylesheet load and an XHR report their own type in Network events,
       interception and the request/response callbacks; internal loads are derived from it
-- [ ] Network fidelity: `3f37d91` + `73358fd` + `8440fe6`, `3aa2f59`, `a1dd711`
+- [x] `3f37d91` + `73358fd`: the module loader records every ES module response (real status,
+      headers and body, under a `module-{N}` id, whether the graph later fails) instead of a
+      synthetic 200 for the entry module; the script phase ends by syncing script-issued
+      requests, and suspending a runtime keeps its events and stored bodies on the page
+- [ ] Network fidelity: `8440fe6`, `3aa2f59`, `a1dd711`
 - [x] `0155807` (AbortSignal): fetch() rejects with the signal's reason before and during the
       request (the op is cancelled, Network.loadingFailed net::ERR_ABORTED), an unread body
       errors on abort, Request has its own following signal, private signal state, trusted

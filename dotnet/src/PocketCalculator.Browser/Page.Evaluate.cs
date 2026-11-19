@@ -326,6 +326,10 @@ public sealed partial class Page
             return;
         }
         IReadOnlyList<uint> startedScriptIds = js.StartedScriptIds();
+        // upstream 3f37d91 / 73358fd: completed script and module requests, and the bodies
+        // Network.getResponseBody serves for them, survive the realm's teardown.
+        SyncJsNetworkEvents();
+        AdoptResponseBodies(js.TakeNetworkResponseBodies());
         // upstream c6402a7 (#971): messages the client has not read yet survive the suspension.
         _suspendedConsoleMessages.AddRange(js.TakePendingConsoleMessages());
         _suspendedCdpObjectState = js.TakeCdpObjectState();

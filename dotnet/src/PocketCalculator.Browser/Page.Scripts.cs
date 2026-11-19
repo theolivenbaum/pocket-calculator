@@ -111,10 +111,15 @@ public sealed partial class Page
     /// <paramref name="moduleBudgetOverride"/> as every module's budget when given. A
     /// navigation runs its scripts while parsing instead (<see cref="LoadDocumentAsync"/>).
     /// </summary>
-    internal Task ExecuteScriptsWithModuleBudgetAsync(
+    internal async Task ExecuteScriptsWithModuleBudgetAsync(
         ulong? moduleBudgetOverride,
-        CancellationToken cancellationToken) =>
-        RunPreparsedDocumentScriptsAsync(moduleBudgetOverride, cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        await RunPreparsedDocumentScriptsAsync(moduleBudgetOverride, cancellationToken).ConfigureAwait(false);
+        // upstream 3f37d91: the module loader records each module's response itself, so the
+        // phase ends by moving them (and every other script-issued request) to the page.
+        SyncJsNetworkEvents();
+    }
 
     private static ulong? RemainingBudgetMs(DateTime deadlineUtc)
     {
@@ -161,10 +166,8 @@ public sealed partial class Page
             // (reddit.com's challenge follow-up, whose components overran a module budget).
             return;
         }
-        if (module.Url is { } url)
-        {
-            RecordNetworkEvent(url, "GET", "Script", 200, NoHeaders, 0);
-        }
+        // upstream 3f37d91: no synthetic 200 with no headers or body for the entry module
+        // after it evaluated; the loader records every module's real response as it arrives.
     }
 
     private void ExecuteClassic(ScriptInfo script, (string Url, string Code, Response Response)? fetchedScript)

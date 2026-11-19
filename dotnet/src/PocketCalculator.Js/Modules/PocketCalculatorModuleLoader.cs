@@ -47,6 +47,12 @@ public readonly record struct ModuleNetworkContext
     /// <summary>The page's passive request/response callbacks.</summary>
     public CallbackRegistry? Callbacks { get; private init; }
 
+    /// <summary>
+    /// Records a module's response on the owning page (upstream 3f37d91), whether or not the
+    /// graph later fails. May be called off the runtime thread.
+    /// </summary>
+    public Action<Response>? RecordResponse { get; init; }
+
     /// <summary>Why there is no usable network context, or null.</summary>
     public string? Error { get; private init; }
 
@@ -697,6 +703,13 @@ public sealed class PocketCalculatorModuleLoader : DocumentLoader, IDisposable
         finally
         {
             _fetchSlots.Release();
+        }
+
+        // A module response belongs to the owning page whether graph preparation or
+        // evaluation later fails. Status 0 is the transport's blocked-tracker sentinel.
+        if (response.Status != 0)
+        {
+            network.RecordResponse?.Invoke(response);
         }
 
         if (response.Status is < 200 or > 299)
