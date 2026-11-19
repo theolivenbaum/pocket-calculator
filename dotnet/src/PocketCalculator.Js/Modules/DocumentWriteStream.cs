@@ -7,9 +7,11 @@ namespace PocketCalculator.Js.Modules;
 /// <summary>
 /// Where one node produced by the input stream belongs. <see cref="Parent"/> is
 /// null for a node at the head of the input stream, which belongs at the
-/// insertion point.
+/// insertion point. <see cref="Before"/>, when set, is a node already handed over that
+/// this one goes in front of: foster parenting puts text and inline elements before
+/// the table they were written into (upstream ee74973).
 /// </summary>
-public readonly record struct Placement(NodeId? Parent, NodeId Node);
+public readonly record struct Placement(NodeId? Parent, NodeId Node, NodeId? Before = null);
 
 /// <summary>
 /// The document's input stream for <c>document.write()</c>.
@@ -177,12 +179,12 @@ public sealed class DocumentWriteStream(bool document = false)
 
         var root = document ? source.Document : source.FragmentRoot();
         var placements = new List<Placement>();
-        var stack = new List<NodeId>();
+        var stack = new List<(NodeId Node, NodeId? Before)>();
         AppendFreshChildren(stack, source, root);
 
         while (stack.Count > 0)
         {
-            var current = stack[^1];
+            var (current, before) = stack[^1];
             stack.RemoveAt(stack.Count - 1);
 
             var node = source.GetNode(current);
@@ -193,14 +195,40 @@ public sealed class DocumentWriteStream(bool document = false)
 
             if (_handedOver.TryGetValue(current, out var known))
             {
+                // upstream ee74973: foster parenting inserts before a sibling already handed
+                // over (the table). Its new preceding siblings go in front of that copy, and
+                // the walk stops at the first one already handed over.
+                for (var previous = node.PrevSibling; previous is { } id; previous = source.GetNode(id)?.PrevSibling)
+                {
+                    if (source.GetNode(id) is not { } sibling)
+                    {
+                        break;
+                    }
+
+                    if (_handedOver.ContainsKey(id))
+                    {
+                        if (sibling.IsText)
+                        {
+                            stack.Add((id, null));
+                        }
+
+                        break;
+                    }
+
+                    stack.Add((id, known));
+                }
+
                 // A text node at the end of the input stream grows with every call
-                // and stays the same node. Elements no longer change after their
-                // creation.
+                // and stays the same node, also right before a foster parenting anchor.
+                // Elements no longer change after their creation.
                 if (node.IsText && dom.GetNode(known)?.Data is TextData text)
                 {
                     var grown = source.TextContent(current);
-                    dom.ChargeGrowth(2L * (grown.Length - text.Contents.Length));
-                    text.Contents = grown;
+                    if (!string.Equals(grown, text.Contents, StringComparison.Ordinal))
+                    {
+                        dom.ChargeGrowth(2L * (grown.Length - text.Contents.Length));
+                        text.Contents = grown;
+                    }
                 }
 
                 AppendFreshChildren(stack, source, current);
@@ -246,7 +274,7 @@ public sealed class DocumentWriteStream(bool document = false)
 
                 dom.Detach(completeId);
                 MapSubtree(source, current, dom, completeId);
-                placements.Add(new Placement(parent, completeId));
+                placements.Add(new Placement(parent, completeId, before));
                 continue;
             }
 
@@ -254,7 +282,7 @@ public sealed class DocumentWriteStream(bool document = false)
             // that is never closed appear at once instead of never.
             var copy = dom.NewNode(node.Data.Clone());
             _handedOver[current] = copy;
-            placements.Add(new Placement(parent, copy));
+            placements.Add(new Placement(parent, copy, before));
             AppendFreshChildren(stack, source, current);
         }
 
@@ -309,11 +337,11 @@ public sealed class DocumentWriteStream(bool document = false)
     /// node at the end of the input stream keeps growing and an open element still
     /// receives children.
     /// </remarks>
-    private void AppendFreshChildren(List<NodeId> stack, DomTree source, NodeId parent)
+    private void AppendFreshChildren(List<(NodeId Node, NodeId? Before)> stack, DomTree source, NodeId parent)
     {
         for (var child = source.GetNode(parent)?.LastChild; child is { } id; child = source.GetNode(id)?.PrevSibling)
         {
-            stack.Add(id);
+            stack.Add((id, null));
             if (_handedOver.ContainsKey(id))
             {
                 break;

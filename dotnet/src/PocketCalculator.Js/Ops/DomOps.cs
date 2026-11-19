@@ -777,8 +777,9 @@ public static class DomOps
 
             // document.write() feeds the document's input stream, so the calls share
             // one parser and one tokenizer state. Returns the nodes that became
-            // complete with this call, as [[parent, node], ...], parents before
-            // children. A `parent` of -1 means the node belongs at the insertion point,
+            // complete with this call, as [[parent, node, before], ...], parents before
+            // children; `before`, or -1, is the handed-over node a foster-parented one
+            // goes in front of (upstream ee74973). A `parent` of -1 means the node belongs at the insertion point,
             // which the caller knows (upstream 721e40f; it was 0, which is now the
             // document node a replacement document's root goes into). Nothing is inserted
             // here: that must go through Node.appendChild on the JS side, because that
@@ -830,6 +831,8 @@ public static class DomOps
                     sb.Append(placements[i].Parent is { } placedParent ? Expose(dom, placedParent) : "-1");
                     sb.Append(',');
                     sb.Append(Expose(dom, placements[i].Node));
+                    sb.Append(',');
+                    sb.Append(placements[i].Before is { } before ? Expose(dom, before) : "-1");
                     sb.Append(']');
                 }
 

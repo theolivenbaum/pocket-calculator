@@ -13974,6 +13974,94 @@ public sealed partial class RuntimeTests
                 """));
     }
 
+    /// <summary>Upstream ee74973.</summary>
+    [Fact]
+    public void DocumentWriteFosterParentingPreservesOrderAndMutationRecords()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
+        AssertJson(
+            """{"order":["outside","B","tail","TABLE","P"],"added":["outside","B","tail","P"],"sameTable":true}""",
+            fixture.Runtime.Evaluate("""
+                (() => {
+                    document.open();
+                    document.write('<table id="table"><tr><td>cell');
+                    const table = document.getElementById('table');
+                    const label = node => node.nodeType === 3 ? node.data : node.nodeName;
+                    const observer = new MutationObserver(() => {});
+                    observer.observe(document.body, {childList: true});
+                    document.write('</td></tr>outside<b>bold</b>tail</table><p>end</p>');
+                    const added = observer.takeRecords().flatMap(record => Array.from(record.addedNodes, label));
+                    observer.disconnect();
+                    const order = Array.from(document.body.childNodes, label);
+                    document.close();
+                    return {order, added, sameTable: document.getElementById('table') === table};
+                })()
+                """));
+    }
+
+    /// <summary>Upstream ee74973.</summary>
+    [Fact]
+    public void DocumentWriteFosterParentingGrowsTheExistingTextNode()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
+        AssertJson(
+            """{"first":"outside","second":"outsidemore","sameText":true,"sameTable":true}""",
+            fixture.Runtime.Evaluate("""
+                (() => {
+                    document.open();
+                    document.write('<table id="table"><tr><td>cell');
+                    const table = document.getElementById('table');
+                    document.write('</td></tr>outside<!--flush-->');
+                    const text = document.body.firstChild;
+                    const first = text.nodeType === 3 ? text.data : null;
+                    document.write('more</table>');
+                    const second = document.body.firstChild.nodeType === 3 ? document.body.firstChild.data : null;
+                    const sameText = document.body.firstChild === text;
+                    document.close();
+                    return {first, second, sameText, sameTable: document.getElementById('table') === table};
+                })()
+                """));
+    }
+
+    /// <summary>Upstream ee74973.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DocumentWriteFosterParentingUsesTheLiveAnchorParent(bool moved)
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
+        fixture.Runtime.Evaluate(moved ? "globalThis.moveWrittenTable = true" : "globalThis.moveWrittenTable = false");
+        var order = moved ? """["outside","TABLE"]""" : """["outside"]""";
+        AssertJson(
+            "{\"order\":" + order + ",\"added\":[\"outside\"],\"error\":null,\"sameTable\":true}",
+            fixture.Runtime.Evaluate("""
+                (() => {
+                    document.open();
+                    document.write('<table id="table"><tr><td>cell');
+                    const table = document.getElementById('table');
+                    let parent = document.body;
+                    if (moveWrittenTable) {
+                        parent = document.createElement('div');
+                        document.body.appendChild(parent);
+                        parent.appendChild(table);
+                    } else {
+                        table.remove();
+                    }
+                    const observer = new MutationObserver(() => {});
+                    observer.observe(parent, {childList: true});
+                    let error = null;
+                    try { document.write('</td></tr>outside</table>'); }
+                    catch (caught) { error = caught.name; }
+                    const label = node => node.nodeType === 3 ? node.data : node.nodeName;
+                    const added = observer.takeRecords().flatMap(record => Array.from(record.addedNodes, label));
+                    observer.disconnect();
+                    const order = Array.from(parent.childNodes, label);
+                    document.close();
+                    return {order, added, error, sameTable: moveWrittenTable ? parent.lastChild === table : table.parentNode === null};
+                })()
+                """));
+    }
+
     /// <summary>Upstream 721e40f.</summary>
     [Theory]
     [InlineData("<p>quirks</p>", "BackCompat")]

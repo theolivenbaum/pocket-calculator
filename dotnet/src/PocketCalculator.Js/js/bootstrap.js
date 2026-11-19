@@ -9892,7 +9892,7 @@ function _fragmentNavigate(target, replace) {
 // change through op_navigate tore down and rebooted the whole execution
 // context, so a hash router lost all its state on every route change (and, in
 // a survey of one SPA, re-booted the app 20 times over 157 routes).
-// The nodes document.write's stream handed over ([[parent, node], ...], parents first),
+// The nodes document.write's stream handed over ([[parent, node, before], ...], parents first),
 // inserted with Node's own methods. A parent of -1 is the insertion point: behind the
 // running script (moving along with every node placed, even across calls, so a script's
 // second call lands behind the first), else the end of the body. Any other parent is a
@@ -9912,7 +9912,14 @@ function _insertWrittenNodes(doc, placements) {
     var parentNid = +placements[i][0];
     var node = _wrap(+placements[i][1]);
     if (!node) continue;
-    if (parentNid >= 0) {
+    // upstream ee74973: a foster-parented node goes in front of its anchor, under the
+    // anchor's live parent (a script may have moved or removed it between writes); with
+    // no live anchor, at the parent or insertion point as usual.
+    var beforeNid = placements[i].length > 2 ? +placements[i][2] : -1;
+    var before = beforeNid >= 0 ? _wrap(beforeNid) : null;
+    if (before && before.parentNode) {
+      before.parentNode.insertBefore(node, before);
+    } else if (parentNid >= 0) {
       var parent = _wrap(parentNid);
       if (parent) parent.appendChild(node);
     } else if (after) {

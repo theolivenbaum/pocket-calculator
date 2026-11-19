@@ -180,7 +180,8 @@ create_text_node                doctype_name                    doctype_public_i
 document_base_href              document_base_url               document_doctype
 document_element                document_encoding               document_node_id
 document_referrer               document_title                  document_url
-document_write                  document_write_reset            element_children
+document_write                  document_write_close            document_write_reset
+document_compat_mode            element_children
 first_child                     get_attribute                   get_attribute_ns
 get_element_by_id               has_child_nodes                 inner_html
 insert_before                   is_connected                    last_child
@@ -196,6 +197,14 @@ set_fragment_html_executable    set_inner_html                  set_inner_html_c
 set_text_content                tag_name                        template_contents
 text_content
 ```
+
+`document_write` (arg2 the written text) and `document_write_close` (no arguments, the end
+of the input stream, upstream 721e40f) answer `[[parent, node, before], ...]`, parents first:
+`parent` is -1 for the insertion point (it was 0 before 721e40f; 0 is now the document
+node, where a replacement document's root goes), and `before` (upstream ee74973) is -1 or
+the handed-over node a foster-parented node is inserted in front of, under that node's live
+parent. `document_write_reset` (document.open()) starts a whole-document parse, and
+`document_compat_mode` answers `"BackCompat"` or `"CSS1Compat"` (upstream 721e40f).
 
 Port addition: `document_close` (no arguments, answers `"true"`). The C# shim's
 `document.close()` sends it when it ends a parser `document.open()` started on a loaded
