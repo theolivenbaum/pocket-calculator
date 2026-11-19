@@ -175,6 +175,35 @@ public static partial class FetchOps
         return 1;
     }
 
+    /// <summary>
+    /// The script-facing <c>op_fetch_url</c> result for a response whose body is read later
+    /// (upstream 3aa2f59): the same fields without <c>body</c> and <c>bodyBase64</c>, and the
+    /// body's resource id last, in the order Rust's metadata object writes them.
+    /// </summary>
+    internal static string ScriptResponseMetadataJson(
+        string status,
+        string requestId,
+        string url,
+        bool redirected,
+        bool opaque,
+        IReadOnlyDictionary<string, string> headers,
+        uint bodyRid)
+    {
+        var builder = new StringBuilder(256);
+        builder.Append("{\"status\":").Append(status);
+        builder.Append(",\"requestId\":");
+        SerdeJson.AppendString(builder, requestId);
+        builder.Append(",\"url\":");
+        SerdeJson.AppendString(builder, url);
+        builder.Append(",\"redirected\":").Append(redirected ? "true" : "false");
+        builder.Append(",\"opaque\":").Append(opaque ? "true" : "false");
+        builder.Append(",\"headers\":");
+        AppendHeaders(builder, headers);
+        builder.Append(",\"bodyRid\":").Append(bodyRid.ToString(CultureInfo.InvariantCulture));
+        builder.Append('}');
+        return builder.ToString();
+    }
+
     /// <summary>The status field as the op writes it.</summary>
     private static string StatusText(bool opaque, int status) =>
         opaque ? "0" : status.ToString(CultureInfo.InvariantCulture);

@@ -488,7 +488,14 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       requests, and suspending a runtime keeps its events and stored bodies on the page
 - [x] `8440fe6`: a module request that fails in the transport reports a `net::ERR_FAILED`
       Script event, as a failed fetch or XHR does
-- [ ] Network fidelity: `3aa2f59`, `a1dd711`
+- [x] `3aa2f59`: a page fetch() resolves at the headers, as in Chromium; the body is a host
+      resource (`bodyRid`) the shim reads with `op_fetch_body` and cancels with `op_try_close`
+      once every clone has cancelled it; clones share it, counted, with their own bytes; an
+      opaque body is empty. The body keeps the transport slot, the in-flight count and the rest
+      of the exchange deadline (M3), is read bounded (M4) and records its network event, stored
+      body and timing when it ends; a body that fails or is cancelled after the headers reports
+      one loadingFailed under the response's id
+- [ ] Network fidelity: `a1dd711`
 - [x] `0155807` (AbortSignal): fetch() rejects with the signal's reason before and during the
       request (the op is cancelled, Network.loadingFailed net::ERR_ABORTED), an unread body
       errors on abort, Request has its own following signal, private signal state, trusted
@@ -2495,14 +2502,23 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   fetch.
 - Fetch abort (`0155807`): signal state lives in a closure WeakMap of the realm, not under
   upstream's V8 private symbol (`op_abort_signal_state` is not bound; ClearScript has no
-  private-symbol API). The op still returns the whole body (`3aa2f59` not ported), so the
-  cancel handle is released when the op settles and an abort after that errors the buffered
-  body instead of cancelling a body read; until `3aa2f59`, fetch() resolves at the body, not
-  at the headers. data: and blob: fetches answer in the shim and observe the signal there.
+  private-symbol API). Since `3aa2f59` the cancel handle lives until the body settles, so an
+  abort after the headers cancels the body read too. data: and blob: fetches answer in the
+  shim and observe the signal there.
   An aborted body's text()/json() rejects with the reason and leaves bodyUsed false, as in
   Chromium; upstream marks it used. A failed request's network event takes a fresh
   `fetch-{N}` id when it fails (upstream allocates it up front). AbortSignal getters throw
   "Illegal invocation" on a non-signal, as Chromium's do.
+- Fetch bodies (`3aa2f59`): `op_fetch_body` resolves with the body as base64, not a buffer,
+  because the op's task completes off the page's thread where no typed array can be made; the
+  shim decodes it (FetchOps.OpFetchBodyAsync). The body is read as soon as the headers are in
+  (upstream polls its body future only once `op_fetch_body` is called, which the shim does at
+  once) and keeps the page's transport slot (FetchConcurrency) until it ends. The body is read
+  under what is left of the one exchange deadline (M3); upstream's body read has no timeout.
+  The `requestId` is allocated with the headers. A body that fails or is cancelled after the
+  headers records `net::ERR_ABORTED` / `net::ERR_FAILED` under that id; upstream records
+  nothing. Internal loads keep returning the whole result with a host-side `bodyToken` (C3),
+  and a `Fetch.fulfillRequest` response is still returned whole, as upstream.
 - Serve worker restart (`f2b9e99`): a restarted worker is verified as an authenticated CDP
   server (`VerifyWorkersAsync`, SECURITY.md M1) before it rejoins the rotation, as every
   worker is at startup; upstream only waits for its port to accept. On a TLS balancer the

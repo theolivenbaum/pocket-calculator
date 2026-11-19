@@ -711,6 +711,8 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
     /// upstream 0155807 and 359362f: the last argument is the destination or, for a page
     /// <c>fetch()</c> with a signal, <c>{cancel_rid, destination}</c> naming a handle from
     /// <c>op_fetch_cancel_handle</c>; closing it with <c>op_try_close</c> cancels the request.
+    /// upstream 3aa2f59: a page fetch() resolves at the headers with a <c>bodyRid</c> that
+    /// <c>op_fetch_body</c> reads and <c>op_try_close</c> cancels.
     /// </remarks>
     private void BindFetch(ScriptObject ops, PocketCalculatorState document)
     {
@@ -721,8 +723,10 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
                         RealmState(), S(url), S(method), S(headers), Bytes(body), S(origin), S(mode), S(credentials),
                         FetchOps.IsInternalDestination(FetchDestination(options, S(mode))), document,
                         tailOnPageLoop: true, cancellation: cancellation,
-                        destination: FetchDestination(options, S(mode)))
+                        destination: FetchDestination(options, S(mode)), bodyResource: true)
                     : Task.FromException<string>(new OpException("Bad resource ID"))));
+        Bind(ops, "op_fetch_body", (Func<object?, Task<string>>)(
+            rid => FetchOps.OpFetchBodyAsync(document, U32(rid))));
         Bind(ops, "op_fetch_cancel_handle", (Func<double>)(
             () => OpGuard.Run("op_fetch_cancel_handle", () => (double)FetchOps.OpenCancelHandle(document), 0d)));
         Bind(ops, "op_try_close", (Action<object?>)(

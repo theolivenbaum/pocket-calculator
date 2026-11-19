@@ -291,6 +291,13 @@ public sealed class PocketCalculatorState
     internal uint FetchCancellationCounter { get; set; }
 
     /// <summary>
+    /// The bodies of this document's resolved <c>fetch()</c> responses still being read, by the
+    /// id <c>op_fetch_url</c> returned as <c>bodyRid</c> (upstream 3aa2f59). Added and taken on
+    /// the page's thread; a body that ends removes itself from wherever its read finished.
+    /// </summary>
+    internal System.Collections.Concurrent.ConcurrentDictionary<uint, FetchBodyResource> FetchBodies { get; } = new();
+
+    /// <summary>
     /// Subresources this document actually fetched, in completion order, for
     /// <c>performance.getEntriesByType('resource')</c>. Appended by the host transport
     /// (scripts, stylesheets, images, fonts) and by <c>op_fetch_url</c>; read

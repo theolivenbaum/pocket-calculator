@@ -10857,8 +10857,9 @@ async function _fetchWithDestination(input, init, resourceType) {
   const cancellation = { rid: signal === null ? undefined : __obscuraCore.ops.op_fetch_cancel_handle() };
   const cancelRid = cancellation.rid;
   const removeAbort = signal === null ? null : _addAbortAlgorithm(signal, cancellation, _cancelFetchHandle);
-  // The op returns the whole body (upstream 3aa2f59's body resource is not ported), so the
-  // handle is released as soon as it settles; the body's own abort is _attachResponseAbort.
+  // upstream 3aa2f59: the op resolves with the headers and the body is read after it, so
+  // the handle lives until the body settles (or the request fails); an unread body also
+  // errors through _attachResponseAbort.
   const cleanup = () => {
     if (removeAbort !== null) {
       removeAbort();
@@ -10874,16 +10875,19 @@ async function _fetchWithDestination(input, init, resourceType) {
     cleanup();
     throw signalState !== undefined && signalState.aborted ? signalState.reason : error;
   }
-  cleanup();
-  if (signalState !== undefined && signalState.aborted) throw signalState.reason;
   const parsed = _JSONparse(raw);
+  // A body resource the response will not own is closed with the handle.
+  const closeBody = () => { if (typeof parsed.bodyRid === 'number') __obscuraCore.ops.op_try_close(parsed.bodyRid); };
+  if (signalState !== undefined && signalState.aborted) { closeBody(); cleanup(); throw signalState.reason; }
   if (parsed.blocked) {
+    cleanup();
     const err = new TypeError('net::ERR_FAILED');
     err.name = 'AbortError';
     err.__aborted = true;
     throw err;
   }
   if (parsed.corsBlocked) {
+    cleanup();
     throw new TypeError('Failed to fetch: ' + (parsed.corsError || 'CORS error'));
   }
   const respType = parsed.status === 0 || parsed.opaque ? "opaque" : "basic";
@@ -10903,6 +10907,20 @@ async function _fetchWithDestination(input, init, resourceType) {
   // set/append/delete throw TypeError. Rust left them writable.
   _headersGuards.set(response.headers, 'immutable');
   _attachResponseAbort(response, signal);
+  if (typeof parsed.bodyRid === 'number') {
+    // upstream 3aa2f59: the body arrives after the headers, in one chunk (bounded host-side).
+    // Port: op_fetch_body hands it over as base64, and the reactions are attached with the
+    // boot-time Promise.prototype.then, so a page that replaced it cannot hold the handle.
+    const promise = _reflectApply(_promiseThenAtBoot, __obscuraCore.ops.op_fetch_body(parsed.bodyRid), [
+      (b64) => { cleanup(); return _base64ToUint8Array(b64); },
+      (error) => { cleanup(); throw signalState !== undefined && signalState.aborted ? signalState.reason : error; },
+    ]);
+    // An unread or cancelled body must not report an unhandled rejection.
+    _reflectApply(_promiseThenAtBoot, promise, [undefined, () => {}]);
+    response._fetchBody = { promise, resource: { rid: parsed.bodyRid, consumers: 1 } };
+  } else {
+    cleanup();
+  }
   if (parsed.requestId) {
     Object.defineProperty(response, "__obscuraRequestId", {
       value: parsed.requestId,
@@ -11630,6 +11648,8 @@ if (typeof Response === 'undefined') {
       this._bodyNull = body === null || body === undefined;
       this._bodyStream = null;
       this._bodyUsed = false;
+      // upstream 3aa2f59: a fetch() response's body, still arriving: {promise, resource}.
+      this._fetchBody = null;
       // upstream 0155807: a fetch()'s signal aborting errors a body not yet read.
       this._bodyAborted = false;
       this._bodyAbortReason = undefined;
@@ -11649,8 +11669,19 @@ if (typeof Response === 'undefined') {
         this._bodyStream = new ReadableStream({
           start: (controller) => {
             if (this._bodyAborted) { controller.error(this._bodyAbortReason); return; }
-            if (this._bodyBytes.length) controller.enqueue(this._bodyBytes);
-            controller.close();
+            const deliver = (bytes) => {
+              if (bytes.length) controller.enqueue(bytes);
+              controller.close();
+            };
+            if (this._fetchBody) _reflectApply(_promiseThenAtBoot, this._fetchBody.promise, [deliver, error => controller.error(error)]);
+            else deliver(this._bodyBytes);
+          },
+          // upstream 3aa2f59: cancelling the last unread clone of a fetch() body stops its read.
+          cancel: () => {
+            this._bodyUsed = true;
+            if (this._fetchBody && --this._fetchBody.resource.consumers === 0) {
+              __obscuraCore.ops.op_try_close(this._fetchBody.resource.rid);
+            }
           },
         });
         // bodyUsed flips the moment the stream is locked for reading
@@ -11671,12 +11702,20 @@ if (typeof Response === 'undefined') {
       return this._bodyStream;
     }
     get bodyUsed() { return this._bodyUsed; }
-    async text() { this._consumeBody(); return _decodeBodyWithCharset(this._bodyBytes, this.headers); }
-    async json() { this._consumeBody(); return _JSONparse(await _decodeBodyWithCharset(this._bodyBytes, this.headers)); }
-    async arrayBuffer() { this._consumeBody(); return _arrayBufferFromBytes(this._bodyBytes); }
-    async blob() { this._consumeBody(); return new Blob([this._bodyBytes]); }
+    async text() { this._consumeBody(); return _decodeBodyWithCharset(this._fetchBody ? await this._fetchBody.promise : this._bodyBytes, this.headers); }
+    async json() { this._consumeBody(); return _JSONparse(await _decodeBodyWithCharset(this._fetchBody ? await this._fetchBody.promise : this._bodyBytes, this.headers)); }
+    async arrayBuffer() { this._consumeBody(); return _arrayBufferFromBytes(this._fetchBody ? await this._fetchBody.promise : this._bodyBytes); }
+    async blob() { this._consumeBody(); return new Blob([this._fetchBody ? await this._fetchBody.promise : this._bodyBytes]); }
     clone() {
-      const copy = new Response(this._bodyBytes, { status: this.status, statusText: this.statusText, headers: this.headers, type: this.type, url: this.url, redirected: this.redirected });
+      const copy = new Response(this._bodyNull ? null : this._bodyBytes, { status: this.status, statusText: this.statusText, headers: this.headers, type: this.type, url: this.url, redirected: this.redirected });
+      // upstream 3aa2f59: a clone of a fetch() response shares its body resource, counted,
+      // and gets its own copy of the bytes.
+      if (this._fetchBody) {
+        const promise = _reflectApply(_promiseThenAtBoot, this._fetchBody.promise, [bytes => bytes.slice()]);
+        _reflectApply(_promiseThenAtBoot, promise, [undefined, () => {}]);
+        this._fetchBody.resource.consumers++;
+        copy._fetchBody = { promise, resource: this._fetchBody.resource };
+      }
       // A clone keeps its source's guard (immutable for a fetched response).
       const guard = _headersGuards.get(this.headers);
       if (guard) _headersGuards.set(copy.headers, guard);
@@ -21109,7 +21148,11 @@ if (typeof ReadableStream === 'undefined') {
       };
     }
     cancel(reason) {
+      // upstream 3aa2f59: an errored stream rejects with its error, and a closed one does not
+      // run its source's cancel again (a second cancel of a fetch() body).
+      if (this._state === "errored") return Promise.reject(this._error);
       this._queue.length = 0;
+      if (this._state === "closed") return Promise.resolve();
       this._controller.close();
       try { return Promise.resolve(this._source.cancel?.(reason)); }
       catch (error) { return Promise.reject(error); }

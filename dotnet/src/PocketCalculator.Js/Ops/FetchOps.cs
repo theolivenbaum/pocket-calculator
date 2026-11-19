@@ -535,7 +535,8 @@ public static partial class FetchOps
         PocketCalculatorState? document = null,
         bool tailOnPageLoop = false,
         CancellationToken cancellation = default,
-        string destination = "Fetch")
+        string destination = "Fetch",
+        bool bodyResource = false)
     {
         bool frameDocument = internalLoad && string.Equals(mode, "navigate", StringComparison.Ordinal);
         if (frameDocument)
@@ -551,7 +552,7 @@ public static partial class FetchOps
             return await FetchUrlAsync(
                     state, document ?? state, url, method, headersJson, body, mode, credentials, internalLoad,
                     referrer: FetchReferrer.Parse(origin), tailOnPageLoop: tailOnPageLoop,
-                    cancellation: cancellation, destination: destination)
+                    cancellation: cancellation, destination: destination, bodyResource: bodyResource)
                 .ConfigureAwait(false);
         }
         catch (Exception) when (cancellation.IsCancellationRequested)
@@ -595,7 +596,8 @@ public static partial class FetchOps
         FetchReferrer? referrer = null,
         bool tailOnPageLoop = false,
         CancellationToken cancellation = default,
-        string destination = "Fetch")
+        string destination = "Fetch",
+        bool bodyResource = false)
     {
         ArgumentNullException.ThrowIfNull(gs);
         var (resourceType, resourceTypeName) = Destination(destination);
@@ -703,6 +705,7 @@ public static partial class FetchOps
         // Network.loadingFailed, rather than nothing. A fulfilled response records itself and
         // an interception Fail is reported by the CDP layer, so both settle it.
         var settled = false;
+        var bodyHandedOff = false;
         try
         {
             // Slots the interception channel can override via Continue so a consumer
@@ -874,7 +877,10 @@ public static partial class FetchOps
             // time held the fetch, and the page's in-flight count, forever (SECURITY.md M3).
             // The page's AbortSignal (upstream 0155807) cancels it too; OpFetchUrlAsync tells
             // the two apart.
+            // A script fetch's body (upstream 3aa2f59) outlives this method; it is read under
+            // what is left of this same deadline (FetchBodyAsync).
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+            var exchangeStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             deadline.CancelAfter(FetchTimeout());
 
             var isCors = string.Equals(mode, "cors", StringComparison.Ordinal);
@@ -1301,35 +1307,56 @@ public static partial class FetchOps
                     }
                 }
 
+                // Page script sees an opaque no-cors response as status 0 with no body
+                // and no headers; the engine's own subresource loads (internalLoad) still
+                // get the body. Set-Cookie and unexposed cross-origin headers never
+                // reach script (upstream 04418a5). The CDP-facing records keep the full
+                // response.
+                var opaque = !internalLoad
+                    && string.Equals(mode, "no-cors", StringComparison.Ordinal)
+                    && crossedOrigin;
+
+                if (bodyResource && !internalLoad && tailOnPageLoop)
+                {
+                    // upstream 3aa2f59: a page fetch() resolves with the headers, and its body is
+                    // a resource the shim reads with op_fetch_body (or cancels with op_try_close).
+                    // The body keeps the transport slot, the page's in-flight count and what is
+                    // left of the exchange deadline (M3) until it is read.
+                    var remaining = FetchTimeout() - System.Diagnostics.Stopwatch.GetElapsedTime(exchangeStarted);
+                    var resource = new FetchBodyResource(CancellationTokenSource.CreateLinkedTokenSource(cancellation), opaque);
+                    resource.Cancel.CancelAfter(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero);
+                    var (bodyRequestId, rid) = await gs.IsolateLock.RunOnPageAsync(() =>
+                    {
+                        var id = AllocateResourceId(document);
+                        document.FetchBodies[id] = resource;
+                        return (NextRequestId(), id);
+                    }).ConfigureAwait(false);
+
+                    var bodyResponse = response;
+                    response = null;
+                    bodyHandedOff = true;
+                    settled = true;
+                    resource.Body = ReadScriptBodyAsync(bodyResponse, slot.Detach(), resource, bodyRequestId);
+                    _ = resource.Body.ContinueWith(
+                        static task => _ = task.Exception,
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                    return ScriptResponseMetadataJson(
+                        StatusText(opaque, finalStatus),
+                        bodyRequestId,
+                        currentUrl,
+                        redirected,
+                        opaque,
+                        opaque
+                            ? new Dictionary<string, string>(StringComparer.Ordinal)
+                            : VisibleResponseHeaders(respHeaders, finalIsCrossOrigin, credentialsMode),
+                        rid);
+                }
+
                 var respBytes = await ReadBodyCappedAsync(response, FetchMaxBodyBytes(), deadline.Token)
                     .ConfigureAwait(false);
-                // Decoded only where a string is kept (a small stored body, an internal
-                // load); the script-facing JSON is written from the bytes (M4).
-                string? respBody = null;
-
-                if (callbacks is not null && callbacks.HasResponseCallbacks())
-                {
-                    var responseUri = Uri.TryCreate(currentUrl, UriKind.Absolute, out var parsedFinal)
-                        ? parsedFinal
-                        : new Uri("http://0.0.0.0/");
-                    var built = new Response
-                    {
-                        Url = responseUri,
-                        Status = finalStatus,
-                        Headers = respHeaders,
-                        Body = respBytes,
-                        RedirectedFrom = redirectedFrom,
-                    };
-                    callbacks.FireResponse(
-                        new RequestInfo
-                        {
-                            Url = responseUri,
-                            Method = currentMethod.Method,
-                            Headers = respHeaders,
-                            ResourceType = resourceType,
-                        },
-                        built);
-                }
+                FireResponseCallbacks(respBytes);
 
                 // Everything from here on writes page state (the stored bodies, the network events
                 // CDP drains, the resource timeline) and runs on the page's own loop between tasks,
@@ -1343,57 +1370,8 @@ public static partial class FetchOps
                 settled = true;
                 Func<string> finish = () =>
                 {
-                    gs.NetworkResponseBodyCounter++;
-                    var requestId = "fetch-" + gs.NetworkResponseBodyCounter.ToString(CultureInfo.InvariantCulture);
-                    var maxEntries = ResponseBodyEntryLimit();
-                    var maxBytes = ResponseBodyByteLimit();
-                    if (maxEntries > 0 && maxBytes > 0 && respBytes.Length <= maxBytes)
-                    {
-                        respBody ??= Encoding.UTF8.GetString(respBytes);
-                        gs.NetworkResponseBodies[requestId] = new StoredNetworkResponseBody(respBody, false);
-                        gs.NetworkResponseBodyOrder.Enqueue(requestId);
-                        while (gs.NetworkResponseBodyOrder.Count > maxEntries)
-                        {
-                            gs.NetworkResponseBodies.Remove(gs.NetworkResponseBodyOrder.Dequeue());
-                        }
-                    }
-
-                    // Record a network event so the CDP layer emits requestWillBeSent /
-                    // responseReceived for this script-initiated request, keyed by the same
-                    // fetch-{N} id as the stored body so Network.getResponseBody resolves.
-                    gs.JsNetworkEvents.Add(new JsNetworkEvent
-                    {
-                        RequestId = requestId,
-                        Url = currentUrl,
-                        Method = currentMethod.Method,
-                        ResourceType = resourceTypeName,
-                        Status = finalStatus,
-                        ResponseHeaders = respHeaders,
-                        BodySize = respBytes.Length,
-                        Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
-                    });
-                    if (gs.JsNetworkEvents.Count > MaxJsNetworkEvents)
-                    {
-                        gs.JsNetworkEvents.RemoveRange(0, gs.JsNetworkEvents.Count - MaxJsNetworkEvents);
-                    }
-
-                    // The one request the page can see go out, so it is also the one whose
-                    // start the shim could have measured itself. Recording it here keeps
-                    // fetch()/XHR on the same timeline as the host-owned subresources, and
-                    // the start is the real one rather than the resolution of the promise.
-                    PerformanceOps.RecordResourceTiming(
-                        gs,
-                        new ResourceTimingRecord
-                        {
-                            Url = currentUrl,
-                            InitiatorType = "fetch",
-                            Status = finalStatus,
-                            StartedAtUnixMs = startedAtUnixMs,
-                            EndedAtUnixMs = PerformanceOps.UnixMilliseconds(),
-                            DecodedBodySize = respBytes.Length,
-                            EncodedBodySize = PerformanceOps.EncodedBodySize(respHeaders, respBytes.Length),
-                            ContentType = respHeaders.GetValueOrDefault("content-type", string.Empty),
-                        });
+                    var requestId = NextRequestId();
+                    var respBody = RecordCompletion(requestId, respBytes);
 
                     if (internalLoad)
                     {
@@ -1415,14 +1393,6 @@ public static partial class FetchOps
                             ReferrerPolicyHeaderOf(respHeaders));
                     }
 
-                    // Page script sees an opaque no-cors response as status 0 with no body
-                    // and no headers; the engine's own subresource loads (internalLoad) still
-                    // get the body. Set-Cookie and unexposed cross-origin headers never
-                    // reach script (upstream 04418a5). The CDP-facing records above keep
-                    // the full response.
-                    var opaque = !internalLoad
-                        && string.Equals(mode, "no-cors", StringComparison.Ordinal)
-                        && crossedOrigin;
                     var scriptHeaders = opaque
                         ? new Dictionary<string, string>(StringComparer.Ordinal)
                         : VisibleResponseHeaders(respHeaders, finalIsCrossOrigin, credentialsMode);
@@ -1439,6 +1409,157 @@ public static partial class FetchOps
                 return tailOnPageLoop
                     ? await gs.IsolateLock.RunOnPageAsync(finish).ConfigureAwait(false)
                     : finish();
+
+                string NextRequestId()
+                {
+                    gs.NetworkResponseBodyCounter++;
+                    return "fetch-" + gs.NetworkResponseBodyCounter.ToString(CultureInfo.InvariantCulture);
+                }
+
+                void FireResponseCallbacks(byte[] bytes)
+                {
+                    if (callbacks is null || !callbacks.HasResponseCallbacks())
+                    {
+                        return;
+                    }
+
+                    var responseUri = Uri.TryCreate(currentUrl, UriKind.Absolute, out var parsedFinal)
+                        ? parsedFinal
+                        : new Uri("http://0.0.0.0/");
+                    var built = new Response
+                    {
+                        Url = responseUri,
+                        Status = finalStatus,
+                        Headers = respHeaders,
+                        Body = bytes,
+                        RedirectedFrom = redirectedFrom,
+                    };
+                    callbacks.FireResponse(
+                        new RequestInfo
+                        {
+                            Url = responseUri,
+                            Method = currentMethod.Method,
+                            Headers = respHeaders,
+                            ResourceType = resourceType,
+                        },
+                        built);
+                }
+
+                // The CDP-facing records of a completed response under requestId: the stored
+                // body Network.getResponseBody returns (bounded), the network event and the
+                // resource timing. Runs on the page's loop when called as an op. Returns the
+                // decoded body when it decoded one, so an internal load need not again.
+                string? RecordCompletion(string requestId, byte[] bytes)
+                {
+                    // Decoded only where a string is kept (a small stored body, an internal
+                    // load); the script-facing JSON is written from the bytes (M4).
+                    string? decoded = null;
+                    var maxEntries = ResponseBodyEntryLimit();
+                    var maxBytes = ResponseBodyByteLimit();
+                    if (maxEntries > 0 && maxBytes > 0 && bytes.Length <= maxBytes)
+                    {
+                        decoded = Encoding.UTF8.GetString(bytes);
+                        gs.NetworkResponseBodies[requestId] = new StoredNetworkResponseBody(decoded, false);
+                        gs.NetworkResponseBodyOrder.Enqueue(requestId);
+                        while (gs.NetworkResponseBodyOrder.Count > maxEntries)
+                        {
+                            gs.NetworkResponseBodies.Remove(gs.NetworkResponseBodyOrder.Dequeue());
+                        }
+                    }
+
+                    // Record a network event so the CDP layer emits requestWillBeSent /
+                    // responseReceived for this script-initiated request, keyed by the same
+                    // fetch-{N} id as the stored body so Network.getResponseBody resolves.
+                    gs.JsNetworkEvents.Add(new JsNetworkEvent
+                    {
+                        RequestId = requestId,
+                        Url = currentUrl,
+                        Method = currentMethod.Method,
+                        ResourceType = resourceTypeName,
+                        Status = finalStatus,
+                        ResponseHeaders = respHeaders,
+                        BodySize = bytes.Length,
+                        Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+                    });
+                    if (gs.JsNetworkEvents.Count > MaxJsNetworkEvents)
+                    {
+                        gs.JsNetworkEvents.RemoveRange(0, gs.JsNetworkEvents.Count - MaxJsNetworkEvents);
+                    }
+
+                    // The one request the page can see go out, so it is also the one whose
+                    // start the shim could have measured itself. Recording it here keeps
+                    // fetch()/XHR on the same timeline as the host-owned subresources, and
+                    // the start is the real one rather than the resolution of the promise.
+                    PerformanceOps.RecordResourceTiming(
+                        gs,
+                        new ResourceTimingRecord
+                        {
+                            Url = currentUrl,
+                            InitiatorType = "fetch",
+                            Status = finalStatus,
+                            StartedAtUnixMs = startedAtUnixMs,
+                            EndedAtUnixMs = PerformanceOps.UnixMilliseconds(),
+                            DecodedBodySize = bytes.Length,
+                            EncodedBodySize = PerformanceOps.EncodedBodySize(respHeaders, bytes.Length),
+                            ContentType = respHeaders.GetValueOrDefault("content-type", string.Empty),
+                        });
+                    return decoded;
+                }
+
+                // upstream 3aa2f59's body future: reads the body (bounded, M4), fires the
+                // response callbacks and records the completion, then frees the slot and the
+                // page's in-flight count. A body that ends without being read in full reports
+                // one failure, under the id the response already carries.
+                async Task<byte[]> ReadScriptBodyAsync(
+                    HttpResponseMessage bodyResponse,
+                    FetchConcurrency.Slot bodySlot,
+                    FetchBodyResource resource,
+                    string requestId)
+                {
+                    var completed = false;
+                    try
+                    {
+                        byte[] bytes;
+                        try
+                        {
+                            bytes = await ReadBodyCappedAsync(bodyResponse, FetchMaxBodyBytes(), resource.Cancel.Token)
+                                .ConfigureAwait(false);
+                        }
+                        catch (Exception) when (cancellation.IsCancellationRequested)
+                        {
+                            // The page's AbortSignal; the shim rejects with its reason.
+                            throw new OpException("Fetch was cancelled");
+                        }
+                        catch (Exception) when (resource.Closed)
+                        {
+                            throw new OpException("Response body was cancelled");
+                        }
+
+                        bodySlot.Dispose();
+                        FireResponseCallbacks(bytes);
+                        await gs.IsolateLock.RunOnPageAsync(() => RecordCompletion(requestId, bytes)).ConfigureAwait(false);
+                        completed = true;
+                        return bytes;
+                    }
+                    finally
+                    {
+                        bodyResponse.Dispose();
+                        bodySlot.Dispose();
+                        pageInFlight.Decrement();
+                        if (!completed)
+                        {
+                            var failure = RecordFetchFailure(
+                                gs, url, method,
+                                cancellation.IsCancellationRequested || resource.Closed ? "net::ERR_ABORTED" : "net::ERR_FAILED",
+                                resourceTypeName, requestId);
+                            _ = gs.IsolateLock.RunOnPageAsync(failure).ContinueWith(
+                                static task => _ = task.Exception,
+                                CancellationToken.None,
+                                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                                TaskScheduler.Default);
+                        }
+                    }
+                }
             }
             finally
             {
@@ -1447,7 +1568,12 @@ public static partial class FetchOps
         }
         finally
         {
-            pageInFlight.Decrement();
+            // A body handed to its resource (upstream 3aa2f59) releases the count when it ends.
+            if (!bodyHandedOff)
+            {
+                pageInFlight.Decrement();
+            }
+
             if (!settled)
             {
                 var failure = RecordFetchFailure(
@@ -1474,16 +1600,23 @@ public static partial class FetchOps
     /// <summary>
     /// Rust <c>FetchNetworkGuard</c>'s drop (upstream 0155807): the one network event a request
     /// that got no response reports, status 0 with <paramref name="errorText"/>, under a fresh
-    /// <c>fetch-{N}</c> id like a completed request's.
+    /// <c>fetch-{N}</c> id like a completed request's, or under <paramref name="requestId"/>
+    /// when the response already carries one (a body that failed after the headers).
     /// </summary>
     private static Func<bool> RecordFetchFailure(
-        PocketCalculatorState gs, string url, string method, string errorText, string resourceType) =>
+        PocketCalculatorState gs, string url, string method, string errorText, string resourceType,
+        string? requestId = null) =>
         () =>
         {
-            gs.NetworkResponseBodyCounter++;
+            if (requestId is null)
+            {
+                gs.NetworkResponseBodyCounter++;
+            }
+
             gs.JsNetworkEvents.Add(new JsNetworkEvent
             {
-                RequestId = "fetch-" + gs.NetworkResponseBodyCounter.ToString(CultureInfo.InvariantCulture),
+                RequestId = requestId
+                    ?? "fetch-" + gs.NetworkResponseBodyCounter.ToString(CultureInfo.InvariantCulture),
                 Url = url,
                 Method = method,
                 ResourceType = resourceType,
@@ -1504,21 +1637,32 @@ public static partial class FetchOps
     /// <summary><c>op_fetch_cancel_handle</c>: a new cancellation handle for one fetch().</summary>
     internal static uint OpenCancelHandle(PocketCalculatorState document)
     {
-        uint rid;
-        do
-        {
-            rid = ++document.FetchCancellationCounter;
-        }
-        while (rid == 0 || document.FetchCancellations.ContainsKey(rid));
-
+        var rid = AllocateResourceId(document);
         document.FetchCancellations[rid] = new CancellationTokenSource();
         return rid;
     }
 
     /// <summary>
-    /// <c>op_try_close</c> on a fetch cancellation handle: cancels the request it was given
-    /// to, if it is still running, and forgets it. An unknown id is ignored, as deno's
-    /// <c>try_close</c> ignores one.
+    /// A resource id unused by both of the document's fetch tables, which share one id space
+    /// as deno's resource table does (<c>op_try_close</c> closes either). On the page's thread.
+    /// </summary>
+    private static uint AllocateResourceId(PocketCalculatorState document)
+    {
+        uint rid;
+        do
+        {
+            rid = ++document.FetchCancellationCounter;
+        }
+        while (rid == 0 || document.FetchCancellations.ContainsKey(rid) || document.FetchBodies.ContainsKey(rid));
+
+        return rid;
+    }
+
+    /// <summary>
+    /// <c>op_try_close</c>: closes a fetch cancellation handle, which cancels the request it
+    /// was given to if it is still running, or a response body resource (upstream 3aa2f59),
+    /// which stops reading the body. An unknown id is ignored, as deno's <c>try_close</c>
+    /// ignores one.
     /// </summary>
     internal static void CloseCancelHandle(PocketCalculatorState document, uint rid)
     {
@@ -1526,6 +1670,48 @@ public static partial class FetchOps
         {
             // Not disposed: the request may still be unwinding with its token.
             source.Cancel();
+        }
+        else if (document.FetchBodies.TryRemove(rid, out var body))
+        {
+            body.Close();
+        }
+    }
+
+    /// <summary>
+    /// <c>op_fetch_body</c> (upstream 3aa2f59): the body of the response <paramref name="rid"/>
+    /// names, once it has been read in full; the resource is closed after it. Rejects when the
+    /// body is cancelled, times out or fails, and when it has already been taken.
+    /// </summary>
+    /// <remarks>
+    /// DEVIATION from crates/obscura-js (ops.rs), which resolves with the bytes as a buffer: the
+    /// result is the body in standard base64, which the shim decodes, because the op's task
+    /// completes off the page's thread where no typed array can be made. An opaque response's
+    /// body is empty, as in Rust.
+    /// </remarks>
+    internal static async Task<string> OpFetchBodyAsync(PocketCalculatorState document, uint rid)
+    {
+        if (!document.FetchBodies.TryGetValue(rid, out var resource) || resource.Body is not { } body)
+        {
+            throw new OpException("Bad resource ID");
+        }
+
+        if (!resource.Take())
+        {
+            throw new OpException("Body is already consumed");
+        }
+
+        try
+        {
+            var bytes = await body.ConfigureAwait(false);
+            return resource.Opaque ? string.Empty : Convert.ToBase64String(bytes);
+        }
+        catch (Exception ex) when (ex is not OpException and not OutOfMemoryException)
+        {
+            throw new OpException(ex.Message);
+        }
+        finally
+        {
+            document.FetchBodies.TryRemove(rid, out _);
         }
     }
 

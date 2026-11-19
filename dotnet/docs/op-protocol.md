@@ -72,12 +72,26 @@ The shim also sends its own closure-held realm id, not the page-writable
 and the form-state mirror passes the id `BootstrapLoader.Install` was given as
 `op_dom`'s frame id. The op signatures are unchanged.
 
-## Ops (56)
+## Ops (57)
 
 Upstream 0155807: `op_fetch_url`'s last argument is `internal_load`, or, for a page
 `fetch()` with a signal, `{cancel_rid}` naming a handle from `op_fetch_cancel_handle`.
 Closing the handle with deno_core's built-in `op_try_close(rid)` cancels the request;
-the port binds `op_try_close` for these handles only and ignores any other id.
+the port binds `op_try_close` for these handles and for fetch body resources
+(below) only, and ignores any other id.
+
+Upstream 3aa2f59: a page `fetch()` (not an internal load) resolves `op_fetch_url` once
+the headers have arrived. The result has no `body` or `bodyBase64`; it ends with
+`bodyRid`, a resource id in the same id space as the cancellation handles. The shim
+passes it to `op_fetch_body(rid)` at once, which resolves when the body has been read in
+full and closes the resource; `op_try_close(rid)` closes it early and stops the read
+(the shim does so when every clone of the body has been cancelled). The body keeps the
+fetch's transport slot, the page's in-flight count and the rest of the exchange
+deadline until it ends. An opaque response's body is empty. Port deviation:
+`op_fetch_body` resolves with the body as a base64 string, not a buffer, because the
+op's task completes off the page's thread; the shim decodes it. Internal loads, blocked
+and CORS-refused requests and `Fetch.fulfillRequest` responses still return the whole
+result at once.
 Upstream's `op_abort_signal_state` (a V8 private-symbol brand) is not bound: the port
 keeps signal state in a closure WeakMap in `bootstrap.js`.
 
@@ -105,6 +119,7 @@ shown with the deno_core attribute markers stripped: `String` is a JS string,
 | `op_external_stylesheet_get` | sync | `owner_nid: u32, frame_id: u32` | `String` |
 | `op_external_stylesheet_remove` | fast | `owner_nid: u32, frame_id: u32` | `bool` |
 | `op_external_stylesheet_set` | fast | `owner_nid: u32, css: String, response_url: String, imported_origin_clean: bool, frame_id: u32` | `bool` |
+| `op_fetch_body` | async | `rid: u32` | `String`: the body in base64 (upstream 3aa2f59 returns a buffer) |
 | `op_fetch_cancel_handle` | fast | `(none)` | `u32` cancellation handle id (upstream 0155807) |
 | `op_fetch_url` | async | `url: String, method: String, headers_json: String, body: JsBuffer, origin: String, mode: String, credentials: String, options: bool \| {cancel_rid: u32}` | `String` |
 | `op_frame_document_ready` | fast | `url: &str, html: &str, viewport_width: u64, viewport_height: u64` | `u32` |
@@ -273,7 +288,9 @@ The eighth argument, `internal_load`, came with upstream 04418a5. The public
 subresource loads pass `true`: `__fetchDynClassicScript`, the iframe loader and
 (host-side, see below) the linked-stylesheet loader. For `internal_load` false the
 result keys are unchanged (`status, body, bodyBase64, requestId, url, redirected,
-opaque, headers`); only the values are filtered:
+opaque, headers`), or since upstream 3aa2f59 `status, requestId, url, redirected,
+opaque, headers, bodyRid` for a response read from the network, whose body
+`op_fetch_body` returns; only the values are filtered:
 
 - `set-cookie` / `set-cookie2` are never in `headers`.
 - For a response whose final URL is cross-origin to the page, `headers` holds

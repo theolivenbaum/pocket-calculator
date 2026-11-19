@@ -48,5 +48,11 @@ internal static class FetchConcurrency
     internal readonly struct Slot(StrongBox<SemaphoreSlim?> gate) : IDisposable
     {
         public void Dispose() => Interlocked.Exchange(ref gate.Value, null)?.Release();
+
+        /// <summary>
+        /// Moves the held slot to a new owner, leaving this one empty, so a <c>using</c> over it
+        /// frees nothing (a fetch body that outlives its op, upstream 3aa2f59).
+        /// </summary>
+        public Slot Detach() => new(new StrongBox<SemaphoreSlim?>(Interlocked.Exchange(ref gate.Value, null)));
     }
 }
