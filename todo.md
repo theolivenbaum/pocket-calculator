@@ -769,7 +769,15 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       intrinsics, since page script may have replaced `Proxy` or `Object.defineProperty` by
       then. Interleaved, 3 x 40,000 wrappers + 15,000 created elements: ~430 ms before,
       ~360-390 ms after; 50,000 style read/writes within noise (medians 225 vs 240 ms, 12 runs)
-- [ ] Performance, benchmark before and after: `abf247b`
+- [x] `abf247b` (applicable part): a raster drawn at an unchanged size is decoded and scaled
+      once (`ScaledRasterCache`: process-wide, keyed by the response bytes' identity and the
+      drawn size, at most 4M pixels per entry, 16M pixels and 1,024 entries in all, least
+      recently used first); a windowed draw copies its window out of the cached whole, pixel
+      for pixel what the direct draw gave. 300 copies of a 512 px PNG at 64 px plus partly
+      off-surface and tiled uses: ~1,150 ms before, ~790 ms after, screenshots byte-identical.
+      Not ported: the idle-deadline wake (a macOS dispatch timer; the port's network-idle loop
+      showed no measurable overshoot when bounded to the quiet window, 10 interleaved runs),
+      the Rust-only retained caches, and the taffy leaf change (already so)
 
 Parity against a reference built at `4eb1235` (2026-11-18): 377 of 385 cases identical. The
 eight that differed are queued above or since ported: `legacy-table-apis` html/text/markdown

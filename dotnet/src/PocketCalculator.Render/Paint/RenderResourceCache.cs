@@ -1552,6 +1552,38 @@ internal static class PaintResources
             return null;
         }
 
+        if ((long)width * height <= ScaledRasterCache.MaxEntryPixels)
+        {
+            // upstream abf247b: an unchanged raster drawn at an unchanged size is decoded and
+            // scaled once, not on every paint and for every element that shows it. The window
+            // is copied out of the cached whole; the translation is a whole number of pixels,
+            // so the result is the pixels the direct windowed draw below produces.
+            if (ScaledRasterCache.Get(bytes, width, height) is not { } whole)
+            {
+                whole = RasterToPixmapUncached(bytes, width, height, 0, 0, width, height);
+                if (whole is null)
+                {
+                    return null;
+                }
+
+                ScaledRasterCache.Add(bytes, width, height, whole);
+            }
+
+            return ScaledRasterCache.Window(whole, windowX, windowY, windowWidth, windowHeight);
+        }
+
+        return RasterToPixmapUncached(bytes, width, height, windowX, windowY, windowWidth, windowHeight);
+    }
+
+    private static Pixmap? RasterToPixmapUncached(
+        byte[] bytes,
+        uint width,
+        uint height,
+        uint windowX,
+        uint windowY,
+        uint windowWidth,
+        uint windowHeight)
+    {
         try
         {
             using SkiaSharp.SKBitmap? decoded = DecodeWithinBudget(bytes, width, height);
@@ -1630,4 +1662,98 @@ internal static class PaintResources
     }
 
     internal static string Invariant(FormattableString value) => value.ToString(CultureInfo.InvariantCulture);
+}
+
+/// <summary>
+/// Decoded rasters at the size they were drawn (upstream abf247b's "reuse unchanged raster
+/// image paint results"), shared by every render pass in the process and bounded by pixels.
+/// </summary>
+/// <remarks>
+/// Keyed by the identity of the response bytes, which the resource cache keeps for a URL and
+/// never mutates, and the drawn size. A raster is decoded to its first frame whatever its
+/// format, so an animated GIF, WebP or APNG is as stable here as a still one (upstream skips
+/// those because its paint samples their frames). Least recently used entries go first.
+/// </remarks>
+internal static class ScaledRasterCache
+{
+    /// <summary>The largest drawn size kept (4M pixels, 16 MiB).</summary>
+    internal const long MaxEntryPixels = 4L * 1024 * 1024;
+
+    /// <summary>The pixels kept in all (16M, 64 MiB).</summary>
+    internal const long MaxTotalPixels = 16L * 1024 * 1024;
+
+    /// <summary>The entries kept in all; each also holds its response bytes alive.</summary>
+    internal const int MaxEntries = 1024;
+
+    private static readonly Lock Gate = new();
+    private static readonly Dictionary<(byte[] Bytes, uint Width, uint Height), LinkedListNode<Entry>> Entries = [];
+    private static readonly LinkedList<Entry> Recency = new();
+    private static long s_pixels;
+
+    private sealed record Entry((byte[] Bytes, uint Width, uint Height) Key, Pixmap Pixels);
+
+    internal static Pixmap? Get(byte[] bytes, uint width, uint height)
+    {
+        lock (Gate)
+        {
+            if (!Entries.TryGetValue((bytes, width, height), out LinkedListNode<Entry>? node))
+            {
+                return null;
+            }
+
+            Recency.Remove(node);
+            Recency.AddFirst(node);
+            return node.Value.Pixels;
+        }
+    }
+
+    internal static void Add(byte[] bytes, uint width, uint height, Pixmap pixels)
+    {
+        long size = (long)width * height;
+        lock (Gate)
+        {
+            if (Entries.ContainsKey((bytes, width, height)))
+            {
+                return;
+            }
+
+            Entries[(bytes, width, height)] = Recency.AddFirst(new Entry((bytes, width, height), pixels));
+            s_pixels += size;
+            while ((s_pixels > MaxTotalPixels || Entries.Count > MaxEntries) && Recency.Last is { } oldest)
+            {
+                Recency.RemoveLast();
+                Entries.Remove(oldest.Value.Key);
+                s_pixels -= (long)oldest.Value.Key.Width * oldest.Value.Key.Height;
+                // Not disposed: a pass may still be copying out of it. It holds managed pixels.
+            }
+        }
+    }
+
+    /// <summary>A copy of the window of <paramref name="whole"/>, which the caller owns.</summary>
+    internal static Pixmap? Window(Pixmap whole, uint x, uint y, uint width, uint height)
+    {
+        if (Pixmap.New(width, height) is not { } window)
+        {
+            return null;
+        }
+
+        PremultipliedColor[] source = whole.Pixels;
+        PremultipliedColor[] target = window.Pixels;
+        for (uint row = 0; row < height; row++)
+        {
+            long sourceRow = (long)(y + row) * whole.Width;
+            if (y + row >= whole.Height)
+            {
+                break;
+            }
+
+            uint count = x >= whole.Width ? 0 : Math.Min(width, whole.Width - x);
+            if (count > 0)
+            {
+                Array.Copy(source, sourceRow + x, target, (long)row * width, count);
+            }
+        }
+
+        return window;
+    }
 }

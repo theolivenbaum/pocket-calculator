@@ -86,6 +86,32 @@ public class ImageBudgetTests
         }
     }
 
+    // upstream abf247b: a raster drawn again at the same size comes from the scaled-raster
+    // cache, as a copy the caller owns, with the pixels of a fresh decode.
+    [Fact]
+    public void RepeatedRastersAreCachedCopiesOfTheSamePixels()
+    {
+        using var bitmap = new SKBitmap(9, 6, SKColorType.Rgba8888, SKAlphaType.Premul);
+        for (int y = 0; y < 6; y++)
+        {
+            for (int x = 0; x < 9; x++)
+            {
+                bitmap.SetPixel(x, y, new SKColor((byte)(x * 28), (byte)(y * 40), 90, (byte)(200 + y)));
+            }
+        }
+
+        byte[] png = bitmap.Encode(SKEncodedImageFormat.Png, 100).ToArray();
+        byte[] sameBytesElsewhere = (byte[])png.Clone();
+        using Pixmap first = PaintResources.RasterToPixmap(png, 45, 30)!;
+        Assert.NotNull(ScaledRasterCache.Get(png, 45, 30));
+        first.Pixels[0] = default;
+        using Pixmap second = PaintResources.RasterToPixmap(png, 45, 30)!;
+        using Pixmap uncached = PaintResources.RasterToPixmap(sameBytesElsewhere, 45, 30)!;
+        Assert.NotSame(first, second);
+        Assert.Equal(uncached.Pixels, second.Pixels);
+        Assert.NotEqual(default, second.Pixels[0]);
+    }
+
     [Fact]
     public void PixmapsFarPastTheCaptureBudgetAreRefused()
     {
