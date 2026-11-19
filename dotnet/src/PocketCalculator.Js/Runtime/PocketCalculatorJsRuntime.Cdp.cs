@@ -183,24 +183,30 @@ public sealed partial class PocketCalculatorJsRuntime
 
         scope.Counter += 1;
         var oid = scope.MakeOid(scope.Counter);
-        var sourceLiteral = JsStringLiteral(expression);
         var oidLiteral = JsStringLiteral(oid);
         var done = scope.Counter.ToString(CultureInfo.InvariantCulture);
 
         // DEVIATION from crates/obscura-js/src/runtime.rs (SECURITY.md L10): the handle and
         // the outcome go into the realm's closure store (__obscura_cdp, see bootstrap.js
         // _cdpHost), not the page-visible __obscura_objects, __obscura_await_meta,
-        // __obscura_await_rejected and __obscura_done_N, and the source runs through the
-        // eval bootstrap captured. The page can neither read a client's handles nor settle
-        // an awaitPromise with a forged result.
+        // __obscura_await_rejected and __obscura_done_N. The page can neither read a client's
+        // handles nor settle an awaitPromise with a forged result.
+        //
+        // upstream 579e1cb: the source is compiled and run as a script of its own, not passed
+        // through an eval, so a global `let`, `const` or `class` from one Runtime.evaluate is
+        // visible to the next, as in Chromium. Its completion (or thrown) value is put in the
+        // handle store from here, then settled by the wrappers below. A promise completion comes
+        // back as a Task (EnableTaskPromiseConversion) and becomes a promise again on the way in.
+        (object? scriptValue, bool scriptThrew) = scope.RunScript("<eval-remote>", expression);
+        scope.Objects.SetProperty(oid, scriptValue);
         ScriptObject outcome;
-        if (awaitPromise)
+        if (awaitPromise && !scriptThrew)
         {
             scope.Call("<eval-remote>", $$"""
                 var c = __obscura_cdp;
                 (async function () {
                     try {
-                        var r = await c.eval({{sourceLiteral}});
+                        var r = await c.objects[{{oidLiteral}}];
                         c.objects[{{oidLiteral}}] = r;
                         c.outcomes[{{done}}] = c.settle(false, r);
                     } catch (e) {
@@ -220,15 +226,8 @@ public sealed partial class PocketCalculatorJsRuntime
             // undefined`: a page error was indistinguishable from an expression with no
             // value.
             outcome = scope.Call("<eval-remote>", $$"""
-                var c = __obscura_cdp, r;
-                try {
-                    r = c.eval({{sourceLiteral}});
-                } catch (e) {
-                    c.objects[{{oidLiteral}}] = e;
-                    return c.settle(true, e);
-                }
-                c.objects[{{oidLiteral}}] = r;
-                return c.settle(false, r);
+                var c = __obscura_cdp;
+                return c.settle({{(scriptThrew ? "true" : "false")}}, c.objects[{{oidLiteral}}]);
                 """) as ScriptObject
                 ?? throw new JsRuntimeException("Runtime.evaluate produced no result");
         }

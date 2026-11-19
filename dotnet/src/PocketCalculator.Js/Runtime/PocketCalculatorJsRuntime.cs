@@ -748,6 +748,35 @@ public sealed partial class PocketCalculatorJsRuntime
     /// <see cref="ExecuteRuntimeScript"/> in any realm of this isolate: the page's, or an
     /// isolated world's. Same deadline and heap-limit handling.
     /// </summary>
+    /// <summary>
+    /// <see cref="ExecuteIn"/> for a client's script: a JS exception is the outcome, not an
+    /// error, and comes back as the thrown value.
+    /// </summary>
+    internal (object? Value, bool Threw) EvaluateScriptIn(V8ScriptEngine engine, string name, string source)
+    {
+        CancellationToken deadline = _ops.Cancellation.Token;
+        try
+        {
+            object? result = engine.Evaluate(new DocumentInfo(name), source);
+            ThrowIfDeadlinePassed(deadline);
+            return (result, false);
+        }
+        catch (ScriptInterruptedException)
+        {
+            throw new JsRuntimeException("JS error: Uncaught Error: execution terminated");
+        }
+        catch (ScriptEngineException error)
+        {
+            if (IsHeapLimitFailure(error))
+            {
+                RecoverHeapLimit();
+                throw new JsRuntimeException("JavaScript heap limit exceeded; execution terminated");
+            }
+            ThrowIfDeadlinePassed(deadline);
+            return (error.ScriptExceptionAsObject, true);
+        }
+    }
+
     internal object? ExecuteIn(V8ScriptEngine engine, string name, string source)
     {
         CancellationToken deadline = _ops.Cancellation.Token;

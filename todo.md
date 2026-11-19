@@ -436,6 +436,10 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       document), and an unknown or malformed `nodeId` or an invalid selector is an error, not 0
       or []. With it, `:scope` is now bound to the query's element (it always meant the
       document element, so `el.querySelector(':scope > x')` found nothing; Rust binds it)
+- [x] `579e1cb`: `Runtime.evaluate` compiles and runs the source as a script of its own (no
+      eval, page-replaced or captured), so a global `let`/`const`/`class` persists to the next
+      call, as in Chromium; the completion or thrown value enters the realm's handle store from
+      the host, and a promise completion is awaited as before
 - [ ] CDP DOM domain and evaluation: `717dd92` + `229d1ed` (`DOM.getDocument` with `pierce`
       reports no `shadowRoots` either), `579e1cb` (`let`
       persists), `f66ac0a` (`__proto__` in JSON args), `7a2b9ae`

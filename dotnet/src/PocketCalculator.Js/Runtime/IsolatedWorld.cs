@@ -385,6 +385,24 @@ internal sealed class CdpScope(
             CultureInfo.InvariantCulture,
             $"{{\"injectedScriptId\":{injectedScriptId},\"id\":{counter}}}");
 
+    /// <summary>
+    /// Compile and run <paramref name="source"/> as a classic script in this realm (upstream
+    /// 579e1cb), so its global <c>let</c>, <c>const</c> and <c>class</c> bindings persist for
+    /// the next one, as in Chromium. Returns the completion value, or the thrown value with
+    /// <c>Threw</c> set.
+    /// </summary>
+    public (object? Value, bool Threw) RunScript(string name, string source)
+    {
+        world?.SyncBeforeRun();
+        (object? Value, bool Threw) outcome = default;
+        AsRealm(() =>
+        {
+            outcome = runtime.EvaluateScriptIn(Engine, name, source);
+            return null;
+        });
+        return outcome;
+    }
+
     public object? Run(string name, string source)
     {
         world?.SyncBeforeRun();
