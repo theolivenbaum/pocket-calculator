@@ -1236,6 +1236,70 @@ public sealed partial class RuntimeTests
         Assert.True(obj["illegal"]!.GetValue<bool>());
     }
 
+    /// <summary>Upstream 8a7aa8c (already in the port; test added).</summary>
+    [Fact]
+    public async Task LocationHashNavigatesToAFragmentInTheSameDocument()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body><a id=tab href='#tab'>tab</a></body></html>");
+        var rt = fixture.Runtime;
+        rt.ExecuteScript(
+            "fragment-navigation",
+            """
+            globalThis.__events = [];
+            addEventListener('hashchange', (e) => __events.push(e.oldURL + ' -> ' + e.newURL));
+            globalThis.__marker = 'same-document';
+            location.hash = 'one';
+            globalThis.__syncHash = location.hash;
+            location.hash = '#one';
+            location.href = '#two';
+            document.getElementById('tab').click();
+            """);
+        Assert.Null(rt.TakePendingNavigation());
+        await EventLoopWait.UntilIdleAsync(rt);
+        AssertJson(
+            """
+            ["#one","http://example.com/test#tab",4,"same-document",
+             ["http://example.com/test -> http://example.com/test#one",
+              "http://example.com/test#one -> http://example.com/test#two",
+              "http://example.com/test#two -> http://example.com/test#tab"]]
+            """,
+            rt.Evaluate("[__syncHash, location.href, history.length, __marker, __events]"));
+        rt.Evaluate("history.back()");
+        Assert.Equal("#two", rt.Evaluate("location.hash")!.GetValue<string>());
+    }
+
+    /// <summary>Upstream 8a7aa8c.</summary>
+    [Fact]
+    public void LocationReplaceWithAFragmentReplacesTheHistoryEntry()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
+        var rt = fixture.Runtime;
+        AssertJson(
+            """["#r",1]""",
+            rt.Evaluate("(function(){ location.replace('#r'); return [location.hash, history.length]; })()"));
+        Assert.Null(rt.TakePendingNavigation());
+    }
+
+    /// <summary>Upstream 8a7aa8c.</summary>
+    [Fact]
+    public void LocationComponentSettersLoadTheNewUrl()
+    {
+        using (var fixture = RuntimeFixture.Setup("<html><body></body></html>"))
+        {
+            fixture.Runtime.Evaluate("location.search = 'q=1'");
+            var pending = fixture.Runtime.TakePendingNavigation();
+            Assert.Equal(
+                ("http://example.com/test?q=1", "GET", string.Empty),
+                (pending?.Url, pending?.Method, pending?.Body));
+        }
+
+        using (var fixture = RuntimeFixture.Setup("<html><body></body></html>"))
+        {
+            fixture.Runtime.Evaluate("location.pathname = '/other'");
+            Assert.Equal("http://example.com/other", fixture.Runtime.TakePendingNavigation()?.Url);
+        }
+    }
+
     /// <summary>Upstream fb23f18. Chromium 1243 gives the same values.</summary>
     [Fact]
     public async Task LocationHashPreservesLeadingHashesAndIgnoresAnUnchangedEmptyFragment()
