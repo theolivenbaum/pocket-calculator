@@ -609,7 +609,10 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       submit's navigation before replying; `browser_press_key` reports a missing element.
       Upstream's tests replace `el.click`/`scrollIntoView`/the field setter from page script,
       which the port's frozen host helpers ignore, so the error path is tested directly
-- [ ] MCP: `9855ef4` web_search, opt-in
+- [x] `9855ef4`: the opt-in MCP `web_search` tool (Keenable), listed and callable only with
+      `POCKETCALCULATOR_WEB_SEARCH=keenable` (upstream `OBSCURA_WEB_SEARCH`); keyless public
+      endpoint unless `KEENABLE_API_KEY` is set, POST through the context's client (proxy, SSRF
+      guard), 1 MiB response cap checked before EOF, results one JSON object per line
 - [x] `9a6dd86`: CLI fetch and stdio MCP navigation errors from an SSRF denial of a loopback,
       private or localhost target carry the --allow-private-network hint (metadata and special
       ranges get none); the hint names the port's executable and environment variable

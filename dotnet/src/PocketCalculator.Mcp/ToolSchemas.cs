@@ -32,6 +32,12 @@ internal static class ToolSchemas
             tools.Add(tool!.DeepClone());
         }
 
+        // upstream 9855ef4: listed only when the operator opts in.
+        if (Tools.WebSearchEnabled())
+        {
+            tools.Add(JsonNode.Parse(Tools.WebSearchTool));
+        }
+
         return tools;
     }
 

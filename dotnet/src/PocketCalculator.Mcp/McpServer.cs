@@ -341,6 +341,7 @@ public static class McpServer
             "browser_search" => Tools.Search(args, state),
             "browser_storage_state" => Tools.StorageState(state),
             "browser_set_storage_state" => Tools.SetStorageState(args, state),
+            "web_search" when Tools.WebSearchEnabled() => await Tools.WebSearchAsync(args, state).ConfigureAwait(false),
             _ => throw new ToolException($"Unknown tool: {name}"),
         };
 }
