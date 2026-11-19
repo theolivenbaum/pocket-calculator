@@ -149,6 +149,29 @@ public static class DomOps
             gs.FocusStamp = Interlocked.Increment(ref s_focusClock);
             return string.Empty;
         }
+        // Port addition: the focused text control's caret, which the renderer draws (bootstrap.js
+        // _reportCaret). It is paint state only, so it changes no layout; the activity generation is
+        // what tells an autonomous screencast that a frame is due.
+        if (cmd == "set_caret")
+        {
+            if (gs.Dom is { } caretDom)
+            {
+                NodeId? caretNode = uint.TryParse(arg1, NumberStyles.None, CultureInfo.InvariantCulture, out var caretRaw)
+                    && caretDom.GetNode(NodeId.New(caretRaw)) is not null
+                        ? NodeId.New(caretRaw)
+                        : null;
+                int caretOffset = int.TryParse(arg2, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var parsed)
+                    ? Math.Max(parsed, -1)
+                    : 0;
+                if (caretDom.SetCaret(caretNode, caretOffset))
+                {
+                    gs.ActivityGeneration = unchecked(gs.ActivityGeneration + 1);
+                }
+            }
+
+            return string.Empty;
+        }
+
         // Port addition (SECURITY.md M6): a file input's selection, held here for every
         // realm over the document (bootstrap.js _inputFilesOf).
         if (cmd is "set_input_files" or "input_files_version" or "get_input_files")

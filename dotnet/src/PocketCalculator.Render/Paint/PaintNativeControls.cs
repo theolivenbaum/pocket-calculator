@@ -669,6 +669,76 @@ internal static class PaintNativeControls
         inputType is "text" or "search" or "url" or "tel" or "email" or "password" or "number"
             or "submit" or "reset" or "button";
 
+    /// <summary>
+    /// The caret of a focused single-line text control: a one-pixel bar in the text colour, as
+    /// tall as the line, before the character at <paramref name="offset"/> (UTF-16 units of the
+    /// value, -1 for its end). Port addition: the Rust engine paints no caret. A password field
+    /// measures its bullets, which is what it shows.
+    /// </summary>
+    internal static void PaintCaret(
+        Pixmap pixmap,
+        string inputType,
+        string value,
+        int offset,
+        float textX,
+        float textY,
+        LayoutStyle style,
+        Rect? clip,
+        Mask? clipMask,
+        float rasterScale)
+    {
+        RgbaColor color = style.Color ?? new RgbaColor(0, 0, 0, 255);
+        if (color.A == 0)
+        {
+            return;
+        }
+
+        int end = offset < 0 || offset > value.Length ? value.Length : offset;
+        if (end > 0 && end < value.Length && char.IsLowSurrogate(value[end]))
+        {
+            end--;
+        }
+
+        string before = value[..end];
+        if (string.Equals(inputType, "password", StringComparison.Ordinal))
+        {
+            before = new string('•', before.EnumerateRunes().Count());
+        }
+
+        float size = style.FontSize ?? 16f;
+        (float advance, float ascent, float descent) = PaintText.TextAdvance(
+            before, size, false, style.FontFamily, style.LetterSpacing ?? 0f, rasterScale);
+        float x = textX + advance;
+        float height = ascent + descent;
+        if (height <= 0f)
+        {
+            return;
+        }
+
+        Rect bar = new(x, textY, 1f, height);
+        if (clip is { } bounds)
+        {
+            if (bar.X < bounds.X || bar.X >= bounds.X + bounds.Width)
+            {
+                return;
+            }
+
+            float top = F32.Max(bar.Y, bounds.Y);
+            float bottom = F32.Min(bar.Y + bar.Height, bounds.Y + bounds.Height);
+            if (bottom <= top)
+            {
+                return;
+            }
+
+            bar = new Rect(bar.X, top, bar.Width, bottom - top);
+        }
+
+        using SKPathBuilder builder = new();
+        builder.AddRect(SKRect.Create(bar.X, bar.Y, bar.Width, bar.Height));
+        using SKPath path = builder.Detach();
+        Surface.FillPath(pixmap, path, color, false, Surface.RasterTransform(rasterScale), clipMask);
+    }
+
     /// <summary>Whether this type renders a placeholder at all.</summary>
     internal static bool ShowsPlaceholder(string inputType) =>
         inputType is "text" or "search" or "url" or "tel" or "email" or "password" or "number";

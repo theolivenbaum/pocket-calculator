@@ -249,7 +249,11 @@ public static class Dispatcher
             throw;
         }
 
-        if (parkedCommand is null && result.IsOk && Domains.Page.CommandCanChangeScreencastFrame(req.Method))
+        if (parkedCommand is null && result.IsOk && Domains.Page.CommandDefersScreencastFrame(req.Method))
+        {
+            Domains.Page.MarkScreencastDamaged(ctx, req.SessionId);
+        }
+        else if (parkedCommand is null && result.IsOk && Domains.Page.CommandCanChangeScreencastFrame(req.Method))
         {
             if (Domains.Page.QueueScreencastFrame(ctx, req.SessionId, false) is { } screencastError)
             {

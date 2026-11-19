@@ -207,6 +207,23 @@ public sealed class Pixmap : IDisposable
     }
 }
 
+/// <summary>What a <see cref="Mask"/>'s coverage amounts to, for <see cref="Surface.Draw"/>.</summary>
+internal readonly record struct MaskShape(MaskShapeKind Kind, SKRectI Bounds)
+{
+    internal static MaskShape Empty => new(MaskShapeKind.Empty, SKRectI.Empty);
+
+    internal static MaskShape Irregular => new(MaskShapeKind.Irregular, SKRectI.Empty);
+
+    internal static MaskShape Rectangle(SKRectI bounds) => new(MaskShapeKind.Rectangle, bounds);
+}
+
+internal enum MaskShapeKind
+{
+    Empty,
+    Rectangle,
+    Irregular,
+}
+
 /// <summary>An 8-bit coverage mask in the destination surface's pixel grid.</summary>
 public sealed class Mask(uint width, uint height)
 {
@@ -214,7 +231,13 @@ public sealed class Mask(uint width, uint height)
 
     public uint Height { get; } = height;
 
+    /// <summary>
+    /// The coverage, row-major. Painters read it; write it through <see cref="FillPath"/>,
+    /// <see cref="IntersectPath"/> and <see cref="Invert"/>, which keep <see cref="Shape"/> current.
+    /// </summary>
     public byte[] Data { get; } = new byte[(int)(width * height)];
+
+    private MaskShape? _shape;
 
     /// <summary>tiny-skia's <c>Mask::new</c>: <c>None</c> for a zero-sized mask.</summary>
     public static Mask? New(uint width, uint height) =>
@@ -226,6 +249,7 @@ public sealed class Mask(uint width, uint height)
     {
         Mask copy = new(Width, Height);
         Data.AsSpan().CopyTo(copy.Data);
+        copy._shape = _shape;
         return copy;
     }
 
@@ -236,6 +260,8 @@ public sealed class Mask(uint width, uint height)
         {
             Data[i] = (byte)(255 - Data[i]);
         }
+
+        _shape = null;
     }
 
     /// <summary>tiny-skia's <c>Mask::fill_path()</c>: replace coverage with this path's.</summary>
@@ -281,6 +307,48 @@ public sealed class Mask(uint width, uint height)
             byte coverage = pixels[(i * 4) + 3];
             Data[i] = intersect ? (byte)((Data[i] * coverage + 127) / 255) : coverage;
         }
+
+        _shape = null;
+    }
+
+    /// <summary>
+    /// Whether the coverage is nothing at all, or exactly one pixel-aligned rectangle of full
+    /// coverage with none outside it, worked out once per change. The overflow clip of a box
+    /// is almost always the latter, and such a mask is a clip, not a blend.
+    /// </summary>
+    internal MaskShape Shape => _shape ??= Classify();
+
+    private MaskShape Classify()
+    {
+        int width = (int)Width;
+        int height = (int)Height;
+        ReadOnlySpan<byte> data = Data;
+
+        int first = data.IndexOfAnyExcept((byte)0);
+        if (first < 0)
+        {
+            return MaskShape.Empty;
+        }
+
+        int last = data.LastIndexOfAnyExcept((byte)0);
+        int top = first / width;
+        int bottom = last / width;
+        ReadOnlySpan<byte> topRow = data.Slice(top * width, width);
+        int left = topRow.IndexOfAnyExcept((byte)0);
+        int right = topRow.LastIndexOfAnyExcept((byte)0);
+
+        for (int y = top; y <= bottom; y++)
+        {
+            ReadOnlySpan<byte> row = data.Slice(y * width, width);
+            if (row[..left].IndexOfAnyExcept((byte)0) >= 0
+                || row[left..(right + 1)].IndexOfAnyExcept((byte)255) >= 0
+                || row[(right + 1)..].IndexOfAnyExcept((byte)0) >= 0)
+            {
+                return MaskShape.Irregular;
+            }
+        }
+
+        return MaskShape.Rectangle(new SKRectI(left, top, right + 1, bottom + 1));
     }
 
     /// <summary>An A8 Skia image over this mask's coverage.</summary>

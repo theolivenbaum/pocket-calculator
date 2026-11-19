@@ -815,6 +815,36 @@ public static partial class Page
         }
     }
 
+    /// <summary>
+    /// Input the user types or clicks: its frame is left to the autonomous pump rather than
+    /// rendered before the command answers.
+    /// </summary>
+    /// <remarks>
+    /// Deviation from the reference, which renders a frame inline after every command that can
+    /// change one. Chromium answers input at once and draws on its next compositor frame. Inline,
+    /// a key press cost a key-down render and a key-up render before the next key was read, so a
+    /// page that took a second to paint took two seconds a keystroke. Queued input is read before
+    /// the pump runs, so a burst of it is drawn once, after its last event.
+    /// </remarks>
+    public static bool CommandDefersScreencastFrame(string method) => method switch
+    {
+        "Input.dispatchMouseEvent"
+            or "Input.dispatchKeyEvent"
+            or "Input.dispatchTouchEvent"
+            or "Input.insertText" => true,
+        _ => false,
+    };
+
+    /// <summary>Note that the session's next autonomous frame is due, whatever the page's activity says.</summary>
+    public static void MarkScreencastDamaged(CdpContext ctx, string? cdpSessionId)
+    {
+        ArgumentNullException.ThrowIfNull(ctx);
+        if (cdpSessionId is not null && ctx.Screencasts.TryGetValue(cdpSessionId, out ScreencastState? state))
+        {
+            state.AutonomousFramePending = true;
+        }
+    }
+
     public static bool CommandCanChangeScreencastFrame(string method) => method switch
     {
         "Page.navigate"

@@ -141,6 +141,66 @@ internal static class PaintText
         }
     }
 
+    /// <summary>
+    /// Where <see cref="DrawText"/> would start the glyph after <paramref name="text"/>, and the
+    /// line's ascent and descent: <c>DrawText</c>'s own advance loop, without drawing. All three
+    /// are in CSS pixels.
+    /// </summary>
+    internal static (float Advance, float Ascent, float Descent) TextAdvance(
+        string text,
+        float size,
+        bool isBold,
+        string? family,
+        float letterSpacing,
+        float rasterScale)
+    {
+        float scale = DomTextMeasure.HeightScaledSize(family, size * rasterScale);
+        if (!float.IsFinite(scale) || scale <= 0f || rasterScale <= 0f)
+        {
+            return (0f, 0f, 0f);
+        }
+
+        SKTypeface typeface;
+        try
+        {
+            typeface = Typeface(family);
+        }
+        catch (Exception)
+        {
+            return (0f, 0f, 0f);
+        }
+
+        using SKFont font = new(typeface, scale)
+        {
+            Subpixel = true,
+            Edging = SKFontEdging.Antialias,
+            Hinting = SKFontHinting.None,
+            LinearMetrics = true,
+        };
+        SKFontMetrics metrics = font.Metrics;
+        float advance = 0f;
+        foreach (Rune rune in text.EnumerateRunes())
+        {
+            if (Rune.IsControl(rune))
+            {
+                continue;
+            }
+
+            ushort[] glyphs = font.GetGlyphs(rune.ToString().AsSpan());
+            if (glyphs.Length > 0)
+            {
+                foreach (float value in font.GetGlyphWidths(glyphs))
+                {
+                    advance += value;
+                }
+            }
+
+            advance += (isBold ? rasterScale : 0f) + (letterSpacing * rasterScale);
+        }
+
+        return (advance / rasterScale, -metrics.Ascent / rasterScale, metrics.Descent / rasterScale);
+    }
+
     private static void DrawGlyphs(
         Pixmap pixmap,
         PremultipliedColor[] pixels,

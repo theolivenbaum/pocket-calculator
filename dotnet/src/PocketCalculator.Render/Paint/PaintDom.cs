@@ -1600,6 +1600,24 @@ internal static class PaintDomPainter
                                 rasterScale);
                         }
                     }
+
+                    if (!isTextarea
+                        && PaintNativeControls.ShowsPlaceholder(inputType)
+                        && tree.TryGetCaret(out NodeId caretNode, out int caretOffset)
+                        && caretNode == nid)
+                    {
+                        PaintNativeControls.PaintCaret(
+                            pixmap,
+                            inputType,
+                            shownValue ?? string.Empty,
+                            caretOffset,
+                            textX,
+                            textY,
+                            style,
+                            boxClip,
+                            elementClipMask,
+                            rasterScale);
+                    }
                 }
             }
 
