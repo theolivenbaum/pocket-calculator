@@ -373,6 +373,12 @@ public sealed partial class Page
 
     public bool HasJs => Js is not null;
 
+    /// <summary>
+    /// Whether a <c>versionchange</c> notice waits for some document of this page's context
+    /// (upstream 3dea548 <c>has_pending_indexed_db_notifications</c>).
+    /// </summary>
+    public bool HasPendingIndexedDbNotifications => Context.IndexedDb.HasPendingNotifications;
+
     public PendingNavigation? TakePendingNavigation() => Js?.TakePendingNavigation();
 
     /// <summary>True when the page queued a navigation nobody has taken yet.</summary>

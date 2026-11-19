@@ -515,7 +515,20 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       where they save cookies. A persistent context copy shares its template's store; a CDP
       connection gets a snapshot (`ConnectionCopy`) whose changes merge into the server's
       persistence context on close without overwriting another connection's keys
-- [ ] Storage: `3dea548` IndexedDB
+- [x] `3dea548` (IndexedDB): the context owns its databases (`IndexedDbStorage`, held by
+      `BrowserContext` like `LocalStorage`, handed to the runtime by `SetIndexedDb`; a
+      persistent copy shares it, an incognito copy and a CDP connection copy start empty), so
+      records survive navigation and pages of one context and origin share them. Versioned
+      open with upgradeneeded/blocked/versionchange across documents, deleteDatabase,
+      databases(), object stores and indexes (unique, multiEntry), key paths and key
+      generators, transactions staged on the host with auto-commit, commit() and abort
+      (records, schema and generated keys roll back), cursors and key ranges, structured
+      serialization of values (Blob/File and CryptoKey keep their interface and key
+      material). A document's connections and transactions are released when its realm goes
+      (navigation, CDP suspension, frame teardown). In memory only, as upstream:
+      `--storage-dir` does not persist IndexedDB. Left open, as upstream: store/index renaming,
+      `continuePrimaryKey()`, the getAll options dictionaries, readonly transactions that run
+      in parallel, index and cursor steps that use a native index instead of scanning
 - [ ] Frames (within the separate-engine design): `20299be`, `12b40f6` + `bcf6d03`,
       `8dddc6f`, `47a3431`, `6d25c43`, `667eb59`, `e4f11db`; a real-realm
       `contentWindow` (`24d8742`, `911c45c`) needs a design decision first
@@ -2628,6 +2641,42 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   third-party areas (`origin + " " + top-level site`, the port's own key) persist too. A FIFO
   or device is skipped by its zero length, since .NET exposes no file type. Budgets count
   UTF-16 code units, as Chromium's quota does; upstream counts UTF-8 bytes.
+- IndexedDB (`3dea548`), each measured in Chromium 141:
+  - Values are serialized by the shim (`_idbEncode`, a tagged JSON tree), not V8's
+    ValueSerializer, which ClearScript does not expose. It keeps what V8's does for storage
+    (identity and cycles, Date, RegExp, Map, Set, errors, boxed primitives, BigInt,
+    -0/NaN/undefined, sparse arrays and extra array properties, ArrayBuffers and the views that
+    share them, Blob/File and CryptoKey through codecs) and refuses functions, symbols, DOM
+    nodes, promises, weak collections and SharedArrayBuffer with DataCloneError; a Proxy is
+    read through its traps where V8 refuses it.
+  - success, error, complete, abort and close are plain Events; upstream fires an
+    IDBVersionChangeEvent for every type. Events go through the shim's dispatch along
+    request, transaction, database (`_eventParents`, a port addition to `_eventDispatch`), so
+    capture listeners on the transaction and database run first, as in Chromium; upstream
+    walked the bubbling listeners only. composedPath() is the target alone, as Chromium's.
+  - objectStoreNames and indexNames are DOMStringLists (upstream: arrays with item/contains).
+  - `window.indexedDB` answers in an opaque-origin document; open(), deleteDatabase() and
+    databases() throw or reject SecurityError with Chromium's message. Upstream's getter
+    throws.
+  - The host's notice hook is `__obscura_host.vars.__obscura_poll_indexeddb`; upstream
+    defines a page-visible global for it. Notices are polled at every task start and every
+    event-loop tick (`PollIndexedDbNotifications`), so an idle document still gets its
+    versionchange.
+  - The interface objects are the shim's `_ifaceIllegal` interfaces over the classes
+    ("Failed to construct 'IDBRequest': Illegal constructor", native-looking enumerable
+    members), and the error messages are Chromium's where cheap.
+  - Store budgets count UTF-16 code units; upstream counts UTF-8 bytes (the payloads are ASCII
+    JSON, so they agree for them). `databases()` lists by name.
+  - CDP (`with_live_peers` in domains/runtime.rs, the idle-page re-arm in server.rs): not
+    ported, as there is nothing for them to do. Upstream keeps every page of a connection
+    live (#756) and has to pump the page that holds a connection while another awaits its
+    upgrade. A C# connection keeps one page's runtime live (`GetSessionPageMut` suspends the
+    others), and suspending a page disposes its realm, which releases its IndexedDB
+    connections and transactions as a closed document does in Chromium; a connection's
+    IndexedDB is its own (`ConnectionCopy`), so no other connection's page holds one either.
+    Upstream's two CDP tests are ported with their outcome (`IndexedDbPeerPages`).
+  - A CDP isolated world's ops act on the page's document, so its IndexedDB connections share
+    the page realm's owner and do not receive versionchange notices.
 
 - Lifecycle replay (`1959c5e`): a document reopened with `document.open()` reports
   `networkIdle` after its `load` (the port's addition for Playwright's `setContent`), so a
@@ -2711,8 +2760,7 @@ Left out on purpose: interfaces that would only be feature-detection stubs (Web 
 WebRTC, Gamepad, MediaSource, Web Speech, WebGL object types, Push, Background Fetch, typed CSS
 OM, TrustedTypes, Navigation API, ...), CompressionStream/DecompressionStream (no deflate in the
 shim), TaskController/TaskSignal (postTask has no priority change), the HTML collections, and the
-members Chromium has only in secure contexts. The IndexedDB objects keep their members as own
-properties (the shim's request records assign to themselves). DOMParser and createHTMLDocument
+members Chromium has only in secure contexts. DOMParser and createHTMLDocument
 documents are HTMLDocuments/XMLDocuments now (see "Documents without a browsing context").
 Pinned by `GlobalInterfaceObjects`.
 
@@ -2753,7 +2801,8 @@ Values measured in Chromium 141 (headless, Playwright); facts in
   an id the page also had got its shadow root on the page's node. They are now bound per realm
   with the other document ops (`FrameShadowRootTests`).
 - **IDBIndex getKey/getAllKeys/openKeyCursor** answer empty like the rest of the in-memory
-  IndexedDB shim; mail.ru's api-cache GC called `index(...).getAllKeys`.
+  IndexedDB shim; mail.ru's api-cache GC called `index(...).getAllKeys`. (Superseded by the
+  `3dea548` port, which implements them.)
 - **Web Storage outlives the document.** DEVIATION from crates/obscura-js/js/bootstrap.js,
   whose areas lived in the realm, so every navigation (a reload included) started
   localStorage and sessionStorage empty. The areas are now host-held (`WebStorage`, through

@@ -723,12 +723,18 @@ public sealed partial class PocketCalculatorJsRuntime
     {
         RedriveDynamicScripts();
         BeginAnimationTask();
+        PollIndexedDbNotifications();
         // Script observes the resources that landed since the last task, and misses the
         // last task created start loading (upstream 97ff86d). Two field reads when idle.
         ServiceRenderResources();
     }
 
     partial void BeginAnimationTask();
+
+    /// <summary>Deliver pending IndexedDB <c>versionchange</c> notices (upstream 3dea548).</summary>
+    partial void PollIndexedDbNotifications();
+
+    partial void ReleaseIndexedDb();
 
     /// <summary>
     /// Binds the op table for a realm. Implemented by the state-owning half of
@@ -1164,6 +1170,9 @@ public sealed partial class PocketCalculatorJsRuntime
         }
         _realms.Clear();
         DisposeIsolatedWorlds();
+        // upstream 3dea548 (Drop for IndexedDbOwner): the document's transactions abort and
+        // its connections close, so a document of the context waiting on them can go on.
+        ReleaseIndexedDb();
 
         // Before the engine, not after: while V8's promise-reject hook is still
         // registered it can call back into a half-disposed engine, and

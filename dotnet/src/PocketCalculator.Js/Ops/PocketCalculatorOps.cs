@@ -489,6 +489,15 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
         BindFetch(ops, document);
         Bind(ops, "op_storage", (Func<object?, object?, object?, object?, string>)(
             (kind, cmd, key, value) => CoreOps.OpStorage(document, S(kind), S(cmd), S(key), S(value))));
+        // upstream 3dea548: the calling document's IndexedDB commands, on the context's store,
+        // and the task counter that tells the shim when a transaction stopped being active.
+        Bind(ops, "op_indexed_db", (Func<object?, object?, string>)(
+            (action, payload) => OpGuard.Run(
+                "op_indexed_db",
+                () => IndexedDbOwner.RunOp(document, S(action), S(payload)),
+                """{"error":"UnknownError"}""")));
+        Bind(ops, "op_indexed_db_task", (Func<double>)(
+            () => OpGuard.Run("op_indexed_db_task", () => (double)document.AnimationTaskGeneration, 0d)));
         // Port fix: the shadow ops act on the calling realm's document. They were bound to the
         // page's state, so a child frame's attachShadow resolved the frame's node id in the
         // page's arena: it failed for a node the page did not have (vkvideo.ru's player inside

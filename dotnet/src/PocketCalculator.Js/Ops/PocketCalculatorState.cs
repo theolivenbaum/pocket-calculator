@@ -166,6 +166,15 @@ public sealed class PocketCalculatorState
     /// <summary>The page's <c>sessionStorage</c> areas; null keeps them realm-local.</summary>
     public WebStorage? SessionStorage { get; set; }
 
+    /// <summary>
+    /// The browser context's IndexedDB records (upstream 3dea548). A runtime with no host
+    /// store keeps its own, as upstream's default state does.
+    /// </summary>
+    public IndexedDbStorage IndexedDb { get; set; } = new();
+
+    /// <summary>This document's connections, open requests and transactions; made on first use.</summary>
+    public IndexedDbOwner? IndexedDbOwner { get; set; }
+
     public PocketCalculatorHttpClient? HttpClient { get; set; }
 
     /// <summary>

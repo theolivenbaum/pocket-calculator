@@ -151,6 +151,68 @@ public sealed partial class PocketCalculatorJsRuntime
         State.SessionStorage = session;
     }
 
+    /// <summary>
+    /// Gives the page's documents the browser context's IndexedDB records (upstream 3dea548
+    /// <c>set_indexed_db</c>), which outlive a navigation. The page's handle on the previous
+    /// store, if it had one, is released.
+    /// </summary>
+    public void SetIndexedDb(IndexedDbStorage storage)
+    {
+        ArgumentNullException.ThrowIfNull(storage);
+        State.IndexedDbOwner?.Dispose();
+        State.IndexedDbOwner = null;
+        State.IndexedDb = storage;
+    }
+
+    /// <summary>
+    /// Upstream <c>Drop for IndexedDbOwner</c>: the page document's connections close and its
+    /// transactions abort when the runtime goes (a navigation, a CDP suspension).
+    /// </summary>
+    partial void ReleaseIndexedDb()
+    {
+        State.IndexedDbOwner?.Dispose();
+        State.IndexedDbOwner = null;
+    }
+
+    /// <summary>
+    /// Upstream <c>poll_indexed_db_notifications</c>: hand each realm the
+    /// <c>versionchange</c> notices another document of the context left for its
+    /// connections. The shim queues their delivery as a task.
+    /// </summary>
+    partial void PollIndexedDbNotifications()
+    {
+        if (_disposed || !State.IndexedDb.HasPendingNotifications)
+        {
+            return;
+        }
+        if (State.IndexedDbOwner is { } owner && owner.TakeNotices() is { Count: > 0 } notices)
+        {
+            try
+            {
+                HostScript.Invoke(_engine, _shim.HostHelpers, "<indexeddb-notices>",
+                    HostScript.WrapStatements("__obscura_host.vars.__obscura_poll_indexeddb?.(" + notices.ToJsonString() + ");"));
+            }
+            catch (ScriptEngineException)
+            {
+                // Upstream logs a failed delivery and carries on.
+            }
+        }
+        foreach (var realm in _realms.ToArray())
+        {
+            if (realm.State.IndexedDbOwner is { } frameOwner && frameOwner.TakeNotices() is { Count: > 0 } frameNotices)
+            {
+                try
+                {
+                    realm.ExecuteHostScript("__obscura_host.vars.__obscura_poll_indexeddb?.(" + frameNotices.ToJsonString() + ");");
+                }
+                catch (Exception error) when (error is JsRuntimeException or ObjectDisposedException or InvalidOperationException)
+                {
+                    // A frame torn down meanwhile has no connections left to notify.
+                }
+            }
+        }
+    }
+
     public void SetHttpClient(PocketCalculatorHttpClient client)
     {
         State.HttpClient = client;
@@ -779,6 +841,12 @@ public sealed partial class PocketCalculatorJsRuntime
         frame.CookieJar = State.CookieJar;
         frame.LocalStorage = State.LocalStorage;
         frame.SessionStorage = State.SessionStorage;
+        if (!ReferenceEquals(frame.IndexedDb, State.IndexedDb))
+        {
+            frame.IndexedDbOwner?.Dispose();
+            frame.IndexedDbOwner = null;
+            frame.IndexedDb = State.IndexedDb;
+        }
         frame.HttpClient = State.HttpClient;
         frame.Callbacks = State.Callbacks;
         frame.Encoding = State.Encoding;

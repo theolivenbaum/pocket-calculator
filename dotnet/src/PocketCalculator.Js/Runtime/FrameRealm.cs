@@ -553,6 +553,10 @@ public sealed class FrameRealm : IDisposable
 
         _parent.RealmStates.Forget(_engine);
         _parent.ForgetRealm(this);
+        // upstream 3dea548: the frame document's IndexedDB connections and transactions go
+        // with it.
+        State.IndexedDbOwner?.Dispose();
+        State.IndexedDbOwner = null;
         // Detach V8's promise-reject hook before the engine goes, for the reason
         // PocketCalculatorJsRuntime.Dispose gives.
         _shim?.Detach();

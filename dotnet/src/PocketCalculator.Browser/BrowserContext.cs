@@ -16,10 +16,12 @@ public sealed class BrowserContext
         string? storageDir,
         bool allowPrivateNetwork,
         bool restoreCookiesFromDisk = true,
-        PocketCalculator.Js.Ops.WebStorage? localStorage = null)
+        PocketCalculator.Js.Ops.WebStorage? localStorage = null,
+        PocketCalculator.Js.Ops.IndexedDbStorage? indexedDb = null)
     {
         Id = id;
         LocalStorage = localStorage ?? new PocketCalculator.Js.Ops.WebStorage();
+        IndexedDb = indexedDb ?? new PocketCalculator.Js.Ops.IndexedDbStorage();
         // upstream f661c2e: restore {storage_dir}/localStorage. A persistent copy shares its
         // template's store instead (IsolatedCopy), so it reads nothing.
         if (localStorage is null && restoreCookiesFromDisk && storageDir is not null)
@@ -80,6 +82,12 @@ public sealed class BrowserContext
     /// (upstream f661c2e).
     /// </summary>
     public PocketCalculator.Js.Ops.WebStorage LocalStorage { get; }
+
+    /// <summary>
+    /// The context's IndexedDB records (upstream 3dea548): shared by its pages, kept across
+    /// navigation, in memory only (<c>--storage-dir</c> does not persist them).
+    /// </summary>
+    public PocketCalculator.Js.Ops.IndexedDbStorage IndexedDb { get; }
 
     public PocketCalculatorHttpClient HttpClient { get; }
 
@@ -189,7 +197,10 @@ public sealed class BrowserContext
             // localStorage belongs to the profile, so a persistent copy shares the template's
             // store: two contexts on one --storage-dir would otherwise overwrite each other's
             // areas (upstream f661c2e). An incognito copy starts empty.
-            localStorage: persistent ? LocalStorage : new PocketCalculator.Js.Ops.WebStorage())
+            localStorage: persistent ? LocalStorage : new PocketCalculator.Js.Ops.WebStorage(),
+            // upstream 3dea548: IndexedDB too, a persistent copy shares it and an incognito
+            // one starts empty.
+            indexedDb: persistent ? IndexedDb : null)
         {
             ObeyRobots = ObeyRobots,
             AllowFileAccess = AllowFileAccess,
@@ -219,7 +230,9 @@ public sealed class BrowserContext
             null,
             AllowPrivateNetwork,
             restoreCookiesFromDisk: false,
-            localStorage: LocalStorage.IsolatedSnapshot())
+            localStorage: LocalStorage.IsolatedSnapshot(),
+            // upstream 3dea548: a connection's IndexedDB starts empty and is its own.
+            indexedDb: null)
         {
             ObeyRobots = ObeyRobots,
             AllowFileAccess = AllowFileAccess,

@@ -559,6 +559,7 @@ public sealed partial class Page : IDisposable
 
         rt.SetCookieJar(Context.CookieJar);
         rt.SetWebStorage(Context.LocalStorage, SessionStorage);
+        rt.SetIndexedDb(Context.IndexedDb);
         rt.SetConsoleMessagesEnabled(ConsoleMessagesEnabled);
         rt.SetDocumentContentType(DocumentContentType);
         rt.SetHttpClient(HttpClient);

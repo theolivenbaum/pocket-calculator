@@ -2337,6 +2337,12 @@ const _uninitializedEvents = _private(new WeakSet());
 const _activeDispatches = [];
 // The event a passive listener is running for: its preventDefault() does nothing.
 let _passiveEvent = null;
+// Listeners that threw, counted: IndexedDB aborts a transaction whose request listener threw
+// (upstream 3dea548).
+let _listenerErrorCount = 0;
+// Port addition: the parent of a non-node event target, for the targets that have one
+// (IndexedDB's request, transaction and database): target -> function (target) -> parent.
+const _eventParents = _private(new WeakMap());
 // window.event: the event the running listener was called for, left undefined while the
 // listener's target is in a shadow tree (the current step of the path, _invocationInShadow).
 let _currentEvent = undefined;
@@ -2796,6 +2802,7 @@ function _callListener(entry, item, event) {
   } catch (error) {
     _passiveEvent = previous;
     _currentEvent = previousEvent;
+    _listenerErrorCount++;
     _reportException(error);
   }
   _passiveEvent = previous;
@@ -2998,29 +3005,23 @@ function _eventDispatch(target, event) {
         clear = _pathClearsTargets;
         _activeDispatches[base] = event;
         _activeDispatches[base + 1] = path;
-        const n = path.length;
-        for (let i = n - 4; i >= 0; i -= 4) {
-          event.eventPhase = (path[i + 3] & 1) !== 0 ? 2 : 1;
-          event.target = path[i + 1];
-          if (hasRelated) event.relatedTarget = path[i + 2];
-          if (event._propagationStopped) continue;
-          event.currentTarget = path[i];
-          _invocationInShadow = (path[i + 3] & 4) !== 0;
-          _invokeListeners(path[i], event, type, 1);
-        }
-        const bubbles = !!event.bubbles;
-        for (let i = 0; i < n; i += 4) {
-          if ((path[i + 3] & 1) !== 0) event.eventPhase = 2;
-          else if (!bubbles) continue;
-          else event.eventPhase = 3;
-          event.target = path[i + 1];
-          if (hasRelated) event.relatedTarget = path[i + 2];
-          if (event._propagationStopped) continue;
-          event.currentTarget = path[i];
-          _invocationInShadow = (path[i + 3] & 4) !== 0;
-          _invokeListeners(path[i], event, type, 2);
-        }
+        _dispatchAlongPath(path, event, type, hasRelated);
       }
+    } else if (_weakMapGet(_eventParents, target) !== undefined) {
+      // Port addition: a non-node target with parents (an IndexedDB request's are its
+      // transaction and database) gets DOM's capture and bubble phases along them, as in
+      // Chromium. composedPath() is the target alone there, as Chromium reports it.
+      const path = [target, target, null, 1];
+      let item = target;
+      for (let depth = 0; depth < 8; depth++) {
+        const parentOf = _weakMapGet(_eventParents, item);
+        item = parentOf === undefined ? null : parentOf(item);
+        if (item === null || item === undefined) break;
+        path[path.length] = item; path[path.length] = target; path[path.length] = null; path[path.length] = 0;
+      }
+      _activeDispatches[base] = event;
+      _activeDispatches[base + 1] = [target, target, null, 1];
+      _dispatchAlongPath(path, event, type, false);
     } else {
       if (target === globalThis) {
         if (_windowOnlyPath === null) _windowOnlyPath = [globalThis, globalThis, null, 1];
@@ -3049,6 +3050,32 @@ function _eventDispatch(target, event) {
     if (_worldListenTypes !== null) _worldEventForget(event);
   }
   return !event.defaultPrevented;
+}
+// DOM "dispatch" steps 5.9 to 5.14 over an event path (four slots per entry, see _eventPath):
+// the capturing pass from the outermost entry in, then the bubbling pass out.
+function _dispatchAlongPath(path, event, type, hasRelated) {
+  const n = path.length;
+  for (let i = n - 4; i >= 0; i -= 4) {
+    event.eventPhase = (path[i + 3] & 1) !== 0 ? 2 : 1;
+    event.target = path[i + 1];
+    if (hasRelated) event.relatedTarget = path[i + 2];
+    if (event._propagationStopped) continue;
+    event.currentTarget = path[i];
+    _invocationInShadow = (path[i + 3] & 4) !== 0;
+    _invokeListeners(path[i], event, type, 1);
+  }
+  const bubbles = !!event.bubbles;
+  for (let i = 0; i < n; i += 4) {
+    if ((path[i + 3] & 1) !== 0) event.eventPhase = 2;
+    else if (!bubbles) continue;
+    else event.eventPhase = 3;
+    event.target = path[i + 1];
+    if (hasRelated) event.relatedTarget = path[i + 2];
+    if (event._propagationStopped) continue;
+    event.currentTarget = path[i];
+    _invocationInShadow = (path[i + 3] & 4) !== 0;
+    _invokeListeners(path[i], event, type, 2);
+  }
 }
 // The window's load event: Chromium dispatches it at the window with the document as its
 // target, running the window's listeners in registration order at the target.
@@ -20359,130 +20386,25 @@ globalThis.RTCPeerConnection = class RTCPeerConnection {
 globalThis.RTCSessionDescription = class RTCSessionDescription { constructor(d){this.type=d?.type;this.sdp=d?.sdp;} };
 globalThis.RTCIceCandidate = class RTCIceCandidate { constructor(d){this.candidate=d?.candidate||'';} };
 
-// Minimal but spec-shape-correct IndexedDB shim. We don't persist anything,
-// but authentication libraries (Firebase, Supabase, dexie) hang forever on
-// the first `get` because their request's `onsuccess` is never called. Fire
-// `onsuccess` asynchronously with `null` so reads complete-but-empty, which
-// most libraries treat as a cache miss and fall back to the network.
-function _idbRequest(produceResult, kind) {
-  const req = {
-    result: undefined,
-    error: null,
-    source: null,
-    transaction: null,
-    readyState: 'pending',
-    onsuccess: null,
-    onerror: null,
-    addEventListener(type, fn) { req['on' + type] = fn; },
-    removeEventListener(type, fn) { if (req['on' + type] === fn) req['on' + type] = null; },
-  };
-  // An IDBRequest (IDBOpenDBRequest for open()); see the global interfaces near the end
-  // of this file.
-  _idbBrand(req, kind || 'IDBRequest');
-  Promise.resolve().then(() => {
-    try {
-      req.result = produceResult();
-      req.readyState = 'done';
-      if (typeof req.onsuccess === 'function') {
-        try { req.onsuccess({ target: req, type: 'success' }); } catch (e) {}
-      }
-    } catch (e) {
-      req.error = e; req.readyState = 'done';
-      if (typeof req.onerror === 'function') {
-        try { req.onerror({ target: req, type: 'error' }); } catch (e2) {}
-      }
-    }
+// IndexedDB (upstream 3dea548): the database lives in the browser context (op_indexed_db,
+// IndexedDbStorage on the host), and its objects are defined with the other interfaces
+// further down (search "---- IndexedDB"). Platform objects a value may carry register a
+// codec here, so a stored value keeps its interface and private state: Blob and File below,
+// CryptoKey in crypto.subtle. DEVIATION from crates/obscura-js/js/bootstrap.js, whose
+// IndexedDB stub kept one Map per object store per transaction, never fired
+// upgradeneeded and returned null from every cursor.
+const _idbPlatformCodecs = [];
+{
+  const BlobClass = globalThis.Blob, FileClass = globalThis.File;
+  _idbPlatformCodecs.push({
+    name: 'Blob', test: (value) => value instanceof BlobClass,
+    encode: (value) => ({ bytes: value._bytes || new Uint8Array(0), type: value.type,
+      file: value instanceof FileClass, name: value.name, lastModified: value.lastModified }),
+    decode: (data) => data.file
+      ? new FileClass([data.bytes], data.name, { type: data.type, lastModified: data.lastModified })
+      : new BlobClass([data.bytes], { type: data.type }),
   });
-  return req;
 }
-
-function _idbObjectStore(name) {
-  const data = new Map();
-  return _idbBrand({
-    name,
-    keyPath: null,
-    autoIncrement: false,
-    indexNames: { contains() { return false; }, length: 0, item() { return null; } },
-    transaction: null,
-    add(value, key) { const k = key ?? Date.now(); data.set(k, value); return _idbRequest(() => k); },
-    put(value, key) { const k = key ?? Date.now(); data.set(k, value); return _idbRequest(() => k); },
-    get(key) { return _idbRequest(() => data.get(key) ?? undefined); },
-    getAll() { return _idbRequest(() => Array.from(data.values())); },
-    getAllKeys() { return _idbRequest(() => Array.from(data.keys())); },
-    getKey(key) { return _idbRequest(() => (data.has(key) ? key : undefined)); },
-    delete(key) { return _idbRequest(() => { data.delete(key); return undefined; }); },
-    clear() { return _idbRequest(() => { data.clear(); return undefined; }); },
-    count() { return _idbRequest(() => data.size); },
-    openCursor() { return _idbRequest(() => null); },
-    openKeyCursor() { return _idbRequest(() => null); },
-    createIndex() { return _idbBrand({ name: '', keyPath: '', unique: false, multiEntry: false, get() { return _idbRequest(() => undefined); } }, 'IDBIndex'); },
-    index() { return _idbBrand({ get() { return _idbRequest(() => undefined); }, getKey() { return _idbRequest(() => undefined); }, getAll() { return _idbRequest(() => []); }, getAllKeys() { return _idbRequest(() => []); }, count() { return _idbRequest(() => 0); }, openCursor() { return _idbRequest(() => null); }, openKeyCursor() { return _idbRequest(() => null); } }, 'IDBIndex'); },
-    deleteIndex() {},
-  }, 'IDBObjectStore');
-}
-
-function _idbTransaction(storeNames) {
-  const stores = new Map();
-  const names = Array.isArray(storeNames) ? storeNames : [storeNames];
-  for (const n of names) stores.set(String(n), _idbObjectStore(String(n)));
-  const tx = {
-    db: null,
-    mode: 'readonly',
-    objectStoreNames: { contains: (n) => stores.has(String(n)), length: stores.size },
-    onabort: null, oncomplete: null, onerror: null,
-    error: null,
-    objectStore(name) {
-      let s = stores.get(name);
-      if (!s) { s = _idbObjectStore(name); stores.set(name, s); }
-      s.transaction = tx;
-      return s;
-    },
-    abort() {},
-    commit() {},
-    addEventListener(type, fn) { tx['on' + type] = fn; },
-    removeEventListener(type, fn) { if (tx['on' + type] === fn) tx['on' + type] = null; },
-  };
-  _idbBrand(tx, 'IDBTransaction');
-  Promise.resolve().then(() => {
-    if (typeof tx.oncomplete === 'function') {
-      try { tx.oncomplete({ target: tx, type: 'complete' }); } catch (e) {}
-    }
-  });
-  return tx;
-}
-
-function _idbDatabase(name, version) {
-  return _idbBrand({
-    name,
-    version,
-    objectStoreNames: { contains() { return false; }, length: 0, item() { return null; } },
-    createObjectStore(n) { return _idbObjectStore(n); },
-    deleteObjectStore() {},
-    transaction(storeNames, mode) {
-      const tx = _idbTransaction(storeNames);
-      tx.mode = mode || 'readonly';
-      return tx;
-    },
-    close() {},
-    onversionchange: null, onabort: null, onerror: null, onclose: null,
-    addEventListener() {}, removeEventListener() {},
-  }, 'IDBDatabase');
-}
-
-globalThis.indexedDB = {
-  open(name, version) {
-    return _idbRequest(() => _idbDatabase(name, version || 1), 'IDBOpenDBRequest');
-  },
-  deleteDatabase(_name) { return _idbRequest(() => undefined); },
-  databases() { return Promise.resolve([]); },
-  cmp(a, b) { return a < b ? -1 : a > b ? 1 : 0; },
-};
-globalThis.IDBKeyRange = {
-  only(v) { return { lower: v, upper: v, lowerOpen: false, upperOpen: false, includes(x) { return x === v; } }; },
-  lowerBound(v, open) { return { lower: v, upper: null, lowerOpen: !!open, upperOpen: false, includes(x) { return open ? x > v : x >= v; } }; },
-  upperBound(v, open) { return { lower: null, upper: v, lowerOpen: false, upperOpen: !!open, includes(x) { return open ? x < v : x <= v; } }; },
-  bound(l, u, lo, uo) { return { lower: l, upper: u, lowerOpen: !!lo, upperOpen: !!uo, includes(x) { return (lo ? x > l : x >= l) && (uo ? x < u : x <= u); } }; },
-};
 
 globalThis.caches = {
   open() { return Promise.resolve({ match(){return Promise.resolve(undefined);}, put(){return Promise.resolve();}, delete(){return Promise.resolve(false);}, keys(){return Promise.resolve([]);} }); },
@@ -21499,6 +21421,17 @@ if (!globalThis.crypto.subtle) {
   // `seen` is the clone memo _structuredClone hands every hook. Populate it so
   // one key reached twice in a graph clones to one shared object (and its key
   // material is registered once), matching structuredClone's identity rules.
+  // upstream 3dea548: a CryptoKey stored in IndexedDB keeps its key material and its
+  // permissions, private to the shim.
+  _idbPlatformCodecs.push({
+    name: "CryptoKey", test: (key) => keyMaterial.has(key),
+    encode: (key) => {
+      const permissions = keyPermissions.get(key);
+      return { type: key.type, extractable: key.extractable, algorithm: permissions ? permissions.algorithm : key.algorithm,
+        usages: permissions ? permissions.usages : key.usages, bytes: keyBytes(key) };
+    },
+    decode: (data) => makeKey(data.type, data.extractable, data.algorithm, data.usages, data.bytes),
+  });
   _hostVars.__obscura_clone_hooks["CryptoKey"] = function (src, seen) {
     if (seen && seen.has(src)) return seen.get(src);
     const permissions = keyPermissions.get(src);
@@ -25404,74 +25337,1015 @@ function _makeFileListOf(files) {
   return _ifaceListIndices(_ifaceInstance(_ifaces.FileList, _ifaceData({ items: files })), files);
 }
 
-// IndexedDB: the shim's non-persistent IndexedDB objects are instances of Chromium's
-// interfaces, so `request instanceof IDBRequest` (the idb library, Dexie) holds. Their
-// members stay their own properties: the request and transaction records assign to
-// themselves as they settle.
-_ifaceIllegal('IDBFactory');
-_ifaceAdopt(globalThis.indexedDB, _ifaces.IDBFactory);
-_ifaceIllegal('IDBRequest', EventTarget);
-_ifaceIllegal('IDBOpenDBRequest', _ifaces.IDBRequest);
-_ifaceIllegal('IDBDatabase', EventTarget);
-_ifaceIllegal('IDBTransaction', EventTarget);
-_ifaceIllegal('IDBObjectStore');
-_ifaceIllegal('IDBIndex');
-_ifaceIllegal('IDBCursor');
-_ifaceIllegal('IDBCursorWithValue', _ifaces.IDBCursor);
-function _idbBrand(obj, name) {
-  const C = _ifaces[name];
-  if (C) _objectSetPrototypeOf(obj, C.prototype);
-  return obj;
+// ---- IndexedDB (upstream 3dea548, crates/obscura-js/js/indexed_db.js) ----------------------
+// Databases belong to the browser context: the host (IndexedDbStorage, op_indexed_db) keeps
+// committed records, the per-database transaction queue, the open queue and the connections,
+// so pages of one context and origin share them and a navigation keeps them. The objects,
+// key encoding, schema and value serialization are here. Transactions stage their writes on
+// the host and publish them atomically on commit; an abort rolls back records, schema and
+// generated keys.
+//
+// DEVIATION from crates/obscura-js/js/indexed_db.js, each measured in Chromium 141:
+// - Values are serialized by _idbEncode below into JSON, not by V8's ValueSerializer, which
+//   ClearScript does not expose. It keeps what the reference's does: identity and cycles,
+//   Date, RegExp, Map, Set, errors, boxed primitives, BigInt, -0/NaN/undefined, sparse arrays
+//   and their extra properties, ArrayBuffers and the views sharing them, Blob, File and
+//   CryptoKey; functions, symbols, DOM nodes, promises and weak collections are
+//   DataCloneError. A Proxy is serialized through its traps (V8 refuses it).
+// - success, error, complete, abort and close are plain Events, as in Chromium; upstream
+//   fires an IDBVersionChangeEvent for every type.
+// - Events go through the shim's dispatch with request, transaction, database as their path
+//   (_eventParents), so capture listeners on the transaction and the database run, as in
+//   Chromium; upstream walked only the bubbling listeners.
+// - objectStoreNames and indexNames are DOMStringLists (upstream: arrays).
+// - window.indexedDB answers in an opaque-origin document, whose open(), deleteDatabase()
+//   and databases() then fail with SecurityError; upstream's getter threw.
+// - The host's notice hook is __obscura_host.vars.__obscura_poll_indexeddb, not a
+//   page-visible global (SECURITY.md I10).
+// - Constructors throw Chromium's "Illegal constructor" TypeError.
+const _idbToken = _objectFreeze({ __proto__: null });
+const _idbSlots = _private(new WeakMap());
+const _idbConnections = _private(new Map());
+const _idbOpenQueues = _private(new Map());
+function _idbError(name, message) { return new DOMException(message === undefined ? name : message, name); }
+function _idbOp(action, data) {
+  const result = _JSONparse(_String(__obscuraCore.ops.op_indexed_db(action, _JSONstringify(data))));
+  if (result !== null && typeof result === 'object' && !_isArray(result) && typeof result.error === 'string') {
+    throw result.error === 'TypeError' ? new TypeError('Invalid IndexedDB request') : _idbError(result.error);
+  }
+  return result;
 }
-// IDB key order: arrays > binary > strings > dates > numbers.
-function _idbKeyRank(key) {
-  if (typeof key === 'number') return key === key ? 1 : -1;
-  if (key instanceof Date) return key.getTime() === key.getTime() ? 2 : -1;
-  if (typeof key === 'string') return 3;
-  if (key instanceof ArrayBuffer || ArrayBuffer.isView(key)) return 4;
-  if (_isArray(key)) return 5;
-  return -1;
+function _idbTaskId() { return __obscuraCore.ops.op_indexed_db_task(); }
+function _idbTask(fn) { _browserPostedTaskEnqueue(fn, _schedulerPriorityRank['user-visible'] * 2); }
+function _idbLater(delay, fn) { _scheduleAfter(delay, fn); }
+function _idbMicrotask(fn) { _reflectApply(_promiseThenAtBoot, _reflectApply(_promiseResolveFn, _PromiseAtBoot, []), [fn]); }
+function _idbSlot(value) {
+  const slot = value !== null && typeof value === 'object' ? _weakMapGet(_idbSlots, value) : undefined;
+  if (slot === undefined) throw new TypeError('Illegal invocation');
+  return slot;
 }
-function _idbAssertKey(key, what) {
-  if (_idbKeyRank(key) < 0) throw new DOMException("Failed to execute '" + what + "' on 'IDBKeyRange': The parameter is not a valid key.", 'DataError');
+function _idbParent(target) {
+  const slot = _weakMapGet(_idbSlots, target);
+  return slot === undefined ? null : (slot.transaction || slot.db || null);
+}
+function _idbInitialize(target, token, state) {
+  if (token !== _idbToken) throw new TypeError('Illegal constructor');
+  _weakMapSet(_idbSlots, target, state);
+  _weakMapSet(_eventParents, target, _idbParent);
+}
+function _idbNames(names) { return _makeDOMStringList(names.slice().sort()); }
+function _idbDispatch(target, type, init) {
+  const event = type === 'upgradeneeded' || type === 'blocked' || type === 'versionchange'
+    ? new _ifaces.IDBVersionChangeEvent(type, init)
+    : new Event(type, { bubbles: type === 'error' || type === 'abort', cancelable: type === 'error' });
+  const errors = _listenerErrorCount;
+  _dispatchChecked(target, _markTrusted(event));
+  return { canceled: event.defaultPrevented, threw: _listenerErrorCount !== errors };
+}
+
+class _IDBRequest {
+  constructor(token, state) {
+    _idbInitialize(this, token, { result: undefined, error: null, source: null, transaction: null, readyState: 'pending', ...state });
+  }
+  get result() {
+    const s = _idbSlot(this);
+    if (s.readyState !== 'done') throw _idbError('InvalidStateError', "Failed to read the 'result' property from 'IDBRequest': The request has not finished.");
+    return s.result;
+  }
+  get error() {
+    const s = _idbSlot(this);
+    if (s.readyState !== 'done') throw _idbError('InvalidStateError', "Failed to read the 'error' property from 'IDBRequest': The request has not finished.");
+    return s.error;
+  }
+  get source() { return _idbSlot(this).source; }
+  get transaction() { return _idbSlot(this).transaction; }
+  get readyState() { return _idbSlot(this).readyState; }
+}
+class _IDBOpenDBRequest extends _IDBRequest {}
+function _idbSettle(request, result, error = null) {
+  const s = _idbSlot(request);
+  s.result = result; s.error = error; s.readyState = 'done';
+  return _idbDispatch(request, error ? 'error' : 'success');
+}
+
+// Keys, encoded as [type, value]: 0 number, 1 date, 2 string, 3 binary, 4 array, which is
+// IndexedDB's key order. The host stores them as JSON.
+function _idbKey(value, seen) {
+  if (typeof value === 'number' && value === value) return [0, _String(value === 0 ? 0 : value)];
+  if (value instanceof Date) {
+    const time = value.getTime();
+    if (time === time) return [1, _String(time)];
+  }
+  if (typeof value === 'string') return [2, value];
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+    const bytes = value instanceof ArrayBuffer ? new Uint8Array(value)
+      : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    return [3, Array.from(bytes)];
+  }
+  if (_isArray(value)) {
+    seen = seen || new Set();
+    if (!seen.has(value)) {
+      seen.add(value);
+      const keys = [];
+      for (let i = 0; i < value.length; i++) {
+        if (!(i in value)) throw _idbError('DataError', 'The parameter is not a valid key.');
+        keys.push(_idbKey(value[i], seen));
+      }
+      seen.delete(value);
+      return [4, keys];
+    }
+  }
+  throw _idbError('DataError', 'The parameter is not a valid key.');
+}
+// _idbKey with Chromium's message for `method` of `iface`.
+function _idbKeyFor(value, method, iface) {
+  try { return _idbKey(value); }
+  catch (error) {
+    throw _idbError('DataError', "Failed to execute '" + method + "' on '" + iface + "': The parameter is not a valid key.");
+  }
 }
 function _idbCompare(a, b) {
-  const ra = _idbKeyRank(a), rb = _idbKeyRank(b);
-  if (ra !== rb) return ra < rb ? -1 : 1;
-  if (ra === 1 || ra === 2) { const x = +a, y = +b; return x < y ? -1 : x > y ? 1 : 0; }
-  if (ra === 3) return a < b ? -1 : a > b ? 1 : 0;
-  if (ra === 4) {
-    const x = new Uint8Array(a.buffer || a, a.byteOffset || 0, a.byteLength), y = new Uint8Array(b.buffer || b, b.byteOffset || 0, b.byteLength);
-    for (let i = 0; i < x.length && i < y.length; i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
-    return x.length === y.length ? 0 : x.length < y.length ? -1 : 1;
+  if (a[0] !== b[0]) return a[0] < b[0] ? -1 : 1;
+  if (a[0] <= 1) {
+    const x = _Number(a[1]), y = _Number(b[1]);
+    return x < y ? -1 : x > y ? 1 : 0;
   }
-  for (let i = 0; i < a.length && i < b.length; i++) { const c = _idbCompare(a[i], b[i]); if (c) return c; }
-  return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
+  if (a[0] === 2) return a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0;
+  const x = a[1], y = b[1];
+  for (let i = 0; i < x.length && i < y.length; i++) {
+    const cmp = a[0] === 4 ? _idbCompare(x[i], y[i]) : (x[i] < y[i] ? -1 : x[i] > y[i] ? 1 : 0);
+    if (cmp) return cmp;
+  }
+  return x.length < y.length ? -1 : x.length > y.length ? 1 : 0;
 }
-_ifaceIllegal('IDBKeyRange');
-_ifaceAttrs(_ifaces.IDBKeyRange, ['lower', 'upper', 'lowerOpen', 'upperOpen']);
-_ifaceOp(_ifaces.IDBKeyRange, 'includes', 1, function (r, args) {
-  if (args.length < 1) throw new TypeError("Failed to execute 'includes' on 'IDBKeyRange': 1 argument required, but only 0 present.");
-  const key = args[0];
-  _idbAssertKey(key, 'includes');
-  if (r.lower !== undefined) { const c = _idbCompare(r.lower, key); if (c > 0 || (c === 0 && r.lowerOpen)) return false; }
-  if (r.upper !== undefined) { const c = _idbCompare(r.upper, key); if (c < 0 || (c === 0 && r.upperOpen)) return false; }
-  return true;
-});
-function _idbRange(lower, upper, lowerOpen, upperOpen) {
-  return _ifaceInstance(_ifaces.IDBKeyRange, _ifaceData({ lower, upper, lowerOpen: !!lowerOpen, upperOpen: !!upperOpen }));
+function _idbKeyValue(key) {
+  switch (key[0]) {
+    case 0: return _Number(key[1]);
+    case 1: return new Date(_Number(key[1]));
+    case 2: return key[1];
+    case 3: return new Uint8Array(key[1]).buffer;
+    default: return key[1].map(_idbKeyValue);
+  }
+}
+
+class _IDBKeyRange {
+  constructor(token, lower, upper, lowerOpen, upperOpen) {
+    if (token !== _idbToken) throw new TypeError('Illegal constructor');
+    _weakMapSet(_idbSlots, this, { lower, upper, lowerOpen, upperOpen });
+  }
+  get lower() { const k = _idbSlot(this).lower; return k ? _idbKeyValue(k) : undefined; }
+  get upper() { const k = _idbSlot(this).upper; return k ? _idbKeyValue(k) : undefined; }
+  get lowerOpen() { return _idbSlot(this).lowerOpen; }
+  get upperOpen() { return _idbSlot(this).upperOpen; }
+  includes(key) {
+    _idbSlot(this);
+    if (arguments.length < 1) throw new TypeError("Failed to execute 'includes' on 'IDBKeyRange': 1 argument required, but only 0 present.");
+    return _idbInRange(_idbKeyFor(key, 'includes', 'IDBKeyRange'), this);
+  }
+}
+function _idbMakeRange(lower, upper, lowerOpen, upperOpen) {
+  return new _IDBKeyRange(_idbToken, lower, upper, !!lowerOpen, !!upperOpen);
+}
+function _idbRange(value, required) {
+  if (value instanceof _IDBKeyRange) return value;
+  if (value === undefined || value === null) {
+    if (required) throw _idbError('DataError', 'No key or key range specified.');
+    return null;
+  }
+  const key = _idbKey(value);
+  return _idbMakeRange(key, key, false, false);
+}
+function _idbInRange(key, range) {
+  if (!range) return true;
+  const r = _idbSlot(range);
+  const low = r.lower ? _idbCompare(key, r.lower) : 1;
+  const high = r.upper ? _idbCompare(key, r.upper) : -1;
+  return (low > 0 || low === 0 && !r.lowerOpen) && (high < 0 || high === 0 && !r.upperOpen);
+}
+
+// Structured serialization for storage: a JSON tree whose arrays are tagged nodes and whose
+// other values are themselves. Objects are numbered in the order they are first reached, so
+// ['r', n] names an object seen before (shared references and cycles).
+const _idbTypedArrayTag = _getOwnPropertyDescriptor(_getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
+const _idbTypedArrays = { __proto__: null };
+for (const name of ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array',
+  'Uint32Array', 'Float16Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array']) {
+  if (typeof globalThis[name] === 'function') _idbTypedArrays[name] = globalThis[name];
+}
+const _idbDataView = globalThis.DataView;
+const _idbWeakRef = typeof globalThis.WeakRef === 'function' ? globalThis.WeakRef : null;
+const _idbSharedArrayBuffer = typeof globalThis.SharedArrayBuffer === 'function' ? globalThis.SharedArrayBuffer : null;
+const _idbObjectToString = _uncurry(Object.prototype.toString);
+const _idbBoxedKinds = { __proto__: null,
+  '[object Boolean]': Boolean.prototype.valueOf, '[object Number]': Number.prototype.valueOf,
+  '[object String]': String.prototype.valueOf,
+  '[object BigInt]': typeof BigInt === 'function' ? BigInt.prototype.valueOf : null,
+};
+const _idbErrorNames = ['Error', 'EvalError', 'RangeError', 'ReferenceError', 'SyntaxError', 'TypeError', 'URIError'];
+const _idbErrorTypes = { __proto__: null, Error, EvalError: globalThis.EvalError, RangeError,
+  ReferenceError: globalThis.ReferenceError, SyntaxError, TypeError, URIError: globalThis.URIError };
+const _idbBigInt = typeof BigInt === 'function' ? BigInt : null;
+const _B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function _idbBase64(bytes) {
+  let out = '';
+  const n = bytes.length;
+  for (let i = 0; i < n; i += 3) {
+    const a = bytes[i], b = i + 1 < n ? bytes[i + 1] : 0, c = i + 2 < n ? bytes[i + 2] : 0;
+    out += _stringCharAt(_B64_CHARS, a >> 2) + _stringCharAt(_B64_CHARS, ((a & 3) << 4) | (b >> 4))
+      + (i + 1 < n ? _stringCharAt(_B64_CHARS, ((b & 15) << 2) | (c >> 6)) : '=')
+      + (i + 2 < n ? _stringCharAt(_B64_CHARS, c & 63) : '=');
+  }
+  return out;
+}
+function _idbCloneError() { return _idbError('DataCloneError', 'The object could not be cloned.'); }
+function _idbEncodeEntries(value, state) {
+  const keys = _objectKeys(value), out = [];
+  for (let i = 0; i < keys.length; i++) out[out.length] = [keys[i], _idbEncode(value[keys[i]], state)];
+  return out;
+}
+function _idbEncode(value, state) {
+  switch (typeof value) {
+    case 'string': case 'boolean': return value;
+    case 'undefined': return ['u'];
+    case 'number':
+      if (value !== value) return ['n', 'NaN'];
+      if (value === Infinity || value === -Infinity) return ['n', _String(value)];
+      if (value === 0 && 1 / value < 0) return ['n', '-0'];
+      return value;
+    case 'bigint': return ['i', _String(value)];
+    case 'function': case 'symbol': throw _idbCloneError();
+  }
+  if (value === null) return null;
+  const known = _mapGet(state.seen, value);
+  if (known !== undefined) return ['r', known];
+  _mapSet(state.seen, value, state.next++);
+  for (let i = 0; i < _idbPlatformCodecs.length; i++) {
+    const codec = _idbPlatformCodecs[i];
+    if (codec.test(value)) return ['P', codec.name, _idbEncode(codec.encode(value), state)];
+  }
+  if (value === globalThis || _isNodeTarget(value) || (_NodeProtoAtBoot !== null && _isPrototypeOf(_NodeProtoAtBoot, value))
+      || value instanceof Promise || value instanceof WeakMap || value instanceof WeakSet
+      || (_idbWeakRef !== null && value instanceof _idbWeakRef)
+      || (_idbSharedArrayBuffer !== null && value instanceof _idbSharedArrayBuffer)) throw _idbCloneError();
+  if (value instanceof ArrayBuffer) return ['A', _idbBase64(new Uint8Array(value))];
+  if (ArrayBuffer.isView(value)) {
+    if (value instanceof _idbDataView) return ['W', _idbEncode(value.buffer, state), value.byteOffset, value.byteLength];
+    const tag = _reflectApply(_idbTypedArrayTag, value, []);
+    if (_idbTypedArrays[tag] === undefined) throw _idbCloneError();
+    return ['V', tag, _idbEncode(value.buffer, state), value.byteOffset, value.length];
+  }
+  if (value instanceof Date) return ['D', _idbEncode(value.getTime(), state)];
+  if (value instanceof RegExp) return ['R', value.source, value.flags];
+  if (value instanceof Map) {
+    const entries = [];
+    for (const [k, v] of value) entries[entries.length] = [_idbEncode(k, state), _idbEncode(v, state)];
+    return ['M', entries];
+  }
+  if (value instanceof Set) {
+    const items = [];
+    for (const v of value) items[items.length] = _idbEncode(v, state);
+    return ['S', items];
+  }
+  if (value instanceof Error) {
+    const name = _arrayIndexOf(_idbErrorNames, value.name) >= 0 ? value.name : 'Error';
+    const message = _objectHasOwn(value, 'message') ? _String(value.message) : null;
+    const stack = typeof value.stack === 'string' ? value.stack : null;
+    const hasCause = _objectHasOwn(value, 'cause');
+    return ['E', name, message, stack, hasCause, hasCause ? _idbEncode(value.cause, state) : null];
+  }
+  const tag = _idbObjectToString(value);
+  const unbox = _idbBoxedKinds[tag];
+  if (unbox) {
+    let primitive, boxed = true;
+    try { primitive = _reflectApply(unbox, value, []); } catch (_) { boxed = false; }
+    if (boxed) return ['B', _idbEncode(primitive, state)];
+  }
+  if (tag === '[object Symbol]') throw _idbCloneError();
+  if (_isArray(value)) return ['a', value.length, _idbEncodeEntries(value, state)];
+  return ['o', _idbEncodeEntries(value, state)];
+}
+function _idbDefineEntries(target, entries, slots) {
+  for (let i = 0; i < entries.length; i++) {
+    _defineProperty(target, entries[i][0], {
+      value: _idbDecode(entries[i][1], slots), writable: true, enumerable: true, configurable: true,
+    });
+  }
+}
+function _idbDecode(node, slots) {
+  if (node === null || typeof node !== 'object') return node;
+  switch (node[0]) {
+    case 'u': return undefined;
+    case 'n': return node[1] === 'NaN' ? NaN : node[1] === 'Infinity' ? Infinity : node[1] === '-Infinity' ? -Infinity : -0;
+    case 'i': return _idbBigInt(node[1]);
+    case 'r': return slots[node[1]];
+  }
+  const id = slots.length;
+  slots[id] = undefined;
+  let out;
+  switch (node[0]) {
+    case 'P': {
+      const data = _idbDecode(node[2], slots);
+      let codec = null;
+      for (let i = 0; i < _idbPlatformCodecs.length; i++) if (_idbPlatformCodecs[i].name === node[1]) codec = _idbPlatformCodecs[i];
+      out = codec === null ? data : codec.decode(data);
+      break;
+    }
+    case 'A': out = _base64ToUint8Array(node[1]).buffer; break;
+    case 'W': out = new _idbDataView(_idbDecode(node[1], slots), node[2], node[3]); break;
+    case 'V': out = new _idbTypedArrays[node[1]](_idbDecode(node[2], slots), node[3], node[4]); break;
+    case 'D': out = new Date(_idbDecode(node[1], slots)); break;
+    case 'R': out = new RegExp(node[1], node[2]); break;
+    case 'B': out = Object(_idbDecode(node[1], slots)); break;
+    case 'M':
+      out = new Map(); slots[id] = out;
+      for (let i = 0; i < node[1].length; i++) _mapSet(out, _idbDecode(node[1][i][0], slots), _idbDecode(node[1][i][1], slots));
+      return out;
+    case 'S':
+      out = new Set(); slots[id] = out;
+      for (let i = 0; i < node[1].length; i++) out.add(_idbDecode(node[1][i], slots));
+      return out;
+    case 'E': {
+      const Type = _idbErrorTypes[node[1]] || Error;
+      out = node[2] === null ? new Type() : new Type(node[2]);
+      slots[id] = out;
+      if (node[3] !== null) _defineProperty(out, 'stack', { value: node[3], writable: true, enumerable: false, configurable: true });
+      if (node[4]) _defineProperty(out, 'cause', { value: _idbDecode(node[5], slots), writable: true, enumerable: false, configurable: true });
+      return out;
+    }
+    case 'a':
+      out = new Array(node[1]); slots[id] = out;
+      _idbDefineEntries(out, node[2], slots);
+      return out;
+    default:
+      out = {}; slots[id] = out;
+      _idbDefineEntries(out, node[1], slots);
+      return out;
+  }
+  slots[id] = out;
+  return out;
+}
+function _idbSerialize(value) {
+  try { return _JSONstringify(_idbEncode(value, { seen: new Map(), next: 0 })); }
+  catch (_) { throw _idbCloneError(); }
+}
+function _idbDeserialize(text) { return _idbDecode(_JSONparse(text), []); }
+
+function _idbPath(value, path) {
+  if (_isArray(path)) {
+    const result = path.map((p) => _idbPath(value, p));
+    return result.includes(undefined) ? undefined : result;
+  }
+  if (path === '') return value;
+  const names = path.split('.');
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    if (value === null || value === undefined || !(name in Object(value))) return undefined;
+    value = value[name];
+  }
+  return value;
+}
+function _idbInject(value, path, key) {
+  const names = path.split('.');
+  for (let i = 0; i < names.length - 1; i++) {
+    const name = names[i];
+    if (value === null || typeof value !== 'object') throw _idbError('DataError');
+    if (!_objectHasOwn(value, name)) _defineProperty(value, name, { value: {}, writable: true, enumerable: true, configurable: true });
+    value = value[name];
+  }
+  if (value === null || typeof value !== 'object') throw _idbError('DataError');
+  _defineProperty(value, names[names.length - 1], { value: key, writable: true, enumerable: true, configurable: true });
+}
+function _idbValidatePath(path) {
+  if (_isArray(path)) {
+    if (!path.length) throw _idbError('SyntaxError', 'The keyPath argument contains an invalid key path.');
+    return path.map(_idbValidatePath);
+  }
+  path = _String(path);
+  if (path && !path.split('.').every((name) => /^[$_\p{ID_Start}][$‌‍\p{ID_Continue}]*$/u.test(name))) {
+    throw _idbError('SyntaxError', 'The keyPath argument contains an invalid key path.');
+  }
+  return path;
+}
+function _idbSchemaOf(t) { return t.schema || _idbSlot(t.db).schema; }
+
+function _idbActive(state) {
+  return state.state === 'active' && state.task === _idbTaskId();
+}
+class _IDBTransaction {
+  constructor(token, db, names, mode, id = null, schema = null) {
+    const d = _idbSlot(db);
+    _idbInitialize(this, token, {
+      db, names, mode, error: null, state: 'active', task: _idbTaskId(), started: !!schema, schema,
+      requests: [], stores: new Map(), scheduled: false, autoCommit: false, committing: false,
+      id: id === null ? _idbOp('begin', { name: d.name, connection: d.connection, stores: names, mode }) : id,
+    });
+    d.transactions.add(this);
+    _idbTask(() => { const s = _idbSlot(this); s.autoCommit = true; _idbRun(this); });
+  }
+  get db() { return _idbSlot(this).db; }
+  get mode() { return _idbSlot(this).mode; }
+  get error() { return _idbSlot(this).error; }
+  get durability() { _idbSlot(this); return 'default'; }
+  get objectStoreNames() {
+    const s = _idbSlot(this);
+    return _idbNames(s.mode === 'versionchange' ? s.schema.map((x) => x.name) : s.names);
+  }
+  objectStore(name) {
+    const s = _idbSlot(this); name = _String(name);
+    if (s.state === 'finished') throw _idbError('InvalidStateError', "Failed to execute 'objectStore' on 'IDBTransaction': The transaction has finished.");
+    if (!(s.mode === 'versionchange' || s.names.includes(name)) || !_idbSchemaOf(s).some((x) => x.name === name)) {
+      throw _idbError('NotFoundError', "Failed to execute 'objectStore' on 'IDBTransaction': The specified object store was not found.");
+    }
+    if (!s.stores.has(name)) s.stores.set(name, new _IDBObjectStore(_idbToken, this, name));
+    return s.stores.get(name);
+  }
+  abort() {
+    const s = _idbSlot(this);
+    if (s.state === 'finished' || s.committing) throw _idbError('InvalidStateError', "Failed to execute 'abort' on 'IDBTransaction': The transaction has finished.");
+    _idbAbort(this, null);
+  }
+  commit() {
+    const s = _idbSlot(this);
+    if (!_idbActive(s) || s.committing) throw _idbError('InvalidStateError', "Failed to execute 'commit' on 'IDBTransaction': The transaction is not active.");
+    s.committing = true; _idbSchedule(this);
+  }
+}
+function _idbSchedule(tx) {
+  const s = _idbSlot(tx);
+  if (!s.scheduled && s.state !== 'finished') { s.scheduled = true; _idbTask(() => { s.scheduled = false; _idbRun(tx); }); }
+}
+function _idbRequestFor(source, operation) {
+  const tx = source instanceof _IDBTransaction ? source : _idbSlot(source).transaction;
+  const s = _idbSlot(tx);
+  if (!_idbActive(s) || s.committing) throw _idbError('TransactionInactiveError', 'The transaction is not active.');
+  const request = new _IDBRequest(_idbToken, { source, transaction: tx });
+  s.requests.push({ request, operation });
+  _idbSchedule(tx);
+  return request;
+}
+function _idbRun(tx) {
+  const s = _idbSlot(tx);
+  if (s.state === 'finished') return;
+  s.state = 'inactive';
+  try {
+    if (!s.started) {
+      const info = _idbOp('ready', { id: s.id });
+      if (!info) { _idbLater(1, () => _idbSchedule(tx)); return; }
+      s.schema = info.schema;
+      s.started = true;
+    }
+    const pending = s.requests.shift();
+    if (pending) {
+      s.task = _idbTaskId();
+      s.state = s.committing ? 'committing' : 'active';
+      let result, error = null;
+      try { result = pending.operation(); } catch (e) { error = e; }
+      s.state = s.committing ? 'committing' : 'active';
+      const event = _idbSettle(pending.request, result, error);
+      if (s.state === 'finished') return;
+      if (event.threw || (error && !event.canceled)) { _idbAbort(tx, error || _idbError('AbortError')); return; }
+      // Promise reactions from a request are still in its active task.
+      _idbMicrotask(() => _idbSchedule(tx));
+      return;
+    }
+    if (!s.autoCommit) return;
+    _idbOp('commit', { id: s.id, schema: s.schema, version: _idbSlot(s.db).version });
+    s.state = 'finished';
+    const d = _idbSlot(s.db);
+    d.schema = s.schema;
+    d.transactions.delete(tx);
+    if (d.upgrade === tx) d.upgrade = null;
+    _idbDispatch(tx, 'complete');
+    if (s.onCommit) s.onCommit();
+    if (d.closePending && !d.transactions.size) _idbClose(s.db);
+  } catch (error) { _idbAbort(tx, error); }
+}
+function _idbAbort(tx, error) {
+  const s = _idbSlot(tx);
+  if (s.state === 'finished') return;
+  s.state = 'finished'; s.error = error;
+  try { _idbOp('abort', { id: s.id }); } catch (_) {}
+  const pending = s.requests.splice(0);
+  const d = _idbSlot(s.db);
+  d.transactions.delete(tx);
+  if (d.upgrade === tx) { d.upgrade = null; d.schema = s.originalSchema || []; d.version = s.oldVersion; }
+  _idbTask(() => {
+    for (const entry of pending) _idbSettle(entry.request, undefined, _idbError('AbortError', 'The transaction was aborted, so the request cannot be fulfilled.'));
+    _idbDispatch(tx, 'abort');
+    if (s.onAbort) s.onAbort();
+    if (d.closePending && !d.transactions.size) _idbClose(s.db);
+  });
+}
+function _idbStoreSchema(store, write) {
+  const h = _idbSlot(store), t = _idbSlot(h.transaction);
+  if (!_idbActive(t) || t.committing) throw _idbError('TransactionInactiveError', 'The transaction is not active.');
+  const schema = _idbSchemaOf(t).find((x) => x.name === h.name);
+  if (!schema) throw _idbError('InvalidStateError', 'The object store has been deleted.');
+  if (write && t.mode === 'readonly') throw _idbError('ReadOnlyError', 'The transaction is read-only.');
+  return schema;
+}
+function _idbRecords(store, range) {
+  const h = _idbSlot(store), t = _idbSlot(h.transaction);
+  return _idbOp('entries', { id: t.id, store: h.name }).map(([key, value]) => [_JSONparse(key), value])
+    .filter(([key]) => _idbInRange(key, range)).sort((a, b) => _idbCompare(a[0], b[0]));
+}
+function _idbStoreOf(source) { return source instanceof _IDBIndex ? _idbSlot(source).objectStore : source; }
+class _IDBObjectStore {
+  constructor(token, transaction, name) {
+    if (token !== _idbToken) throw new TypeError('Illegal constructor');
+    _weakMapSet(_idbSlots, this, { transaction, name, indexes: new Map() });
+  }
+  get name() { return _idbSlot(this).name; }
+  get transaction() { return _idbSlot(this).transaction; }
+  get keyPath() { const h = _idbSlot(this); return _idbSchemaOf(_idbSlot(h.transaction)).find((s) => s.name === h.name)?.keyPath; }
+  get autoIncrement() { const h = _idbSlot(this); return !!_idbSchemaOf(_idbSlot(h.transaction)).find((s) => s.name === h.name)?.autoIncrement; }
+  get indexNames() {
+    const h = _idbSlot(this);
+    return _idbNames((_idbSchemaOf(_idbSlot(h.transaction)).find((s) => s.name === h.name)?.indexes || []).map((i) => i.name));
+  }
+  put(value, key) { return _idbWrite(this, value, key, false); }
+  add(value, key) { return _idbWrite(this, value, key, true); }
+  get(query) { return _idbRead(this, query, false, false, true); }
+  getKey(query) { return _idbRead(this, query, true, false, true); }
+  getAll(query, count) { return _idbRead(this, query, false, true, false, count); }
+  getAllKeys(query, count) { return _idbRead(this, query, true, true, false, count); }
+  count(query) {
+    _idbStoreSchema(this);
+    const range = _idbRange(query);
+    return _idbRequestFor(this, () => _idbRecords(this, range).length);
+  }
+  delete(query) {
+    _idbStoreSchema(this, true);
+    const range = _idbRange(query, true);
+    return _idbRequestFor(this, () => {
+      const h = _idbSlot(this), t = _idbSlot(h.transaction);
+      for (const [key] of _idbRecords(this, range)) _idbOp('remove', { id: t.id, store: h.name, key: _JSONstringify(key) });
+    });
+  }
+  clear() {
+    _idbStoreSchema(this, true);
+    return _idbRequestFor(this, () => { const h = _idbSlot(this); _idbOp('clear', { id: _idbSlot(h.transaction).id, store: h.name }); });
+  }
+  index(name) {
+    const schema = _idbStoreSchema(this), h = _idbSlot(this); name = _String(name);
+    if (!schema.indexes.some((i) => i.name === name)) throw _idbError('NotFoundError', "Failed to execute 'index' on 'IDBObjectStore': The specified index was not found.");
+    if (!h.indexes.has(name)) h.indexes.set(name, new _IDBIndex(_idbToken, this, name));
+    return h.indexes.get(name);
+  }
+  createIndex(name, keyPath, options = {}) {
+    const schema = _idbStoreSchema(this, true), h = _idbSlot(this); name = _String(name);
+    if (_idbSlot(h.transaction).mode !== 'versionchange') throw _idbError('InvalidStateError', 'The database is not running a version change transaction.');
+    if (schema.indexes.some((i) => i.name === name)) throw _idbError('ConstraintError', "An index with the specified name already exists.");
+    keyPath = _idbValidatePath(keyPath);
+    options = options || {};
+    if (options.multiEntry && _isArray(keyPath)) throw _idbError('InvalidAccessError', 'The keyPath argument was an array and the multiEntry option is true.');
+    schema.indexes.push({ name, keyPath, unique: !!options.unique, multiEntry: !!options.multiEntry });
+    const index = this.index(name);
+    _idbRequestFor(this, () => { _idbIndexRows(index, null, true); });
+    return index;
+  }
+  deleteIndex(name) {
+    const schema = _idbStoreSchema(this, true), h = _idbSlot(this); name = _String(name);
+    if (_idbSlot(h.transaction).mode !== 'versionchange') throw _idbError('InvalidStateError', 'The database is not running a version change transaction.');
+    const at = schema.indexes.findIndex((i) => i.name === name);
+    if (at < 0) throw _idbError('NotFoundError', "Failed to execute 'deleteIndex' on 'IDBObjectStore': The specified index was not found.");
+    schema.indexes.splice(at, 1);
+    h.indexes.delete(name);
+  }
+  openCursor(query, direction = 'next') { return _idbCursor(this, query, direction, false); }
+  openKeyCursor(query, direction = 'next') { return _idbCursor(this, query, direction, true); }
+}
+function _idbWrite(store, value, key, add) {
+  const schema = _idbStoreSchema(store, true);
+  const serialized = _idbSerialize(value);
+  const clone = _idbDeserialize(serialized);
+  if (schema.keyPath !== null) {
+    if (key !== undefined) throw _idbError('DataError', 'The object store uses in-line keys and the key parameter was provided.');
+    key = _idbPath(clone, schema.keyPath);
+    if (key === undefined && !schema.autoIncrement) throw _idbError('DataError', 'Evaluating the object store\'s key path did not yield a value.');
+  }
+  let encoded = key === undefined ? null : _idbKey(key);
+  if (!encoded && !schema.autoIncrement) throw _idbError('DataError', 'The object store uses out-of-line keys and has no key generator and the key parameter was not provided.');
+  if (!encoded && schema.keyPath !== null) {
+    // A generated key has to fit where the key path says (Chromium checks this up front).
+    _idbInject(_idbDeserialize(serialized), schema.keyPath, 0);
+  }
+  const h = _idbSlot(store);
+  return _idbRequestFor(store, () => {
+    const t = _idbSlot(h.transaction), live = t.schema.find((x) => x.name === h.name);
+    let payload = serialized;
+    let nextKey = live.nextKey;
+    if (!encoded) {
+      if (live.nextKey > 9007199254740992) throw _idbError('ConstraintError', 'Key generator has reached its maximum value.');
+      key = live.nextKey; nextKey++; encoded = _idbKey(key);
+      if (live.keyPath !== null) { _idbInject(clone, live.keyPath, key); payload = _idbSerialize(clone); }
+    } else if (live.autoIncrement && encoded[0] === 0 && _Number(encoded[1]) >= live.nextKey) {
+      nextKey = Math.floor(_Number(encoded[1])) + 1;
+    }
+    const rawKey = _JSONstringify(encoded);
+    if (add && _idbOp('get', { id: t.id, store: h.name, key: rawKey }) !== null) {
+      throw _idbError('ConstraintError', 'Key already exists in the object store.');
+    }
+    for (const index of live.indexes.filter((i) => i.unique)) {
+      const wanted = _idbIndexKeys(index, clone);
+      if (!wanted.length) continue;
+      for (const [other, data] of _idbRecords(store, null)) {
+        if (_idbCompare(other, encoded) === 0) continue;
+        if (_idbIndexKeys(index, _idbDeserialize(data)).some((k) => wanted.some((w) => _idbCompare(k, w) === 0))) {
+          throw _idbError('ConstraintError', 'Unable to add key to index \'' + index.name + '\': at least one key does not satisfy the uniqueness requirements.');
+        }
+      }
+    }
+    _idbOp('put', { id: t.id, store: h.name, key: rawKey, value: payload });
+    live.nextKey = nextKey;
+    return _idbKeyValue(encoded);
+  });
+}
+function _idbCountLimit(count) {
+  if (count === undefined) return Infinity;
+  count = _Number(count);
+  if (!isFinite(count) || count < 0 || count > 0xffffffff) throw new TypeError("Value is outside the 'unsigned long' value range.");
+  return Math.trunc(count) || Infinity;
+}
+function _idbRead(source, query, keys, all, required, count) {
+  const store = _idbStoreOf(source);
+  _idbStoreSchema(store);
+  const range = _idbRange(query, required), limit = _idbCountLimit(count);
+  return _idbRequestFor(source, () => {
+    let records;
+    const r = range ? _idbSlot(range) : null;
+    if (source instanceof _IDBIndex) records = _idbIndexRows(source, range).map((row) => [row[1], row[2]]);
+    else if (r && r.lower && r.upper && _idbCompare(r.lower, r.upper) === 0) {
+      const h = _idbSlot(store);
+      const value = _idbOp('get', { id: _idbSlot(h.transaction).id, store: h.name, key: _JSONstringify(r.lower) });
+      records = value === null ? [] : [[r.lower, value]];
+    } else records = _idbRecords(store, range);
+    const values = records.slice(0, all ? limit : 1).map(([key, value]) => keys ? _idbKeyValue(key) : _idbDeserialize(value));
+    return all ? values : values[0];
+  });
+}
+function _idbIndexSchema(index) {
+  const i = _idbSlot(index), store = _idbSlot(i.objectStore), tx = _idbSlot(store.transaction);
+  const schema = _idbSchemaOf(tx).find((s) => s.name === store.name);
+  const definition = schema && schema.indexes.find((x) => x.name === i.name);
+  if (!definition) throw _idbError('InvalidStateError', 'The index or its object store has been deleted.');
+  return definition;
+}
+function _idbIndexKeys(definition, value) {
+  const key = _idbPath(value, definition.keyPath);
+  const values = definition.multiEntry && _isArray(key) ? key : [key];
+  const result = [];
+  for (const item of values) {
+    try { const encoded = _idbKey(item); if (!result.some((k) => !_idbCompare(k, encoded))) result.push(encoded); } catch (_) {}
+  }
+  return result;
+}
+function _idbIndexRows(index, range, validate = false) {
+  const definition = _idbIndexSchema(index), rows = [];
+  for (const [primary, value] of _idbRecords(_idbSlot(index).objectStore, null)) {
+    for (const key of _idbIndexKeys(definition, _idbDeserialize(value))) if (_idbInRange(key, range)) rows.push([key, primary, value]);
+  }
+  rows.sort((a, b) => _idbCompare(a[0], b[0]) || _idbCompare(a[1], b[1]));
+  if (validate && definition.unique && rows.some((r, i) => i && _idbCompare(rows[i - 1][0], r[0]) === 0)) {
+    throw _idbError('ConstraintError', 'Unable to add key to index \'' + definition.name + '\': at least one key does not satisfy the uniqueness requirements.');
+  }
+  return rows;
+}
+class _IDBIndex {
+  constructor(token, objectStore, name) {
+    if (token !== _idbToken) throw new TypeError('Illegal constructor');
+    _weakMapSet(_idbSlots, this, { objectStore, name, transaction: _idbSlot(objectStore).transaction });
+  }
+  get name() { return _idbSlot(this).name; }
+  get objectStore() { return _idbSlot(this).objectStore; }
+  get keyPath() { return _idbIndexSchema(this).keyPath; }
+  get unique() { return _idbIndexSchema(this).unique; }
+  get multiEntry() { return _idbIndexSchema(this).multiEntry; }
+  get(query) { return _idbRead(this, query, false, false, true); }
+  getKey(query) { return _idbRead(this, query, true, false, true); }
+  getAll(query, count) { return _idbRead(this, query, false, true, false, count); }
+  getAllKeys(query, count) { return _idbRead(this, query, true, true, false, count); }
+  count(query) {
+    _idbIndexSchema(this);
+    _idbStoreSchema(_idbSlot(this).objectStore);
+    const range = _idbRange(query);
+    return _idbRequestFor(this, () => _idbIndexRows(this, range).length);
+  }
+  openCursor(query, direction = 'next') { return _idbCursor(this, query, direction, false); }
+  openKeyCursor(query, direction = 'next') { return _idbCursor(this, query, direction, true); }
+}
+class _IDBCursor {
+  constructor(token, state) {
+    if (token !== _idbToken) throw new TypeError('Illegal constructor');
+    _weakMapSet(_idbSlots, this, state);
+  }
+  get source() { return _idbSlot(this).source; }
+  get direction() { return _idbSlot(this).direction; }
+  get key() { return _idbKeyValue(_idbSlot(this).row[0]); }
+  get primaryKey() { return _idbKeyValue(_idbSlot(this).row[1]); }
+  get request() { return _idbSlot(this).request; }
+  continue(key) { _idbContinue(this, key); }
+  advance(count) {
+    count = _Number(count);
+    if (!Number.isInteger(count) || count <= 0 || count > 0xffffffff) throw new TypeError("Failed to execute 'advance' on 'IDBCursor': A count argument with value 0 (zero) was supplied, must be greater than 0.");
+    _idbContinue(this, undefined, count);
+  }
+  update(value) {
+    const s = _idbSlot(this);
+    if (!s.positioned || s.keysOnly) throw _idbError('InvalidStateError', 'The cursor is being iterated or has iterated past its end.');
+    const store = _idbStoreOf(s.source);
+    const keyPath = store.keyPath;
+    if (keyPath !== null) {
+      const key = _idbPath(value, keyPath);
+      if (key === undefined || _idbCompare(_idbKey(key), s.row[1])) throw _idbError('DataError', 'The effective object store of this cursor uses in-line keys and evaluating the key path of the value parameter results in a different value than the cursor\'s effective key.');
+      return store.put(value);
+    }
+    return store.put(value, this.primaryKey);
+  }
+  delete() {
+    const s = _idbSlot(this);
+    if (!s.positioned || s.keysOnly) throw _idbError('InvalidStateError', 'The cursor is being iterated or has iterated past its end.');
+    return _idbStoreOf(s.source).delete(_idbKeyValue(s.row[1]));
+  }
+}
+class _IDBCursorWithValue extends _IDBCursor {
+  get value() { return _idbSlot(this).value; }
+}
+function _idbCursor(source, query, direction, keysOnly) {
+  _idbStoreSchema(_idbStoreOf(source));
+  direction = _String(direction);
+  if (!['next', 'nextunique', 'prev', 'prevunique'].includes(direction)) {
+    throw new TypeError("Failed to execute 'openCursor': The provided value '" + direction + "' is not a valid enum value of type IDBCursorDirection.");
+  }
+  const state = { source, range: _idbRange(query), direction, keysOnly, positioned: false, row: null, value: undefined, request: null };
+  const cursor = new (keysOnly ? _IDBCursor : _IDBCursorWithValue)(_idbToken, state);
+  const request = _idbRequestFor(source, () => _idbCursorNext(cursor, null, 1));
+  state.request = request;
+  return request;
+}
+function _idbCursorNext(cursor, sought, count) {
+  const s = _idbSlot(cursor), reverse = s.direction.startsWith('prev'), unique = s.direction.endsWith('unique');
+  let rows = s.source instanceof _IDBIndex ? _idbIndexRows(s.source, s.range)
+    : _idbRecords(s.source, s.range).map(([key, value]) => [key, key, value]);
+  if (reverse) {
+    rows.reverse();
+    // prevunique visits the first record of each key in index order.
+    if (unique) rows = rows.filter((row, i) => i === rows.length - 1 || _idbCompare(row[0], rows[i + 1][0]));
+  } else if (unique) rows = rows.filter((row, i) => !i || _idbCompare(row[0], rows[i - 1][0]));
+  rows = rows.filter((row) => {
+    if (s.row) {
+      const cmp = _idbCompare(row[0], s.row[0]) || (unique ? 0 : _idbCompare(row[1], s.row[1]));
+      if (reverse ? cmp >= 0 : cmp <= 0) return false;
+    }
+    return !sought || (reverse ? _idbCompare(row[0], sought) <= 0 : _idbCompare(row[0], sought) >= 0);
+  });
+  const next = rows[count - 1];
+  s.positioned = !!next;
+  if (!next) { s.row = null; return null; }
+  s.row = next;
+  if (!s.keysOnly) s.value = _idbDeserialize(next[2]);
+  return cursor;
+}
+function _idbContinue(cursor, key, count = 1) {
+  const s = _idbSlot(cursor), r = _idbSlot(s.request), tx = _idbSlot(r.transaction);
+  if (!_idbActive(tx) || tx.committing) throw _idbError('TransactionInactiveError', 'The transaction is not active.');
+  if (!s.positioned) throw _idbError('InvalidStateError', 'The cursor is being iterated or has iterated past its end.');
+  const sought = key === undefined ? null : _idbKey(key);
+  if (sought) {
+    const cmp = _idbCompare(sought, s.row[0]);
+    if (s.direction.startsWith('prev') ? cmp >= 0 : cmp <= 0) throw _idbError('DataError', 'The parameter is less than or equal to this cursor\'s position.');
+  }
+  s.positioned = false;
+  r.readyState = 'pending'; r.result = undefined; r.error = null;
+  tx.requests.push({ request: s.request, operation: () => _idbCursorNext(cursor, sought, count) });
+  _idbSchedule(r.transaction);
+}
+
+class _IDBDatabase {
+  constructor(token, name, version, schema, connection) {
+    _idbInitialize(this, token, { name, version, schema, connection, transactions: new Set(), upgrade: null, closePending: false, closed: false });
+    if (connection) _mapSet(_idbConnections, connection, this);
+  }
+  get name() { return _idbSlot(this).name; }
+  get version() { return _idbSlot(this).version; }
+  get objectStoreNames() {
+    const d = _idbSlot(this);
+    return _idbNames((d.upgrade ? _idbSlot(d.upgrade).schema : d.schema).map((s) => s.name));
+  }
+  createObjectStore(name, options = {}) {
+    const d = _idbSlot(this); name = _String(name);
+    if (!d.upgrade) throw _idbError('InvalidStateError', "Failed to execute 'createObjectStore' on 'IDBDatabase': The database is not running a version change transaction.");
+    const t = _idbSlot(d.upgrade);
+    if (!_idbActive(t)) throw _idbError('TransactionInactiveError', "Failed to execute 'createObjectStore' on 'IDBDatabase': The transaction is not active.");
+    if (t.schema.some((s) => s.name === name)) throw _idbError('ConstraintError', "Failed to execute 'createObjectStore' on 'IDBDatabase': An object store with the specified name already exists.");
+    options = options || {};
+    const keyPath = options.keyPath == null ? null : _idbValidatePath(options.keyPath);
+    if (options.autoIncrement && (keyPath === '' || _isArray(keyPath))) {
+      throw _idbError('InvalidAccessError', "Failed to execute 'createObjectStore' on 'IDBDatabase': The autoIncrement option was set but the keyPath option was empty or an array.");
+    }
+    t.schema.push({ name, keyPath, autoIncrement: !!options.autoIncrement, nextKey: 1, indexes: [] });
+    return d.upgrade.objectStore(name);
+  }
+  deleteObjectStore(name) {
+    const d = _idbSlot(this); name = _String(name);
+    if (!d.upgrade) throw _idbError('InvalidStateError', "Failed to execute 'deleteObjectStore' on 'IDBDatabase': The database is not running a version change transaction.");
+    const t = _idbSlot(d.upgrade);
+    if (!_idbActive(t)) throw _idbError('TransactionInactiveError', "Failed to execute 'deleteObjectStore' on 'IDBDatabase': The transaction is not active.");
+    const at = t.schema.findIndex((s) => s.name === name);
+    if (at < 0) throw _idbError('NotFoundError', "Failed to execute 'deleteObjectStore' on 'IDBDatabase': The specified object store was not found.");
+    _idbOp('clear', { id: t.id, store: name });
+    t.schema.splice(at, 1); t.stores.delete(name);
+  }
+  transaction(storeNames, mode = 'readonly', options = {}) {
+    const d = _idbSlot(this);
+    if (d.closed || d.closePending) throw _idbError('InvalidStateError', "Failed to execute 'transaction' on 'IDBDatabase': The database connection is closing.");
+    if (d.upgrade) throw _idbError('InvalidStateError', "Failed to execute 'transaction' on 'IDBDatabase': A version change transaction is running.");
+    mode = _String(mode);
+    if (mode !== 'readonly' && mode !== 'readwrite') {
+      throw new TypeError("Failed to execute 'transaction' on 'IDBDatabase': The provided value '" + mode + "' is not a valid enum value of type IDBTransactionMode.");
+    }
+    options = options || {};
+    if (options.durability !== undefined && !['default', 'strict', 'relaxed'].includes(options.durability)) {
+      throw new TypeError("Failed to execute 'transaction' on 'IDBDatabase': Failed to read the 'durability' property from 'IDBTransactionOptions': The provided value is not a valid enum value of type IDBTransactionDurability.");
+    }
+    const names = [...new Set(typeof storeNames === 'string' ? [storeNames] : Array.from(storeNames, _String))].sort();
+    if (!names.length) throw _idbError('InvalidAccessError', "Failed to execute 'transaction' on 'IDBDatabase': The transaction was not given any object store names.");
+    for (const name of names) {
+      if (!d.schema.some((s) => s.name === name)) throw _idbError('NotFoundError', "Failed to execute 'transaction' on 'IDBDatabase': One of the specified object stores was not found.");
+    }
+    return new _IDBTransaction(_idbToken, this, names, mode);
+  }
+  close() { const d = _idbSlot(this); d.closePending = true; if (!d.transactions.size) _idbClose(this); }
+}
+function _idbClose(db) {
+  const d = _idbSlot(db);
+  if (d.closed) return;
+  if (d.connection) { try { _idbOp('close', { name: d.name, connection: d.connection }); } catch (_) {} }
+  _mapDelete(_idbConnections, d.connection);
+  d.closed = true;
+}
+function _idbPollNotices(notices) {
+  for (const notice of notices) {
+    const db = _mapGet(_idbConnections, notice.connection);
+    if (db && !_idbSlot(db).closePending) _idbDispatch(db, 'versionchange', { oldVersion: _idbSlot(db).version, newVersion: notice.version });
+  }
+}
+function _idbDenied(method) {
+  return _idbError('SecurityError', "Failed to execute '" + method + "' on 'IDBFactory': access to the Indexed Database API is denied in this context.");
+}
+function _idbAccess() {
+  try { return _idbOp('access', {}) === true; } catch (_) { return false; }
+}
+function _idbOpen(name, requestedVersion, deleting) {
+  const request = new _IDBOpenDBRequest(_idbToken, {});
+  let queue = _mapGet(_idbOpenQueues, name);
+  if (!queue) _mapSet(_idbOpenQueues, name, queue = []);
+  let blocked = false, notified = false, id = null, opening = null;
+  const finish = () => {
+    if (opening !== null) { try { _idbOp('release_open', { name, opening }); } catch (_) {} }
+    queue.shift();
+    if (queue.length) _idbTask(queue[0]); else _mapDelete(_idbOpenQueues, name);
+  };
+  const attempt = () => {
+    try {
+      if (opening === null) opening = _idbOp('reserve_open', { name });
+      if (!_idbOp('open_ready', { name, opening })) { _idbLater(1, attempt); return; }
+      const info = _idbOp('info', { name }), version = deleting ? null : (requestedVersion === undefined ? (info.version || 1) : requestedVersion);
+      if (!deleting && version < info.version) {
+        throw _idbError('VersionError', 'The requested version (' + version + ') is less than the existing version (' + info.version + ').');
+      }
+      if (deleting || version > info.version) {
+        if (!notified) {
+          notified = true;
+          _idbOp('notify', { name, version });
+          _idbPollNotices(_idbOp('notices', {}));
+        }
+        if (_idbOp('info', { name }).connections) {
+          if (!blocked) { blocked = true; _idbDispatch(request, 'blocked', { oldVersion: info.version, newVersion: version }); }
+          _idbLater(5, attempt); return;
+        }
+      }
+      if (id === null) id = _idbOp('begin', { name, mode: 'versionchange', stores: [] });
+      const live = _idbOp('ready', { id });
+      if (!live) { _idbLater(1, attempt); return; }
+      if (deleting) {
+        _idbOp('abort', { id }); id = null;
+        if (!_idbOp('delete', { name })) { _idbLater(1, attempt); return; }
+        _idbSettle(request, undefined); finish(); return;
+      }
+      if (version < live.version) throw _idbError('VersionError', 'The requested version (' + version + ') is less than the existing version (' + live.version + ').');
+      const db = new _IDBDatabase(_idbToken, name, version, live.schema, 0);
+      const succeed = () => {
+        const d = _idbSlot(db);
+        d.connection = _idbOp('connect', { name }); _mapSet(_idbConnections, d.connection, db);
+        _idbSlot(request).transaction = null;
+        _idbSettle(request, db); finish();
+      };
+      if (version > live.version) {
+        const tx = new _IDBTransaction(_idbToken, db, live.schema.map((s) => s.name), 'versionchange', id, live.schema);
+        const t = _idbSlot(tx), d = _idbSlot(db);
+        t.originalSchema = _JSONparse(_JSONstringify(live.schema));
+        t.oldVersion = live.version;
+        d.upgrade = tx;
+        const r = _idbSlot(request);
+        r.result = db; r.readyState = 'done'; r.transaction = tx;
+        t.onCommit = succeed;
+        t.onAbort = () => {
+          d.closed = true; _idbSlot(request).transaction = null;
+          _idbSettle(request, undefined, _idbError('AbortError', 'Version change transaction was aborted in upgradeneeded event handler.'));
+          finish();
+        };
+        const outcome = _idbDispatch(request, 'upgradeneeded', { oldVersion: live.version, newVersion: version });
+        if (outcome.threw) _idbAbort(tx, _idbError('AbortError'));
+      } else {
+        _idbOp('abort', { id }); succeed();
+      }
+    } catch (error) {
+      if (id !== null) { try { _idbOp('abort', { id }); } catch (_) {} }
+      _idbSettle(request, undefined, error); finish();
+    }
+  };
+  queue.push(attempt);
+  if (queue.length === 1) _idbTask(attempt);
+  return request;
+}
+class _IDBFactory {
+  constructor(token) { if (token !== _idbToken) throw new TypeError('Illegal constructor'); _weakMapSet(_idbSlots, this, {}); }
+  open(name, version) {
+    _idbSlot(this);
+    if (!arguments.length) throw new TypeError("Failed to execute 'open' on 'IDBFactory': 1 argument required, but only 0 present.");
+    if (version !== undefined) {
+      version = _Number(version);
+      if (version === 0) throw new TypeError("Failed to execute 'open' on 'IDBFactory': The version provided must not be 0.");
+      if (!isFinite(version) || version < 1 || version > 9007199254740991) {
+        throw new TypeError("Failed to execute 'open' on 'IDBFactory': Value is outside the 'unsigned long long' value range.");
+      }
+      version = Math.floor(version);
+    }
+    if (!_idbAccess()) throw _idbDenied('open');
+    return _idbOpen(_String(name), version, false);
+  }
+  deleteDatabase(name) {
+    _idbSlot(this);
+    if (!arguments.length) throw new TypeError("Failed to execute 'deleteDatabase' on 'IDBFactory': 1 argument required, but only 0 present.");
+    if (!_idbAccess()) throw _idbDenied('deleteDatabase');
+    return _idbOpen(_String(name), null, true);
+  }
+  databases() {
+    try {
+      _idbSlot(this);
+      if (!_idbAccess()) throw _idbDenied('databases');
+      return _promiseResolveFn.call(_PromiseAtBoot, _idbOp('databases', {}));
+    } catch (error) { return _PromiseAtBoot.reject(error); }
+  }
+  cmp(first, second) {
+    _idbSlot(this);
+    if (arguments.length < 2) throw new TypeError("Failed to execute 'cmp' on 'IDBFactory': 2 arguments required, but only " + arguments.length + " present.");
+    return _idbCompare(_idbKeyFor(first, 'cmp', 'IDBFactory'), _idbKeyFor(second, 'cmp', 'IDBFactory'));
+  }
+}
+// Event handler attributes (the shim's _handlerGet/_handlerSet, so a handler keeps its place
+// among the listeners and `return false` cancels).
+for (const [Impl, events] of [[_IDBRequest, ['success', 'error']], [_IDBOpenDBRequest, ['blocked', 'upgradeneeded']],
+  [_IDBTransaction, ['abort', 'complete', 'error']], [_IDBDatabase, ['abort', 'close', 'error', 'versionchange']]]) {
+  for (const type of events) {
+    const name = 'on' + type;
+    _defineProperty(Impl.prototype, name, {
+      get: _getOwnPropertyDescriptor({ get [name]() { _idbSlot(this); return _handlerGet(this, name); } }, name).get,
+      set: _getOwnPropertyDescriptor({ set [name](value) { _idbSlot(this); _handlerSet(this, name, value); } }, name).set,
+      enumerable: true, configurable: true,
+    });
+  }
+}
+// The interface objects: Chromium's names, prototypes and inheritance, with native-looking
+// members, over the classes above.
+for (const [name, Impl, parent] of [['IDBFactory', _IDBFactory], ['IDBRequest', _IDBRequest, EventTarget],
+  ['IDBOpenDBRequest', _IDBOpenDBRequest, 'IDBRequest'], ['IDBDatabase', _IDBDatabase, EventTarget],
+  ['IDBTransaction', _IDBTransaction, EventTarget], ['IDBObjectStore', _IDBObjectStore], ['IDBIndex', _IDBIndex],
+  ['IDBCursor', _IDBCursor], ['IDBCursorWithValue', _IDBCursorWithValue, 'IDBCursor'], ['IDBKeyRange', _IDBKeyRange]]) {
+  _ifaceIllegal(name, typeof parent === 'string' ? _ifaces[parent] : parent, Impl.prototype);
+  const keys = _reflectOwnKeysAtBoot(Impl.prototype);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (typeof key !== 'string' || key === 'constructor') continue;
+    const d = _getOwnPropertyDescriptor(Impl.prototype, key);
+    if (d.get) _markNativeAs(d.get, 'function get ' + key + '() { [native code] }');
+    if (d.set) _markNativeAs(d.set, 'function set ' + key + '() { [native code] }');
+    if (typeof d.value === 'function') _markNative(d.value);
+    if (!d.enumerable) _defineProperty(Impl.prototype, key, { enumerable: true });
+  }
 }
 for (const [name, length, make] of [
-  ['only', 1, (args) => { _idbAssertKey(args[0], 'only'); return _idbRange(args[0], args[0], false, false); }],
-  ['lowerBound', 1, (args) => { _idbAssertKey(args[0], 'lowerBound'); return _idbRange(args[0], undefined, args[1], true); }],
-  ['upperBound', 1, (args) => { _idbAssertKey(args[0], 'upperBound'); return _idbRange(undefined, args[0], true, args[1]); }],
+  ['only', 1, (args) => { const key = _idbKeyFor(args[0], 'only', 'IDBKeyRange'); return _idbMakeRange(key, key, false, false); }],
+  ['lowerBound', 1, (args) => _idbMakeRange(_idbKeyFor(args[0], 'lowerBound', 'IDBKeyRange'), null, args[1], true)],
+  ['upperBound', 1, (args) => _idbMakeRange(null, _idbKeyFor(args[0], 'upperBound', 'IDBKeyRange'), true, args[1])],
   ['bound', 2, (args) => {
-    _idbAssertKey(args[0], 'bound'); _idbAssertKey(args[1], 'bound');
-    const c = _idbCompare(args[0], args[1]);
+    const lower = _idbKeyFor(args[0], 'bound', 'IDBKeyRange'), upper = _idbKeyFor(args[1], 'bound', 'IDBKeyRange');
+    const c = _idbCompare(lower, upper);
     if (c > 0 || (c === 0 && (args[2] || args[3]))) {
       throw new DOMException("Failed to execute 'bound' on 'IDBKeyRange': The lower key is greater than the upper key.", 'DataError');
     }
-    return _idbRange(args[0], args[1], args[2], args[3]);
+    return _idbMakeRange(lower, upper, args[2], args[3]);
   }],
 ]) {
   _defineProperty(_ifaces.IDBKeyRange, name, {
@@ -25484,6 +26358,17 @@ for (const [name, length, make] of [
     writable: true, enumerable: true, configurable: true,
   });
 }
+{
+  const factory = new _IDBFactory(_idbToken);
+  _defineProperty(globalThis, 'indexedDB', {
+    get: _markNativeAs(_getOwnPropertyDescriptor({ get indexedDB() { return factory; } }, 'indexedDB').get,
+      'function get indexedDB() { [native code] }'),
+    enumerable: true, configurable: true,
+  });
+}
+// The host hands a document the versionchange notices another document left for its
+// connections (PocketCalculatorJsRuntime.PollIndexedDbNotifications).
+_hostVars.__obscura_poll_indexeddb = (notices) => _idbTask(() => _idbPollNotices(notices));
 
 // MediaQueryList: matchMedia()'s answer, an EventTarget whose addListener/removeListener
 // are its 'change' listeners. Upstream c9978c3: a viewport or emulated-media change that
