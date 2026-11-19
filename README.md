@@ -97,6 +97,10 @@ Global options include `--stealth`, `--proxy <url>`, `--user-agent`,
 `--storage-dir`, `--obey-robots` and `--allow-private-network`. Run
 `pocket-calculator --help` or `pocket-calculator <command> --help` for the full list.
 
+The MCP server can also offer a `web_search` tool. It sends the agent's queries to a
+third-party search API (Keenable), so it is off unless `POCKETCALCULATOR_WEB_SEARCH=keenable`
+is set; `KEENABLE_API_KEY` raises its rate limit.
+
 ## Connect Puppeteer or Playwright
 
 Start the CDP server and point a CDP client at it:
