@@ -30,6 +30,9 @@ public sealed class WebStorage
 
     private long _totalChars;
 
+    // Storage keys written since the last successful flush (upstream f661c2e / 677f6d2).
+    private readonly HashSet<string> _changed = new(StringComparer.Ordinal);
+
     private readonly Dictionary<string, Area> _areas = new(StringComparer.Ordinal);
     private readonly Lock _gate = new();
 
@@ -142,6 +145,7 @@ public sealed class WebStorage
             area.Items[key] = value;
             area.Chars = next;
             _totalChars = nextTotal;
+            _changed.Add(storageKey);
             return true;
         }
     }
@@ -162,6 +166,7 @@ public sealed class WebStorage
                 {
                     _areas.Remove(storageKey);
                 }
+                _changed.Add(storageKey);
             }
         }
     }
@@ -175,7 +180,171 @@ public sealed class WebStorage
             if (_areas.Remove(storageKey, out var area))
             {
                 _totalChars -= area.Chars;
+                _changed.Add(storageKey);
             }
         }
+    }
+
+    /// <summary>The area's items in insertion order.</summary>
+    public IReadOnlyList<KeyValuePair<string, string>> Snapshot(string storageKey)
+    {
+        lock (_gate)
+        {
+            return _areas.TryGetValue(storageKey, out var area)
+                ? [.. area.Order.Select(key => KeyValuePair.Create(key, area.Items[key]))]
+                : [];
+        }
+    }
+
+    /// <summary>Every non-empty area, ordered by storage key.</summary>
+    public IReadOnlyList<KeyValuePair<string, IReadOnlyList<KeyValuePair<string, string>>>> Entries()
+    {
+        lock (_gate)
+        {
+            return [.. _areas.Keys.Order(StringComparer.Ordinal)
+                .Select(key => KeyValuePair.Create(key, Snapshot(key)))];
+        }
+    }
+
+    /// <summary>True while some area changed since its last successful flush.</summary>
+    public bool IsDirty
+    {
+        get { lock (_gate) { return _changed.Count > 0; } }
+    }
+
+    /// <summary>The storage keys that changed since their last successful flush, sorted.</summary>
+    public IReadOnlyList<string> ChangedKeys()
+    {
+        lock (_gate)
+        {
+            return [.. _changed.Order(StringComparer.Ordinal)];
+        }
+    }
+
+    /// <summary>
+    /// Restore one area from a profile without scheduling a rewrite (upstream <c>load</c>).
+    /// False, with nothing changed, for duplicate keys or an area over a budget.
+    /// </summary>
+    public bool Load(string storageKey, IReadOnlyList<KeyValuePair<string, string>> items)
+    {
+        ArgumentNullException.ThrowIfNull(storageKey);
+        ArgumentNullException.ThrowIfNull(items);
+        var area = new Area();
+        foreach (var (key, value) in items)
+        {
+            if (!area.Items.TryAdd(key, value))
+            {
+                return false;
+            }
+            area.Order.Add(key);
+            area.Chars += key.Length + value.Length;
+            if (area.Chars > QuotaChars)
+            {
+                return false;
+            }
+        }
+        lock (_gate)
+        {
+            var exists = _areas.TryGetValue(storageKey, out var previous);
+            if (items.Count > 0 && !exists && _areas.Count >= MaxAreas)
+            {
+                return false;
+            }
+            var nextTotal = _totalChars - (previous?.Chars ?? 0) + area.Chars;
+            if (nextTotal > TotalQuotaChars)
+            {
+                return false;
+            }
+            if (items.Count == 0)
+            {
+                _areas.Remove(storageKey);
+            }
+            else
+            {
+                _areas[storageKey] = area;
+            }
+            _totalChars = nextTotal;
+            _changed.Remove(storageKey);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Hand every changed area to <paramref name="write"/> under the store's lock, so no
+    /// mutation interleaves; an area is clean again only when its write reports success, and
+    /// a failed one is retried by the next flush (upstream 677f6d2).
+    /// </summary>
+    public void FlushChanged(Func<string, IReadOnlyList<KeyValuePair<string, string>>, bool> write)
+    {
+        ArgumentNullException.ThrowIfNull(write);
+        lock (_gate)
+        {
+            foreach (var key in _changed.Order(StringComparer.Ordinal).ToList())
+            {
+                if (write(key, Snapshot(key)))
+                {
+                    _changed.Remove(key);
+                }
+            }
+        }
+    }
+
+    /// <summary>An independent copy with no pending changes (upstream 9a5d9c6).</summary>
+    public WebStorage IsolatedSnapshot()
+    {
+        var copy = new WebStorage();
+        lock (_gate)
+        {
+            foreach (var (key, area) in _areas)
+            {
+                var copied = new Area { Chars = area.Chars };
+                copied.Order.AddRange(area.Order);
+                foreach (var (item, value) in area.Items)
+                {
+                    copied.Items[item] = value;
+                }
+                copy._areas[key] = copied;
+            }
+            copy._totalChars = _totalChars;
+        }
+        return copy;
+    }
+
+    /// <summary>
+    /// Merge the keys <paramref name="current"/> changed since it was snapshotted from
+    /// <paramref name="initial"/>, without replacing values another connection wrote to
+    /// untouched keys (upstream 9a5d9c6). False when a changed value did not fit the budget.
+    /// </summary>
+    public bool MergeChanges(WebStorage initial, WebStorage current)
+    {
+        ArgumentNullException.ThrowIfNull(initial);
+        ArgumentNullException.ThrowIfNull(current);
+        var accepted = true;
+        foreach (var storageKey in current.ChangedKeys())
+        {
+            var before = initial.Snapshot(storageKey);
+            var after = current.Snapshot(storageKey);
+            var afterKeys = after.Select(item => item.Key).ToHashSet(StringComparer.Ordinal);
+            var beforeValues = before.ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
+            foreach (var (key, _) in before)
+            {
+                if (!afterKeys.Contains(key))
+                {
+                    Remove(storageKey, key);
+                }
+            }
+            foreach (var (key, value) in after)
+            {
+                if (beforeValues.TryGetValue(key, out var previous) && previous == value)
+                {
+                    continue;
+                }
+                if (!Set(storageKey, key, value))
+                {
+                    accepted = false;
+                }
+            }
+        }
+        return accepted;
     }
 }

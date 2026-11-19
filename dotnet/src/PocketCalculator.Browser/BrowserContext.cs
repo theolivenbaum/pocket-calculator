@@ -15,9 +15,17 @@ public sealed class BrowserContext
         string? userAgent,
         string? storageDir,
         bool allowPrivateNetwork,
-        bool restoreCookiesFromDisk = true)
+        bool restoreCookiesFromDisk = true,
+        PocketCalculator.Js.Ops.WebStorage? localStorage = null)
     {
         Id = id;
+        LocalStorage = localStorage ?? new PocketCalculator.Js.Ops.WebStorage();
+        // upstream f661c2e: restore {storage_dir}/localStorage. A persistent copy shares its
+        // template's store instead (IsolatedCopy), so it reads nothing.
+        if (localStorage is null && restoreCookiesFromDisk && storageDir is not null)
+        {
+            WebStorageProfile.Load(LocalStorage, storageDir);
+        }
         var cookieJar = new CookieJar();
 
         // Restore cookies from disk if storageDir is configured.
@@ -67,10 +75,11 @@ public sealed class BrowserContext
     public CookieJar CookieJar { get; }
 
     /// <summary>
-    /// The context's <c>localStorage</c>, kept for its lifetime like its cookies (in memory;
-    /// not written to the storage directory).
+    /// The context's <c>localStorage</c>, kept for its lifetime like its cookies, and with a
+    /// storage directory restored from and saved to <c>{storage_dir}/localStorage</c>
+    /// (upstream f661c2e).
     /// </summary>
-    public PocketCalculator.Js.Ops.WebStorage LocalStorage { get; } = new();
+    public PocketCalculator.Js.Ops.WebStorage LocalStorage { get; }
 
     public PocketCalculatorHttpClient HttpClient { get; }
 
@@ -176,7 +185,11 @@ public sealed class BrowserContext
             UserAgent,
             persistent ? StorageDir : null,
             AllowPrivateNetwork,
-            restoreCookiesFromDisk: false)
+            restoreCookiesFromDisk: false,
+            // localStorage belongs to the profile, so a persistent copy shares the template's
+            // store: two contexts on one --storage-dir would otherwise overwrite each other's
+            // areas (upstream f661c2e). An incognito copy starts empty.
+            localStorage: persistent ? LocalStorage : new PocketCalculator.Js.Ops.WebStorage())
         {
             ObeyRobots = ObeyRobots,
             AllowFileAccess = AllowFileAccess,
@@ -188,6 +201,64 @@ public sealed class BrowserContext
             copy.CookieJar.CopyFrom(CookieJar);
         }
         return copy;
+    }
+
+    /// <summary>
+    /// A CDP connection's private state (upstream 9a5d9c6): the template's cookies, and a
+    /// snapshot of its localStorage that the connection can change without touching another
+    /// connection's. No storage directory: only the server's persistence context writes the
+    /// profile, merging each closed connection's changes in.
+    /// </summary>
+    public BrowserContext ConnectionCopy(string id)
+    {
+        var copy = new BrowserContext(
+            id,
+            ProxyUrl,
+            Stealth,
+            UserAgent,
+            null,
+            AllowPrivateNetwork,
+            restoreCookiesFromDisk: false,
+            localStorage: LocalStorage.IsolatedSnapshot())
+        {
+            ObeyRobots = ObeyRobots,
+            AllowFileAccess = AllowFileAccess,
+        };
+        copy.CookieJar.CopyFrom(CookieJar);
+        return copy;
+    }
+
+    /// <summary>
+    /// Flush the localStorage areas changed since the last save to
+    /// <c>{storage_dir}/localStorage</c> (upstream f661c2e, 677f6d2). A failed write keeps
+    /// its area changed, so the next save retries it. Returns the failures, each written to
+    /// stderr.
+    /// </summary>
+    public IReadOnlyList<string> SaveLocalStorage()
+    {
+        if (StorageDir is null)
+        {
+            return [];
+        }
+        var failures = WebStorageProfile.Save(LocalStorage, StorageDir);
+        foreach (var failure in failures)
+        {
+            try
+            {
+                Console.Error.WriteLine($"WARN {failure}");
+            }
+            catch (IOException)
+            {
+            }
+        }
+        return failures;
+    }
+
+    /// <summary>Persist cookies and localStorage when a storage directory is configured.</summary>
+    public void SaveStorage()
+    {
+        SaveLocalStorage();
+        SaveCookies();
     }
 
     /// <summary>

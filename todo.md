@@ -481,7 +481,15 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       abort events, ReadableStream drain/error order. XHR abort still lets its request run
 - [x] `1e4238e`: Web Storage keeps working after `window.Storage` is replaced (the prototype is
       captured at boot; upstream captures it per store, after such a replacement)
-- [ ] Storage: `f661c2e` persistence, `677f6d2`, `9a5d9c6`, `3dea548` IndexedDB
+- [x] `f661c2e` + `677f6d2` + `9a5d9c6` (localStorage persistence): with `--storage-dir`,
+      localStorage is restored from and saved to `{dir}/localStorage/*.json` (upstream's file
+      format and names; only changed areas are written, an emptied area's file is removed, a
+      failed write or delete stays pending and is retried; symlinks, FIFOs, invalid origins,
+      duplicate keys and over-budget files are skipped). `fetch`, `mcp` and `serve` save it
+      where they save cookies. A persistent context copy shares its template's store; a CDP
+      connection gets a snapshot (`ConnectionCopy`) whose changes merge into the server's
+      persistence context on close without overwriting another connection's keys
+- [ ] Storage: `3dea548` IndexedDB
 - [ ] Frames (within the separate-engine design): `20299be`, `12b40f6` + `bcf6d03`,
       `8dddc6f`, `47a3431`, `6d25c43`, `667eb59`, `e4f11db`; a real-realm
       `contentWindow` (`24d8742`, `911c45c`) needs a design decision first
@@ -510,7 +518,7 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       "No console messages."
 - [x] `604d30b` (+ the `7500e6d` profile): `pocket-calculator --storage-dir DIR mcp` loads and
       keeps cookies in DIR (handed over as `POCKETCALCULATOR_STORAGE_DIR`); stdio EOF and
-      `browser_set_storage_state` save them. Web Storage persistence waits on `677f6d2`
+      `browser_set_storage_state` save them (and localStorage, since `f661c2e` below)
 - [x] `cbc2f97`: `browser_search` folds case the way Rust does (U+0130 to `i` U+0307, a
       word-final sigma in the query) and maps a match back to its UTF-8 offset in the body
 - [x] `5171717`: `mcp --font-dir DIR` (repeatable), validated before either transport starts
@@ -2569,6 +2577,14 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   appear in getComputedStyle.
 
 
+- localStorage profile (`f661c2e`, `677f6d2`): a key or value holding a lone surrogate is
+  written as `{"utf16": base64}` (a .NET string can hold one, JSON text cannot; upstream
+  escapes such strings in its MCP layer instead). Area files are 0600 in a 0700 directory, as
+  the cookie jar is (SECURITY.md I4); upstream uses the umask for the files. Partitioned
+  third-party areas (`origin + " " + top-level site`, the port's own key) persist too. A FIFO
+  or device is skipped by its zero length, since .NET exposes no file type. Budgets count
+  UTF-16 code units, as Chromium's quota does; upstream counts UTF-8 bytes.
+
 ### Operator font directories load per render pass, not into a cached base database
 
 Upstream 343fdc7 adds `serve --font-dir DIR`: `ttf/ttc/otf/otc` files found recursively
@@ -2688,8 +2704,9 @@ Values measured in Chromium 141 (headless, Playwright); facts in
   the new `op_storage`): localStorage per browser context, sessionStorage per page, keyed by
   origin, and for a frame with a cross-site ancestor also by the top-level origin (Chromium
   partitions by top-level site). Chromium's 5 MiB-of-UTF-16 quota throws QuotaExceededError.
-  An opaque origin keeps the realm-local map. Neither area is written to `--storage-dir`, and
-  no `storage` event reaches other documents yet. Key order is insertion order; Chromium's is
+  An opaque origin keeps the realm-local map. localStorage is persisted to `--storage-dir`
+  since upstream `f661c2e` (sessionStorage is not), and no `storage` event reaches other
+  documents yet. Key order is insertion order; Chromium's is
   unspecified (neither insertion nor sorted). `WebStorageTests`.
 - **reportError reports the exception.** DEVIATION: the shim's `reportError` only logged;
   it now dispatches the cancelable, trusted ErrorEvent (window.onerror, `error` listeners)

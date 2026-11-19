@@ -91,7 +91,7 @@ public static class McpServer
             {
                 // upstream 604d30b: keep cookies an agent changed after the last
                 // navigation when the transport closes.
-                state.Context.SaveCookies();
+                state.Context.SaveStorage();
                 return;
             }
 

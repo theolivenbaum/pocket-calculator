@@ -382,6 +382,8 @@ public static partial class CdpServer
         // Cookie deltas are merged here, but new connections always clone the
         // immutable startup snapshot and can never inherit another live client's
         // session state.
+        // upstream 9a5d9c6: the persistence context owns the profile's localStorage; each
+        // connection gets a snapshot (ConnectionCopy) whose changes are merged in on close.
         var persistence = template.IsolatedCopy("persistence", true);
         var persistenceLock = new object();
 
@@ -535,7 +537,7 @@ public static partial class CdpServer
             await Task.Delay(20, CancellationToken.None).ConfigureAwait(false);
         }
 
-        persistence.SaveCookies();
+        persistence.SaveStorage();
     }
 
     private static IDisposable InstallSignalHandlers(CancellationTokenSource shutdown)
@@ -1182,8 +1184,9 @@ public static partial class CdpServer
     {
         using (stream)
         {
-            var defaultContext = template.IsolatedCopy("default", true);
+            var defaultContext = template.ConnectionCopy("default");
             var initialCookies = defaultContext.CookieJar.GetAllCookiesWithScope();
+            var initialLocalStorage = defaultContext.LocalStorage.IsolatedSnapshot();
 
             try
             {
@@ -1254,7 +1257,11 @@ public static partial class CdpServer
                             persistence.CookieJar,
                             initialCookies,
                             defaultContext.CookieJar.GetAllCookiesWithScope());
-                        persistence.SaveCookies();
+                        if (!persistence.LocalStorage.MergeChanges(initialLocalStorage, defaultContext.LocalStorage))
+                        {
+                            CdpLog.Warn("localStorage changes exceeded the persistent profile storage budget");
+                        }
+                        persistence.SaveStorage();
                     }
                 }
             }

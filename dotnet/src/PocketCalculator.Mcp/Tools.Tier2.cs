@@ -882,8 +882,6 @@ internal static partial class Tools
 
             applied += (uint)parsed.Count;
             state.Context.CookieJar.SetCookiesFromCdp(parsed);
-            // Upstream saves the restored profile straight away (save_storage).
-            state.Context.SaveCookies();
         }
 
         // Storage (per origin). Only applies if there's an active page.
@@ -923,6 +921,8 @@ internal static partial class Tools
             }
         }
 
+        // Upstream saves the restored profile straight away (save_storage).
+        state.Context.SaveStorage();
         string restored = $"Restored {applied.ToString(CultureInfo.InvariantCulture)} state entries.";
         if (skipped.Count == 0)
         {

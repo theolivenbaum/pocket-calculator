@@ -235,7 +235,7 @@ public static class FetchCommand
                     _ => SerdeJson.ToJson(result),
                 };
                 await WriteOrPrintAsync(rendered, output).ConfigureAwait(false);
-                context.SaveCookies();
+                context.SaveStorage();
                 return;
             }
             if (screenshot is not null)
@@ -290,7 +290,7 @@ public static class FetchCommand
         await WriteOrPrintAsync(text, output).ConfigureAwait(false);
 
         // Save cookies to disk if a storage dir is configured.
-        context.SaveCookies();
+        context.SaveStorage();
     }
 
     private static async Task CaptureScreenshotAsync(
@@ -429,7 +429,7 @@ public static class FetchCommand
             }
             Console.Error.WriteLine($"Screenshot written: {path} ({length} bytes)");
         }
-        context.SaveCookies();
+        context.SaveStorage();
     }
 
     /// <summary>
