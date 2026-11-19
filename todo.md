@@ -273,7 +273,7 @@ Security follow-ups found while porting (not upstream fixes):
 Correctness:
 
 - [ ] `a156914` (CDP part 3, forwarded authority and multi-worker balancer, is ported) - CDP mouse/pointer/focus order, event path phases, event classes,
-      window named properties, `:scope`, renderer hit test (on the port's paint order)
+      window named properties, renderer hit test (`:scope` done with `eb2b515`) (on the port's paint order)
 - [ ] `2b07b76` - `document.write` script ordering
 - [ ] `6aef52d`, `61ec5b3`, `dc5e60e` - id index on removeAttribute, node identity,
       CharacterData ranges
@@ -416,7 +416,12 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [ ] CDP input editing: `d88df74`, `c714042`; with open `ec62004` / `a156914`
 - [ ] CDP lifecycle and sessions: `3f8a8d1` + `de227e9`, `1959c5e`, `a74e050`, `b8586de` +
       `34346af`, `875c531`, `7034ad6`
-- [ ] CDP DOM domain and evaluation: `eb2b515`, `717dd92` + `229d1ed`, `579e1cb` (`let`
+- [x] `eb2b515`: `DOM.querySelector[All]` search the `nodeId`'s subtree (absent or 0 is the
+      document), and an unknown or malformed `nodeId` or an invalid selector is an error, not 0
+      or []. With it, `:scope` is now bound to the query's element (it always meant the
+      document element, so `el.querySelector(':scope > x')` found nothing; Rust binds it)
+- [ ] CDP DOM domain and evaluation: `717dd92` + `229d1ed` (`DOM.getDocument` with `pierce`
+      reports no `shadowRoots` either), `579e1cb` (`let`
       persists), `f66ac0a` (`__proto__` in JSON args), `7a2b9ae`
 - [x] CDP control plane: `1faf17f` allowlist part (`POCKETCALCULATOR_CDP_ALLOWED_ORIGINS`, like
       Chromium's --remote-allow-origins); its default acceptance of the endpoint's own Origin is

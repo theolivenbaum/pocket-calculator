@@ -91,11 +91,18 @@ public static class Dom
                 BrowserPage page = ctx.GetSessionPage(sessionId) ?? throw new DomainError("No page");
                 string selector = parameters.Get("selector").AsString()
                     ?? throw new DomainError("selector required");
-                ulong result = page.WithDom(dom =>
-                    dom.TryQuerySelector(selector, out NodeId? found, out _) && found is { } id
-                        ? Pinned(dom, ctx, id)
-                        : 0UL);
-                return DomainResult.Ok(new JsonObject { ["nodeId"] = result });
+                // upstream eb2b515: search the requested node's subtree, and report an unknown
+                // node or an invalid selector instead of answering 0.
+                ulong? result = page.WithDom(dom =>
+                {
+                    NodeId root = QueryRoot(dom, parameters);
+                    if (!dom.TryQuerySelectorFrom(root, selector, out NodeId? found, out string? error))
+                    {
+                        throw new DomainError(error ?? "Invalid selector");
+                    }
+                    return found is { } id ? Pinned(dom, ctx, id) : 0UL;
+                });
+                return DomainResult.Ok(new JsonObject { ["nodeId"] = result ?? throw new DomainError("No DOM loaded") });
             }
 
             case "querySelectorAll":
@@ -106,15 +113,19 @@ public static class Dom
                 var ids = new JsonArray();
                 List<NodeId>? found = page.WithDom(dom =>
                 {
-                    List<NodeId> results = dom.TryQuerySelectorAll(selector, out List<NodeId> all, out _) ? all : [];
+                    NodeId root = QueryRoot(dom, parameters);
+                    if (!dom.TryQuerySelectorAllFrom(root, selector, out List<NodeId> results, out string? error))
+                    {
+                        throw new DomainError(error ?? "Invalid selector");
+                    }
                     foreach (NodeId id in results)
                     {
                         Pinned(dom, ctx, id);
                     }
 
                     return results;
-                });
-                foreach (NodeId id in found ?? [])
+                }) ?? throw new DomainError("No DOM loaded");
+                foreach (NodeId id in found)
                 {
                     ids.Add((ulong)id.Raw);
                 }
@@ -840,6 +851,33 @@ public static class Dom
     /// pushes to the frontend: the DOM collector keeps it until the next
     /// <c>DOM.getDocument</c> (port addition, see DomTree.Gc.cs).
     /// </summary>
+    /// <summary>
+    /// The node a <c>DOM.querySelector[All]</c> searches under (upstream eb2b515): the
+    /// document when <c>nodeId</c> is absent or 0, which clients that never requested a
+    /// document rely on; otherwise that node, which must exist.
+    /// </summary>
+    private static NodeId QueryRoot(DomTree dom, JsonNode? parameters)
+    {
+        if (parameters is not JsonObject obj || !obj.TryGetPropertyValue("nodeId", out JsonNode? raw))
+        {
+            return dom.Document;
+        }
+        if (raw.AsU64() is not { } id || id > uint.MaxValue)
+        {
+            throw new DomainError("Invalid nodeId");
+        }
+        if (id == 0)
+        {
+            return dom.Document;
+        }
+        var nodeId = NodeId.New((uint)id);
+        if (dom.GetNode(nodeId) is null)
+        {
+            throw new DomainError("No node with given id found");
+        }
+        return nodeId;
+    }
+
     private static ulong Pinned(DomTree dom, CdpContext ctx, NodeId id)
     {
         dom.Pin(ctx, id);
