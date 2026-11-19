@@ -22,7 +22,7 @@ public sealed partial class RuntimeTests
     {
         private readonly TcpListener listener;
 
-        public HeldFetchBody()
+        public HeldFetchBody(bool startFetch = true)
         {
             listener = new TcpListener(IPAddress.Loopback, 0);
             listener.Start();
@@ -48,13 +48,20 @@ public sealed partial class RuntimeTests
                     // A cancelled body closed the connection first.
                 }
             });
+            Origin = origin;
             Fixture = LoopbackPage(origin);
+            if (!startFetch)
+            {
+                return;
+            }
             Fixture.Runtime.ExecuteScript(
                 "header-first-fetch",
                 $"globalThis.headerResponse = null; fetch('{origin}/resource').then(r => headerResponse = r);");
         }
 
         public RuntimeFixture Fixture { get; }
+
+        public string Origin { get; }
 
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -197,22 +204,39 @@ public sealed partial class RuntimeTests
     [Fact]
     public async Task FetchBodyOpRefusesUnknownAndTakenBodies()
     {
-        using var server = new RawHttpServer(_ => AbortOkResponse);
-        using var fixture = LoopbackPage(server.Origin);
-        var rt = fixture.Runtime;
+        using var held = new HeldFetchBody(startFetch: false);
+        var rt = held.Fixture.Runtime;
         await Assert.ThrowsAsync<OpException>(() => FetchOps.OpFetchBodyAsync(rt.State, 12345));
         // The op's tails run on the page's loop, which the test drives.
         var raw = await PumpAsync(rt, FetchOps.OpFetchUrlAsync(
-            rt.State, server.Origin + "/a", "GET", "{}", [], string.Empty, "cors", "same-origin",
+            rt.State, held.Origin + "/a", "GET", "{}", [], string.Empty, "cors", "same-origin",
             tailOnPageLoop: true, bodyResource: true));
         Assert.DoesNotContain("\"body\"", raw, StringComparison.Ordinal);
         Assert.Matches("""^\{"status":200,"requestId":"fetch-\d+","url":"[^"]+","redirected":false,"opaque":false,"headers":\{.*\},"bodyRid":\d+\}$""", raw);
         var rid = uint.Parse(System.Text.RegularExpressions.Regex.Match(raw, "\"bodyRid\":(\\d+)").Groups[1].Value);
         var first = FetchOps.OpFetchBodyAsync(rt.State, rid);
         var second = FetchOps.OpFetchBodyAsync(rt.State, rid);
-        Assert.Equal(Convert.ToBase64String("ok"u8.ToArray()), await PumpAsync(rt, first));
+        held.Release.TrySetResult();
+        Assert.Equal(Convert.ToBase64String("tail"u8.ToArray()), await PumpAsync(rt, first));
         // Taken while the first read runs, or gone once it closed the resource.
         await Assert.ThrowsAsync<OpException>(() => second);
+        Assert.Empty(rt.State.FetchBodies);
+    }
+
+    // DEVIATION from upstream 3aa2f59 (see FetchUrlAsync): a body already complete when the
+    // headers arrive is returned inline, in one op, with no body resource.
+    [Fact]
+    public async Task AFetchBodyCompleteWithItsHeadersIsReturnedInline()
+    {
+        using var server = new RawHttpServer(_ => AbortOkResponse);
+        using var fixture = LoopbackPage(server.Origin);
+        var rt = fixture.Runtime;
+        // The op's tails run on the page's loop, which the test drives.
+        var raw = await PumpAsync(rt, FetchOps.OpFetchUrlAsync(
+            rt.State, server.Origin + "/a", "GET", "{}", [], string.Empty, "cors", "same-origin",
+            tailOnPageLoop: true, bodyResource: true));
+        Assert.Contains("\"body\":\"ok\"", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"bodyRid\"", raw, StringComparison.Ordinal);
         Assert.Empty(rt.State.FetchBodies);
     }
 

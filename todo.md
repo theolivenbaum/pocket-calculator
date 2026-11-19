@@ -2634,6 +2634,13 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   replay after it carries `networkAlmostIdle` and `networkIdle` too; upstream replays only
   `commit`, `DOMContentLoaded` and `load` there.
 
+- Fetch bodies inline when complete (`3aa2f59`): the body read starts with the headers, and a
+  body already complete when they arrive is returned inline in one op, as before the port;
+  only a body still in flight resolves at the headers as a resource. Always handing the body
+  back as a resource (upstream) cost two ops per fetch, measured at about 40% on 100
+  concurrent small JSON fetches in a first run; with this, interleaved runs against the
+  pre-port build are within noise for large, concurrent small and sequential small fetches.
+
 ### Operator font directories load per render pass, not into a cached base database
 
 Upstream 343fdc7 adds `serve --font-dir DIR`: `ttf/ttc/otf/otc` files found recursively

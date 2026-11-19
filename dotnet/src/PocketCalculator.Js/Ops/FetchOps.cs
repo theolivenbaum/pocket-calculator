@@ -1316,15 +1316,30 @@ public static partial class FetchOps
                     && string.Equals(mode, "no-cors", StringComparison.Ordinal)
                     && crossedOrigin;
 
+                // DEVIATION from upstream 3aa2f59, which always hands the body back as a resource:
+                // the body read starts with the headers, and a body that is already complete
+                // when they arrive (a small one, read from the same buffer) is returned inline,
+                // in one op. Two ops for every small fetch made 100 concurrent JSON fetches
+                // about 40% slower than before the port of 3aa2f59 (median 117 ms against 84
+                // ms, interleaved runs). A body still in flight resolves at the headers, as in
+                // Chromium, and keeps reading into the resource.
+                Task<byte[]>? earlyRead = null;
+                CancellationTokenSource? bodyCancel = null;
                 if (bodyResource && !internalLoad && tailOnPageLoop)
+                {
+                    var remaining = FetchTimeout() - System.Diagnostics.Stopwatch.GetElapsedTime(exchangeStarted);
+                    bodyCancel = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+                    bodyCancel.CancelAfter(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero);
+                    earlyRead = ReadBodyCappedAsync(response, FetchMaxBodyBytes(), bodyCancel.Token);
+                }
+
+                if (earlyRead is { IsCompleted: false } && bodyCancel is not null)
                 {
                     // upstream 3aa2f59: a page fetch() resolves with the headers, and its body is
                     // a resource the shim reads with op_fetch_body (or cancels with op_try_close).
                     // The body keeps the transport slot, the page's in-flight count and what is
                     // left of the exchange deadline (M3) until it is read.
-                    var remaining = FetchTimeout() - System.Diagnostics.Stopwatch.GetElapsedTime(exchangeStarted);
-                    var resource = new FetchBodyResource(CancellationTokenSource.CreateLinkedTokenSource(cancellation), opaque);
-                    resource.Cancel.CancelAfter(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero);
+                    var resource = new FetchBodyResource(bodyCancel, opaque);
                     var (bodyRequestId, rid) = await gs.IsolateLock.RunOnPageAsync(() =>
                     {
                         var id = AllocateResourceId(document);
@@ -1336,7 +1351,7 @@ public static partial class FetchOps
                     response = null;
                     bodyHandedOff = true;
                     settled = true;
-                    resource.Body = ReadScriptBodyAsync(bodyResponse, slot.Detach(), resource, bodyRequestId);
+                    resource.Body = ReadScriptBodyAsync(bodyResponse, slot.Detach(), resource, bodyRequestId, earlyRead);
                     _ = resource.Body.ContinueWith(
                         static task => _ = task.Exception,
                         CancellationToken.None,
@@ -1354,8 +1369,12 @@ public static partial class FetchOps
                         rid);
                 }
 
-                var respBytes = await ReadBodyCappedAsync(response, FetchMaxBodyBytes(), deadline.Token)
-                    .ConfigureAwait(false);
+                byte[] respBytes;
+                using (bodyCancel)
+                {
+                    respBytes = await (earlyRead ?? ReadBodyCappedAsync(response, FetchMaxBodyBytes(), deadline.Token))
+                        .ConfigureAwait(false);
+                }
                 FireResponseCallbacks(respBytes);
 
                 // Everything from here on writes page state (the stored bodies, the network events
@@ -1514,7 +1533,8 @@ public static partial class FetchOps
                     HttpResponseMessage bodyResponse,
                     FetchConcurrency.Slot bodySlot,
                     FetchBodyResource resource,
-                    string requestId)
+                    string requestId,
+                    Task<byte[]> read)
                 {
                     var completed = false;
                     try
@@ -1522,8 +1542,7 @@ public static partial class FetchOps
                         byte[] bytes;
                         try
                         {
-                            bytes = await ReadBodyCappedAsync(bodyResponse, FetchMaxBodyBytes(), resource.Cancel.Token)
-                                .ConfigureAwait(false);
+                            bytes = await read.ConfigureAwait(false);
                         }
                         catch (Exception) when (cancellation.IsCancellationRequested)
                         {
