@@ -638,6 +638,17 @@ public sealed class CdpContext
 
         CurrentLoaderIds.Remove(id);
         LifecycleTimestamps.Remove(id);
+        // upstream 875c531: per-page and per-session entries go with the page.
+        NavEventsEmitted.Remove(id);
+        foreach (var name in BindingSessions.Keys.ToList())
+        {
+            var owners = BindingSessions[name];
+            owners.RemoveAll(removedSessions.Contains);
+            if (owners.Count == 0)
+            {
+                BindingSessions.Remove(name);
+            }
+        }
         AnnouncedFrames.Remove(id);
         // A closed page's init scripts and bindings go with it, as its target's do in Chromium.
         PreloadScripts.RemoveAll(entry => string.Equals(entry.Owner, id, StringComparison.Ordinal));

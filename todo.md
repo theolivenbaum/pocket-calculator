@@ -429,7 +429,9 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       lifecycle events and `Fetch.requestPaused` stay with the driving session. (Chromium sends
       Network events only to sessions that called `Network.enable`; `Network.enable` is still
       a stateless fast-path command here, as upstream)
-- [ ] CDP lifecycle and sessions: `875c531`; `7034ad6` already
+- [x] `875c531` (bookkeeping part): `RemovePage` drops the page's `NavEventsEmitted` entry and
+      its sessions' binding ownerships. The glibc `mallopt`/trim part is Rust-specific and not
+      ported (V8/Skia native heaps: measure first, with open `af955b3`). `7034ad6` already
 - [x] `eb2b515`: `DOM.querySelector[All]` search the `nodeId`'s subtree (absent or 0 is the
       document), and an unknown or malformed `nodeId` or an invalid selector is an error, not 0
       or []. With it, `:scope` is now bound to the query's element (it always meant the
