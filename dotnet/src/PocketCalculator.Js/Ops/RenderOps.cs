@@ -444,7 +444,7 @@ public static class RenderOps
 
     /// <summary>
     /// <c>op_layout_offset</c>. CSSOM View's <c>offsetParent</c> and <c>offset*</c> integers for
-    /// an element, or the empty string when it has no box.
+    /// an element, with its <c>client*</c> sizes, or the empty string when it has no box.
     /// </summary>
     /// <remarks>
     /// Additive, like <c>op_inner_text</c>: crates/obscura-js has no such op and derives every
@@ -474,14 +474,17 @@ public static class RenderOps
             // only box rects, so a newer animation sample whose effects are paint-only (opacity,
             // color) leaves them exact. Through EnsurePreparedRender every offsetWidth read in a
             // new task on a page with a running opacity animation rebuilt the whole layout.
+            // upstream 30e8d7a: offset* and client* are untransformed, so pending transform-only
+            // inline-style edits away from the element's ancestors keep the retained layout.
             if (state.Dom is not { } dom
-                || RenderState.EnsurePreparedGeometry(state) is not { } prepared
+                || RenderState.EnsurePreparedBoxMetrics(state, nid) is not { } prepared
                 || prepared.OffsetMetrics(dom, nid) is not { } offset)
             {
                 return string.Empty;
             }
 
-            var sb = new StringBuilder(96);
+            var client = prepared.ClientSize(nid);
+            var sb = new StringBuilder(128);
             sb.Append("{\"parent\":");
             if (offset.Parent is { } parent)
             {
@@ -496,6 +499,13 @@ public static class RenderOps
             sb.Append(",\"top\":").Append(SerdeJson.NumberF32(offset.Top));
             sb.Append(",\"width\":").Append(SerdeJson.NumberF32(offset.Width));
             sb.Append(",\"height\":").Append(SerdeJson.NumberF32(offset.Height));
+            if (client is { } size)
+            {
+                // The client* sizes from the same layout, for the same reason.
+                sb.Append(",\"clientWidth\":").Append(SerdeJson.NumberF32(size.Width));
+                sb.Append(",\"clientHeight\":").Append(SerdeJson.NumberF32(size.Height));
+            }
+
             sb.Append('}');
             return sb.ToString();
         },
@@ -531,7 +541,7 @@ public static class RenderOps
             {
                 // Answered without a layout.
             }
-            else if (RenderState.EnsurePreparedGeometry(state)?.OffsetMetrics(dom, nid) is { } offset)
+            else if (RenderState.EnsurePreparedBoxMetrics(state, nid)?.OffsetMetrics(dom, nid) is { } offset)
             {
                 hasBox = true;
                 parent = offset.Parent;

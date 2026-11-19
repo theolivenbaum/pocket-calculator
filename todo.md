@@ -701,7 +701,18 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       the retained render already answers sibling reads. Interleaved, 5 runs, 1,024 rows: with
       2,500 variables on body ~1,150 ms per read loop before, ~160 ms after; with 81, ~200 ms
       before, ~165 ms after
-- [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `3a9eb06`, `8310ebf`
+- [x] `30e8d7a`: offset*/client* reads (`op_layout_offset`, which now also carries the client
+      sizes, and `op_layout_offset_parent`) keep the retained layout while every pending
+      mutation is an inline-style edit that changes only `transform`
+      (`RenderState.EnsurePreparedBoxMetrics`; inline style mutations now keep their old and new
+      values). Upstream refuses any such edit on an ancestor of the measured element; the port
+      allows one that keeps the ancestor's transform state (none, or a valid transform, in both),
+      since Chromium changes a descendant's offsetParent and containing block only on that
+      switch (measured). The event-path and element-brand parts were already so (tests ported
+      with Chromium's brands, `HTMLDivElement`, where upstream expects `HTMLElement`).
+      Interleaved, 300 transform writes each followed by offset/client reads on a carousel page:
+      ~2,000 ms before, ~200 ms after
+- [ ] Performance, benchmark before and after: `abf247b`, `3a9eb06`, `8310ebf`
 
 Parity against a reference built at `4eb1235` (2026-11-18): 377 of 385 cases identical. The
 eight that differ are all queued above: `legacy-table-apis` html/text/markdown (`25700b9`,

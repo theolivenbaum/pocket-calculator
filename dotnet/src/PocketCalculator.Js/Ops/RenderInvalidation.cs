@@ -323,12 +323,14 @@ internal static class RenderInvalidation
                     return null;
                 }
 
-                var keepsSelectorValue = !name.Equals("style", StringComparison.OrdinalIgnoreCase);
+                // upstream 30e8d7a: inline style keeps its first and final serialized values too,
+                // so box-metric reads can tell a transform-only edit from layout damage
+                // (RenderState.EnsurePreparedBoxMetrics). Only computed with a render retained.
                 return RetainedStyleMutation.From(new AttributeStyleMutation(
                     node,
                     name,
-                    keepsSelectorValue ? dom.GetNode(node)?.GetAttribute(name) : null,
-                    keepsSelectorValue ? value : null));
+                    dom.GetNode(node)?.GetAttribute(name),
+                    value));
             }
 
             case "remove_attribute":
@@ -339,11 +341,10 @@ internal static class RenderInvalidation
                     return null;
                 }
 
-                var keepsSelectorValue = !arg2.Equals("style", StringComparison.OrdinalIgnoreCase);
                 return RetainedStyleMutation.From(new AttributeStyleMutation(
                     node,
                     arg2,
-                    keepsSelectorValue ? dom.GetNode(node)?.GetAttribute(arg2) : null,
+                    dom.GetNode(node)?.GetAttribute(arg2),
                     null));
             }
 

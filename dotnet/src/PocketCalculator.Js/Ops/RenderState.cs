@@ -169,6 +169,51 @@ public static class RenderState
     }
 
     /// <summary>
+    /// The prepared render for CSSOM View's untransformed box metrics (<c>offset*</c>,
+    /// <c>client*</c>) of <paramref name="target"/> (upstream 30e8d7a,
+    /// <c>ensure_prepared_box_metrics</c>).
+    /// </summary>
+    /// <remarks>
+    /// Like <see cref="EnsurePreparedGeometry"/>, except that pending mutations which are all
+    /// inline-style edits changing only <c>transform</c> leave the retained layout in place: a
+    /// transform moves visual rectangles and paint, never these sizes or offsets. Only an
+    /// ancestor's can change the target's containing block and offsetParent, and only by
+    /// switching between none and a transform, so an ancestor's edit qualifies when it keeps
+    /// that state (a port addition, see
+    /// <see cref="CssDeclarations.InlineTransformKeepsContainingBlock"/>). The damage stays
+    /// pending for the next visual read.
+    /// </remarks>
+    public static PreparedRender? EnsurePreparedBoxMetrics(PocketCalculatorState state, NodeId target)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        if (state.PendingStyleMutations.Count == 0 || state.Dom is not { } dom)
+        {
+            return EnsurePreparedGeometry(state);
+        }
+
+        List<NodeId>? ancestors = null;
+        foreach (var mutation in state.PendingStyleMutations)
+        {
+            if (mutation is not RetainedStyleMutation.Attribute { Mutation: var attribute }
+                || !attribute.Name.Equals("style", StringComparison.OrdinalIgnoreCase)
+                || !CssDeclarations.InlineStyleChangePreservesBoxMetrics(attribute.OldValue, attribute.NewValue)
+                || (!CssDeclarations.InlineTransformKeepsContainingBlock(attribute.OldValue, attribute.NewValue)
+                    && (ancestors ??= dom.Ancestors(target)).Contains(attribute.Node)))
+            {
+                return EnsurePreparedGeometry(state);
+            }
+        }
+
+        var baseUrl = StateHelpers.DocumentBaseUrlMemoized(state);
+        var reusable = state.PreparedRender is { } prepared
+            && prepared.Viewport() == state.Viewport
+            && string.Equals(prepared.BaseUrl(), baseUrl, StringComparison.Ordinal)
+            && (prepared.AnimationSample() == state.AnimationSample
+                || prepared.CanReuseGeometryForAnimationSample(state.AnimationSample));
+        return reusable ? state.PreparedRender : EnsurePreparedRender(state);
+    }
+
+    /// <summary>
     /// A diagnostic: <c>POCKETCALCULATOR_PREP_TRACE=1</c> writes, for every prepare, the op that
     /// forced it and the mutations it consumes to stderr.
     /// </summary>

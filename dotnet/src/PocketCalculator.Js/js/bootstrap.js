@@ -6865,6 +6865,16 @@ class Element extends Node {
     return width > 0 && width < 1 ? 1 : Math.floor(width);
   }
   _renderClientMetrics() {
+    // upstream 30e8d7a: client* are untransformed like offset*, so they come from
+    // op_layout_offset, which a pending transform-only style write does not relayout. The
+    // geometry op stays the answer for an element op_layout_offset has no box for.
+    const offset = this._renderOffsetMetrics();
+    if (offset && Number.isFinite(offset.clientWidth) && Number.isFinite(offset.clientHeight)) {
+      return {
+        width: Math.round(Math.max(0, offset.clientWidth)),
+        height: Math.round(Math.max(0, offset.clientHeight)),
+      };
+    }
     if (typeof __obscuraCore.ops.op_layout_geometry !== 'function') return null;
     try {
       const raw = __obscuraCore.ops.op_layout_geometry(String(this._nid | 0));

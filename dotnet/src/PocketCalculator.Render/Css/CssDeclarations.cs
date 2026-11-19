@@ -78,6 +78,123 @@ public static class CssDeclarations
     /// Split a declaration block into its normal and <c>!important</c> streams,
     /// normalizing each declaration to <c>name:value;</c>.
     /// </summary>
+    /// <summary>
+    /// Whether an inline-style edit can leave CSSOM View's untransformed box metrics
+    /// (<c>offset*</c>, <c>client*</c>) intact (upstream 30e8d7a,
+    /// <c>inline_style_change_preserves_box_metrics</c>): every declaration but <c>transform</c>
+    /// and <c>-webkit-transform</c> is the same, in the same order. Deliberately narrower than
+    /// "paint only", so shorthands, custom properties, priorities and duplicates stay
+    /// conservative without a second cascade.
+    /// </summary>
+    public static bool InlineStyleChangePreservesBoxMetrics(string? oldCss, string? newCss)
+    {
+        List<string> oldDeclarations = oldCss is null ? [] : Split(oldCss);
+        List<string> newDeclarations = newCss is null ? [] : Split(newCss);
+        int i = 0, j = 0;
+        while (true)
+        {
+            (string Name, string Value)? left = NextLayoutDeclaration(oldDeclarations, ref i);
+            (string Name, string Value)? right = NextLayoutDeclaration(newDeclarations, ref j);
+            if (left is null && right is null)
+            {
+                return true;
+            }
+
+            if (left is not { } l || right is not { } r
+                || !l.Name.Equals(r.Name, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(l.Value, r.Value, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        static (string Name, string Value)? NextLayoutDeclaration(List<string> declarations, ref int index)
+        {
+            while (index < declarations.Count)
+            {
+                string raw = declarations[index++].Trim();
+                int colon = raw.IndexOf(':', StringComparison.Ordinal);
+                if (colon < 0)
+                {
+                    continue;
+                }
+
+                string name = raw[..colon].Trim();
+                if (name.Equals("transform", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("-webkit-transform", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                return (name, raw[(colon + 1)..].Trim());
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether an inline-style edit leaves the element's transform state (none, or a transform
+    /// that makes it a containing block and an <c>offsetParent</c>) as it was: the last
+    /// <c>transform</c> declaration is absent in both, <c>none</c> in both, or a valid transform
+    /// in both. Anything it cannot prove (an <c>!important</c>, a <c>var()</c>, an invalid value)
+    /// answers false.
+    /// </summary>
+    /// <remarks>
+    /// Not in upstream 30e8d7a, which relayouts for any transform edit on an ancestor of the
+    /// element being measured. Chromium changes a descendant's containing block and
+    /// <c>offsetParent</c> only when an ancestor's transform switches between none and some
+    /// transform, so a carousel that moves its track from one translation to the next can keep
+    /// measuring its slides without a layout per write.
+    /// </remarks>
+    public static bool InlineTransformKeepsContainingBlock(string? oldCss, string? newCss)
+    {
+        int before = TransformState(oldCss);
+        return before >= 0 && before == TransformState(newCss);
+
+        // 0 absent, 1 none, 2 a transform, -1 unknown.
+        static int TransformState(string? css)
+        {
+            string? last = null;
+            if (css is not null)
+            {
+                foreach (string declaration in Split(css))
+                {
+                    string raw = declaration.Trim();
+                    int colon = raw.IndexOf(':', StringComparison.Ordinal);
+                    if (colon < 0)
+                    {
+                        continue;
+                    }
+
+                    string name = raw[..colon].Trim();
+                    if (name.Equals("transform", StringComparison.OrdinalIgnoreCase)
+                        || name.Equals("-webkit-transform", StringComparison.OrdinalIgnoreCase))
+                    {
+                        last = raw[(colon + 1)..].Trim();
+                    }
+                }
+            }
+
+            if (last is null)
+            {
+                return 0;
+            }
+
+            if (last.Contains('!', StringComparison.Ordinal))
+            {
+                return -1;
+            }
+
+            if (last.Equals("none", StringComparison.OrdinalIgnoreCase))
+            {
+                return 1;
+            }
+
+            return ComputedStyle.ParseTransformOps(last) is { Count: > 0 } ? 2 : -1;
+        }
+    }
+
     public static (string Normal, string Important) Partition(string css)
     {
         var normal = new StringBuilder();
