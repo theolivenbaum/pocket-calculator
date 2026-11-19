@@ -8570,7 +8570,13 @@ class DocumentFragment extends Node {
   constructor(nid) {
     const created = nid === undefined;
     super(created ? +_dom("create_document_fragment") : nid);
-    if (created) _seedDetachedTreeState(this);
+    if (created) {
+      _seedDetachedTreeState(this);
+      // upstream 790a77d: `new DocumentFragment()` is the wrapper of its node, so a child's
+      // parentNode is this object and not a second wrapper (whose native node type, 9, made
+      // it a #document and removeChild throw NotFoundError).
+      _cache.set(this._nid, this);
+    }
   }
   get nodeType() { return 11; }
   get nodeName() { return "#document-fragment"; }
