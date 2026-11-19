@@ -16444,12 +16444,16 @@ globalThis.atob = globalThis.atob || ((s) => {
     return {start: 0, current: 0, before: 0, after: 0};
   };
   const historyToken = Symbol("History");
+  // The current entry's URL. Not __currentUrl(): a Location setter previews its
+  // destination there before the navigation commits, and history URLs resolve and are
+  // checked against the document the entry belongs to (upstream 0ecc417).
+  const entryUrl = () => stack[idx].url ?? (_domParse("document_url") || "about:blank");
   const resolveOrFallback = (url) => {
     // A missing url (pushState/replaceState called with < 3 args) keeps the
     // current document URL per the HTML spec — capture it so the entry does not
     // reset location back to the original document URL.
-    if (url === null || url === undefined) return __currentUrl();
-    try { return new URL(String(url), __currentUrl()).href; } catch (e) { return String(url); }
+    if (url === null || url === undefined) return entryUrl();
+    try { return new URL(String(url), entryUrl()).href; } catch (e) { return String(url); }
   };
   // HTML's "can have its URL rewritten": a history entry may not change the scheme,
   // credentials, host or port, and outside http(s) it may change only the query and
@@ -16468,7 +16472,7 @@ globalThis.atob = globalThis.atob || ((s) => {
       + "' and URL '" + documentUrl + "'.",
     'SecurityError');
   const assertRewritable = (method, target) => {
-    const documentUrl = __currentUrl();
+    const documentUrl = entryUrl();
     const a = urlParts(target);
     const b = urlParts(documentUrl);
     let ok = !!a && !!b && a.protocol === b.protocol && a.username === b.username
@@ -16481,7 +16485,7 @@ globalThis.atob = globalThis.atob || ((s) => {
   // The host checks the URL again against the document URL it committed, and keeps
   // it; the entry is only written once it has agreed.
   const commitUrl = (method, target, action, index) => {
-    const documentUrl = __currentUrl();
+    const documentUrl = entryUrl();
     if (!_setHistoryUrl(target, action, index)) throw rewriteError(method, target, documentUrl);
   };
   const applyVirtual = () => {
@@ -16574,12 +16578,33 @@ globalThis.atob = globalThis.atob || ((s) => {
   Object.defineProperty(globalThis, "history", {
     value: historyObject, writable: true, enumerable: true, configurable: true,
   });
+  const bootGo = History.prototype.go;
   _bootHistory = _objectFreeze({
     __proto__: null,
     history: historyObject,
     pushState: History.prototype.pushState,
     replaceState: History.prototype.replaceState,
     state: _getOwnPropertyDescriptor(History.prototype, 'state').get,
+    // Upstream 0ecc417's __obscuraHistory.traverse and reset, which upstream publishes as
+    // a frozen page-visible global. Here they are reached only through __obscura_host
+    // (historyTraverse, historyReset). Upstream's take() has no counterpart: the host
+    // records the entries through op_history_url as they happen.
+    // A client's traversal to session history entry `index`, one of this document's own
+    // entries holding `url`: popstate (and hashchange) as for history.go(), no reload.
+    traverse(index, url) {
+      const target = index - session().start;
+      if (target < 0 || target >= stack.length || target === idx) return false;
+      if ((stack[target].url ?? (_domParse('document_url') || 'about:blank')) !== url) return false;
+      _reflectApply(bootGo, historyObject, [target - idx]);
+      return true;
+    },
+    // Page.resetNavigationHistory: only the current entry is left.
+    reset() {
+      const entry = stack[idx];
+      stack.length = 1;
+      stack[0] = entry;
+      idx = 0;
+    },
   });
 })();
 
@@ -28333,6 +28358,8 @@ globalThis.__obscura_host_handoff = Object.freeze({
   interactiveHost: _interactiveHost,
   registerLinkedStylesheet: _registerLinkedStylesheet,
   tryFragmentNavigate: _tryFragmentNavigate,
+  historyTraverse: (index, url) => !!(_bootHistory && _bootHistory.traverse(index >>> 0, _String(url))),
+  historyReset: () => { if (_bootHistory) _bootHistory.reset(); },
   // A CDP click on a link: location.assign as bootstrap defined it, which page script
   // can replace on its own location object (SECURITY.md L10).
   navigate: (url, link) => {

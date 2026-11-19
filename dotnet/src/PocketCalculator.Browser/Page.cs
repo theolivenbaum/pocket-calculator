@@ -892,6 +892,48 @@ public sealed partial class Page : IDisposable
     }
 
     /// <summary>
+    /// Traverse to session history entry <paramref name="index"/> when it belongs to the
+    /// live document, without replacing its runtime (upstream 0ecc417): the document fires
+    /// <c>popstate</c> and keeps its state. Null when the entry is not the document's own
+    /// (or is the current one), and the caller loads it as a document instead.
+    /// </summary>
+    public PageNavigationOutcome? TraverseSameDocumentHistory(int index)
+    {
+        SyncVirtualUrl();
+        if (Js is not { } js || js.SessionHistory is not { IsEmpty: false } mirror
+            || index < 0 || index >= History.Count || index == HistoryIndex
+            || index < mirror.DocumentStart || index >= mirror.DocumentStart + mirror.DocumentLength)
+        {
+            return null;
+        }
+
+        string literal = System.Text.Json.JsonSerializer.Serialize(History[index]);
+        if (EvaluateHost(string.Create(CultureInfo.InvariantCulture, $"__obscura_host.historyTraverse({index}, {literal})"))
+            ?.GetValueKind() != System.Text.Json.JsonValueKind.True)
+        {
+            return null;
+        }
+
+        PageNavigationOutcome outcome = SyncVirtualUrl();
+        // Entries pushed with the URL they already had move nothing the host reports, but
+        // the document did traverse.
+        return outcome.IsSameDocument ? outcome : PageNavigationOutcome.SameDocument(PageNavigationOutcome.HistoryApiType);
+    }
+
+    /// <summary>
+    /// <c>Page.resetNavigationHistory</c>: only the current entry is left, in the page and
+    /// in the document's <c>window.history</c> (upstream 0ecc417; Chromium 1243 reports
+    /// <c>history.length</c> 1 after it).
+    /// </summary>
+    public void ResetHistory()
+    {
+        SyncVirtualUrl();
+        EvaluateHost("__obscura_host.historyReset()");
+        string url = UrlString();
+        SetHistory(url.Length == 0 ? [] : [url], 0);
+    }
+
+    /// <summary>
     /// Navigate to session history entry <paramref name="index"/> on a client's behalf
     /// (CDP <c>Page.navigateToHistoryEntry</c>, MCP back and forward): the load moves the
     /// cursor to the entry, and a load that fails leaves history as it was.

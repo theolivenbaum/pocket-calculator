@@ -362,6 +362,189 @@ public sealed class PageTests
         Assert.Equal(two, page.UrlString());
     }
 
+    /// <summary>Upstream 0ecc417.</summary>
+    [Fact]
+    public async Task SameDocumentHistoryKeepsEntriesWhenTheCursorMoves()
+    {
+        const string url = "data:text/html,<title>history</title>";
+        using Page page = PageFixtures.FramePage("history-cursor");
+        await page.NavigateAsync(url);
+        page.Evaluate("(() => { globalThis.marker=42; history.pushState({n:1}, '', '#one'); history.pushState({n:2}, '', '#two'); })()");
+        page.SyncVirtualUrl();
+        string[] entries = [url, url + "#one", url + "#two"];
+        Assert.Equal(entries, page.History);
+        Assert.Equal(2, page.HistoryIndex);
+        page.Evaluate("history.back()");
+        page.SyncVirtualUrl();
+        Assert.Equal(entries, page.History);
+        Assert.Equal(1, page.HistoryIndex);
+        PageFixtures.AssertJson("[42,1,3]", page.Evaluate("[marker, history.state.n, history.length]"));
+        page.Evaluate("history.replaceState({n:3}, '', '#replaced')");
+        page.SyncVirtualUrl();
+        Assert.Equal(3, page.History.Count);
+        Assert.Equal(url + "#replaced", page.History[1]);
+        page.Evaluate("history.forward()");
+        page.SyncVirtualUrl();
+        Assert.Equal(2, page.HistoryIndex);
+        Assert.Equal(2.0, PageFixtures.AsDouble(page.Evaluate("history.state.n")));
+    }
+
+    /// <summary>Upstream 0ecc417.</summary>
+    [Fact]
+    public async Task SameDocumentHistoryKeepsDistinctEntriesWithTheSameUrl()
+    {
+        const string url = "data:text/html,<title>history</title>";
+        using Page page = PageFixtures.FramePage("history-same-url");
+        await page.NavigateAsync(url);
+        page.Evaluate("(() => { history.pushState({n:1}, ''); history.pushState({n:2}, ''); })()");
+        page.SyncVirtualUrl();
+        Assert.Equal([url, url, url], page.History);
+        Assert.Equal(2, page.HistoryIndex);
+        page.Evaluate("history.back()");
+        page.SyncVirtualUrl();
+        Assert.Equal(1, page.HistoryIndex);
+        Assert.Equal(1.0, PageFixtures.AsDouble(page.Evaluate("history.state.n")));
+    }
+
+    /// <summary>
+    /// Upstream 0ecc417. The host records the entries itself, so nothing the page does to
+    /// JSON or Array.prototype reaches it; kept as a regression check.
+    /// </summary>
+    [Fact]
+    public async Task SameDocumentHistorySyncIgnoresAuthoredJsonSerialization()
+    {
+        const string url = "data:text/html,<title>history</title>";
+        using Page page = PageFixtures.FramePage("history-json-override");
+        await page.NavigateAsync(url);
+        page.Evaluate("(() => { history.pushState({n:1}, '', '#one'); JSON.stringify=()=> '\"forged\"'; Array.prototype.toJSON=()=> 'forged'; })()");
+        page.SyncVirtualUrl();
+        Assert.Equal([url, url + "#one"], page.History);
+        Assert.Equal(1, page.HistoryIndex);
+        Assert.Equal(url + "#one", page.UrlString());
+    }
+
+    /// <summary>Upstream 0ecc417.</summary>
+    [Fact]
+    public async Task HistorySyncKeepsNativeDocumentPositionWhenAuthorsPatchArrayMap()
+    {
+        const string one = "data:text/html,<title>one</title>";
+        const string two = "data:text/html,<title>two</title>";
+        using Page page = PageFixtures.FramePage("history-native-position");
+        await page.NavigateAsync(one);
+        await page.NavigateAsync(two);
+        page.Evaluate("(() => { const map=Array.prototype.map; Array.prototype.map=function(...args){if(this.length===3 && this.every(v=>typeof v==='string' && /^\\d+$/.test(v)))throw new Error('authored map');return Reflect.apply(map,this,args);}; String.prototype[Symbol.split]=()=>['9','9','9']; history.pushState(1,'','#one'); })()");
+        page.SyncVirtualUrl();
+        Assert.Equal([one, two, two + "#one"], page.History);
+        Assert.Equal(2, page.HistoryIndex);
+        Assert.Equal(3.0, PageFixtures.AsDouble(page.Evaluate("history.length")));
+    }
+
+    /// <summary>
+    /// Upstream 0ecc417 (<c>history_sync_metadata_is_bounded_by_entries</c>): replacing one
+    /// entry many times leaves one entry, not a log of the mutations.
+    /// </summary>
+    [Fact]
+    public async Task HistorySyncMetadataIsBoundedByEntries()
+    {
+        const string url = "data:text/html,<title>history</title>";
+        using Page page = PageFixtures.FramePage("history-metadata");
+        await page.NavigateAsync(url);
+        page.Evaluate("(() => { for(let i=0;i<10000;i++) history.replaceState(i, '', '#'+i); })()");
+        Assert.Single(page.Js!.SessionHistory.Urls);
+        page.Evaluate("history.replaceState(null, '', '#last')");
+        page.SyncVirtualUrl();
+        Assert.Equal([url + "#last"], page.History);
+        Assert.Equal(0, page.HistoryIndex);
+    }
+
+    /// <summary>Upstream 0ecc417 (<c>history_sync_does_not_transfer_unchanged_entries</c>).</summary>
+    [Fact]
+    public async Task HistorySyncKeepsAThousandEntries()
+    {
+        const string url = "data:text/html,<title>history</title>";
+        using Page page = PageFixtures.FramePage("history-incremental-sync");
+        await page.NavigateAsync(url);
+        for (int index = 0; index < 1000; index++)
+        {
+            page.Evaluate($"history.pushState({index}, '', '#{index}')");
+            page.SyncVirtualUrl();
+        }
+        page.Evaluate("history.replaceState(null, '', '#verified')");
+        page.SyncVirtualUrl();
+        Assert.Equal(1001, page.History.Count);
+        Assert.Equal(url, page.History[0]);
+        Assert.Equal(url + "#verified", page.History[1000]);
+        page.Evaluate("history.go(-500)");
+        page.SyncVirtualUrl();
+        Assert.Equal(500, page.HistoryIndex);
+        Assert.Equal(url + "#499", page.UrlString());
+    }
+
+    /// <summary>Upstream 0ecc417.</summary>
+    [Fact]
+    public async Task HistorySyncKeepsOnlySurvivingBatchedChanges()
+    {
+        const string url = "data:text/html,<title>history</title>";
+        using Page page = PageFixtures.FramePage("history-batched-changes");
+        await page.NavigateAsync(url);
+        page.Evaluate("(() => { history.pushState(1, '', '#one'); history.pushState(2, '', '#two'); history.pushState(3, '', '#three'); })()");
+        page.SyncVirtualUrl();
+        page.Evaluate("(() => { history.replaceState(4, '', '#discarded'); history.go(-2); history.pushState(5, '', '#last'); })()");
+        page.SyncVirtualUrl();
+        Assert.Equal([url, url + "#one", url + "#last"], page.History);
+        Assert.Equal(2, page.HistoryIndex);
+        page.Evaluate("(() => { history.back(); history.replaceState(6, '', '#changed'); history.forward(); })()");
+        page.SyncVirtualUrl();
+        Assert.Equal([url, url + "#changed", url + "#last"], page.History);
+        Assert.Equal(2, page.HistoryIndex);
+        Assert.Equal(url + "#last", page.UrlString());
+    }
+
+    /// <summary>
+    /// Upstream 0ecc417 (<c>sync_history_updates</c> is <see cref="Page.SyncVirtualUrl"/>
+    /// here: a Location setter's preview never reaches the host).
+    /// </summary>
+    [Fact]
+    public async Task HistorySyncDoesNotCommitAPendingLocationNavigation()
+    {
+        const string url = "data:text/html,<title>history</title>";
+        using Page page = PageFixtures.FramePage("history-location-preview");
+        await page.NavigateAsync(url);
+        page.Evaluate("(() => { history.pushState(1, '', '#one'); location.href='https://example.org/next'; })()");
+        page.SyncVirtualUrl();
+        Assert.Equal(url + "#one", page.UrlString());
+        Assert.Equal([url, url + "#one"], page.History);
+    }
+
+    /// <summary>Upstream 0ecc417.</summary>
+    [Fact]
+    public void HistoryUrlsKeepTheCommittedOriginDuringPendingNavigation()
+    {
+        using Page page = PageFixtures.ImportMapTestPage("history-committed-origin", "http://example.com", "<title>history</title>");
+        page.SetHistory([page.UrlString()], 0);
+        JsonNode? result = page.Evaluate("(() => { location.href='https://other.example/next'; let error=null; try { history.pushState({}, '', 'https://other.example/spoof'); } catch(e) { error=e.name; } history.pushState({n:1}, '', '/kept'); location.href='https://other.example/again'; history.replaceState({n:2}, ''); return {error,href:location.href,state:history.state}; })()");
+        PageFixtures.AssertJson("""{"error":"SecurityError","href":"http://example.com/kept","state":{"n":2}}""", result);
+        page.SyncVirtualUrl();
+        Assert.Equal("http://example.com/kept", page.UrlString());
+        Assert.All(page.History, entry => Assert.StartsWith("http://example.com/", entry, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Upstream 0ecc417 (<c>history_sync_rejects_non_url_page_values</c>): the page-visible
+    /// <c>__virtualUrl</c> global does not exist for the host here at all.
+    /// </summary>
+    [Fact]
+    public async Task HistorySyncRejectsNonUrlPageValues()
+    {
+        const string url = "data:text/html,<title>history</title>";
+        using Page page = PageFixtures.FramePage("history-url-type");
+        await page.NavigateAsync(url);
+        page.Evaluate("globalThis.__virtualUrl = new Array(100000)");
+        Assert.False(page.SyncVirtualUrl().Navigated);
+        Assert.Equal(url, page.UrlString());
+        Assert.Equal([url], page.History);
+    }
+
     /// <summary>
     /// Upstream 1a0773d: same-document entries sit between the documents. A push drops
     /// the forward documents, and back() past the document's own entries loads the

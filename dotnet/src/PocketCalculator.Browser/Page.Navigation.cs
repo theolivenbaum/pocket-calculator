@@ -136,6 +136,10 @@ public sealed partial class Page
             throw PageException.Network(NavigationPolicy.LocalResourceRefusal(url));
         }
 
+        // Upstream 0ecc417: the outgoing document's History API entries are recorded
+        // before the next document's session history is predicted from them.
+        SyncVirtualUrl();
+
         ResourceRequest profile = NavigationProfile(initiator);
         if (initiator is null && clientReferrer is not null)
         {
@@ -1197,6 +1201,9 @@ public sealed partial class Page
             _pendingHistoryTraversal = null;
             return PageNavigationOutcome.None;
         }
+
+        // Upstream 0ecc417: record the outgoing document's History API entries first.
+        SyncVirtualUrl();
 
         ResourceRequest profile = NavigationProfile(pending);
         string sourceUrl = DocumentReferrer(profile, url);

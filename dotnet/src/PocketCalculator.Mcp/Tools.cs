@@ -807,6 +807,7 @@ internal static partial class Tools
         // We track simple page history on the Page itself; navigate to the entry
         // before the cursor.
         var page = state.PageMut();
+        page.SyncVirtualUrl();
         if (page.History.Count < 2 || page.HistoryIndex == 0)
         {
             throw new ToolException("No previous page in history.");
@@ -817,8 +818,12 @@ internal static partial class Tools
         RefuseFileNavigation(url);
         try
         {
-            // The load moves the history cursor to the entry (upstream 1a0773d).
-            await page.NavigateToHistoryEntryAsync(prevIdx, WaitUntil.DomContentLoaded).ConfigureAwait(false);
+            // An entry of the live document is traversed in place (upstream 0ecc417);
+            // loading one moves the history cursor to it (upstream 1a0773d).
+            if (page.TraverseSameDocumentHistory(prevIdx) is null)
+            {
+                await page.NavigateToHistoryEntryAsync(prevIdx, WaitUntil.DomContentLoaded).ConfigureAwait(false);
+            }
         }
         catch (Exception error) when (error is not ToolException)
         {
@@ -832,6 +837,7 @@ internal static partial class Tools
     internal static async Task<string> ForwardAsync(BrowserState state)
     {
         var page = state.PageMut();
+        page.SyncVirtualUrl();
         if (page.HistoryIndex + 1 >= page.History.Count)
         {
             throw new ToolException("No forward page in history.");
@@ -842,8 +848,12 @@ internal static partial class Tools
         RefuseFileNavigation(url);
         try
         {
-            // The load moves the history cursor to the entry (upstream 1a0773d).
-            await page.NavigateToHistoryEntryAsync(nextIdx, WaitUntil.DomContentLoaded).ConfigureAwait(false);
+            // An entry of the live document is traversed in place (upstream 0ecc417);
+            // loading one moves the history cursor to it (upstream 1a0773d).
+            if (page.TraverseSameDocumentHistory(nextIdx) is null)
+            {
+                await page.NavigateToHistoryEntryAsync(nextIdx, WaitUntil.DomContentLoaded).ConfigureAwait(false);
+            }
         }
         catch (Exception error) when (error is not ToolException)
         {

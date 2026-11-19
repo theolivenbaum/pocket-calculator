@@ -1763,8 +1763,14 @@ public static partial class Page
 
             case "getNavigationHistory":
             {
-                BrowserPage page = ctx.GetSessionPage(sessionId)
+                BrowserPage page = ctx.GetSessionPageMut(sessionId)
                     ?? throw new DomainError("No page for session");
+                // Upstream 0ecc417: History API entries the page made are recorded first.
+                if (page.SyncVirtualUrl() is { IsSameDocument: true } moved)
+                {
+                    EmitSameDocumentNavigation(
+                        ctx, sessionId, page.FrameId, page.UrlString(), page.Id, moved.NavigationType);
+                }
                 // Synthesize an entry for the current page when history is empty (initial
                 // about:blank, never-navigated targets). Puppeteer's goBack reads
                 // `currentIndex` and `entries[currentIndex-1]`; an empty entries[] used to
@@ -1819,6 +1825,15 @@ public static partial class Page
                     throw new DomainError(refusal);
                 }
 
+                // Upstream 0ecc417: an entry of the live document is traversed in place
+                // (popstate, Page.navigatedWithinDocument, no new document or context).
+                if (targetUrl is not null && page.TraverseSameDocumentHistory(entryId) is { } within)
+                {
+                    EmitSameDocumentNavigation(
+                        ctx, sessionId, page.FrameId, page.UrlString(), page.Id, within.NavigationType);
+                    return DomainResult.Empty();
+                }
+
                 if (targetUrl is not null)
                 {
                     // Upstream 1a0773d: the load moves the cursor to the entry (and the new
@@ -1864,7 +1879,7 @@ public static partial class Page
             {
                 if (ctx.GetSessionPageMut(sessionId) is { } page)
                 {
-                    page.SetHistory([], 0);
+                    page.ResetHistory();
                 }
 
                 return DomainResult.Empty();

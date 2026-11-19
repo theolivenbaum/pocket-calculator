@@ -1226,6 +1226,68 @@ public sealed class PageDomainTests
         Assert.StartsWith("data:", info["url"].AsStringOr(string.Empty), StringComparison.Ordinal);
         Assert.False(info["canAccessOpener"].AsBool());
     }
+
+    /// <summary>
+    /// Upstream 0ecc417: navigateToHistoryEntry to an entry of the live document traverses
+    /// it in place (popstate with the entry's state, Page.navigatedWithinDocument) and
+    /// neither replaces the document nor clears its execution contexts.
+    /// </summary>
+    [Fact]
+    public async Task SameDocumentHistoryTraversalPreservesTheDocumentAndState()
+    {
+        var ctx = CdpContext.New();
+        using IDisposable owned = CoreCdp.Owned(ctx);
+        string pageId = ctx.CreatePage();
+        string session = $"{pageId}-session";
+        ctx.Sessions[session] = pageId;
+        CdpDomainFixtures.Unwrap(await PageDomain.HandleAsync("enable", new JsonObject(), ctx, session));
+        CdpDomainFixtures.Unwrap(await PageDomain.HandleAsync(
+            "navigate", CdpDomainFixtures.Json("""{"url":"data:text/html,<title>history</title>"}"""), ctx, session));
+        PocketCalculator.Browser.Page page = ctx.GetSessionPageMut(session)!;
+        page.Evaluate("(() => { globalThis.marker=42; globalThis.pops=[]; addEventListener('popstate', e=>pops.push(e.state)); history.pushState({n:1}, '', '#one'); })()");
+        page.SyncVirtualUrl();
+        page.Evaluate("history.pushState({n:2}, '', '#two')");
+        page.SyncVirtualUrl();
+        List<string> entries = [.. page.History];
+
+        ctx.PendingEvents.Clear();
+        CdpDomainFixtures.Unwrap(await PageDomain.HandleAsync(
+            "navigateToHistoryEntry", CdpDomainFixtures.Json("""{"entryId":1}"""), ctx, session));
+        page = ctx.GetSessionPageMut(session)!;
+        Assert.Equal(entries, page.History);
+        Assert.Equal(1, page.HistoryIndex);
+        CdpDomainFixtures.AssertJson("""[42,{"n":1},[{"n":1}]]""", page.Evaluate("[globalThis.marker, history.state, globalThis.pops]"));
+        CdpEvent within = Assert.Single(ctx.PendingEvents, e => e.Method == "Page.navigatedWithinDocument");
+        // Chromium 1243 reports a traversal that moves only the fragment as "fragment".
+        Assert.Equal("fragment", within.Params!["navigationType"].AsString());
+        Assert.DoesNotContain(ctx.PendingEvents, e => e.Method is "Page.frameNavigated" or "Runtime.executionContextsCleared");
+    }
+
+    /// <summary>
+    /// Upstream 0ecc417: resetNavigationHistory leaves only the current entry, in the page
+    /// and in window.history (Chromium 1243: history.length 1 after it).
+    /// </summary>
+    [Fact]
+    public async Task ResetNavigationHistoryLeavesTheCurrentEntry()
+    {
+        var ctx = CdpContext.New();
+        using IDisposable owned = CoreCdp.Owned(ctx);
+        string pageId = ctx.CreatePage();
+        string session = $"{pageId}-session";
+        ctx.Sessions[session] = pageId;
+        CdpDomainFixtures.Unwrap(await PageDomain.HandleAsync(
+            "navigate", CdpDomainFixtures.Json("""{"url":"data:text/html,<title>history</title>"}"""), ctx, session));
+        PocketCalculator.Browser.Page page = ctx.GetSessionPageMut(session)!;
+        page.Evaluate("(() => { history.pushState(1, '', '#one'); history.pushState(2, '', '#two'); })()");
+        JsonNode history = CdpDomainFixtures.Unwrap(await PageDomain.HandleAsync("getNavigationHistory", new JsonObject(), ctx, session));
+        Assert.Equal(2, history["currentIndex"]!.GetValue<int>());
+
+        CdpDomainFixtures.Unwrap(await PageDomain.HandleAsync("resetNavigationHistory", new JsonObject(), ctx, session));
+        history = CdpDomainFixtures.Unwrap(await PageDomain.HandleAsync("getNavigationHistory", new JsonObject(), ctx, session));
+        Assert.Equal(0, history["currentIndex"]!.GetValue<int>());
+        Assert.Equal("data:text/html,<title>history</title>#two", Assert.Single(history["entries"]!.AsArray())!["url"].AsString());
+        CdpDomainFixtures.AssertJson("[1,2]", page.Evaluate("[history.length, history.state]"));
+    }
 }
 
 /// <summary>A document-timeline clock that moves only when a test advances it.</summary>
