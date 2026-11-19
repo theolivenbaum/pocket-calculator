@@ -206,6 +206,14 @@ the handed-over node a foster-parented node is inserted in front of, under that 
 parent. `document_write_reset` (document.open()) starts a whole-document parse, and
 `document_compat_mode` answers `"BackCompat"` or `"CSS1Compat"` (upstream 721e40f).
 
+Upstream d8f1467, 25700b9 and 59276a3 (ported): the legacy table and select collections.
+`table_rows`, `table_head`, `table_foot`, `table_bodies`, `table_section_rows`,
+`table_row_cells` and `select_options` (arg1 a node id) answer a JSON array of node ids, or
+`null` when the node does not have the interface; `table_interface` answers the table
+interface name as a JSON string or `null`; `table_row_index`, `table_section_row_index`,
+`table_cell_index` and `option_index` answer a number or `null`. Upstream's `tag_name` mode
+`"interface"` (arg2) is not ported: the C# shim maps tag names to interfaces itself.
+
 Port addition: `document_close` (no arguments, answers `"true"`). The C# shim's
 `document.close()` sends it when it ends a parser `document.open()` started on a loaded
 document; the host counts it so the CDP layer reports the reload's lifecycle events

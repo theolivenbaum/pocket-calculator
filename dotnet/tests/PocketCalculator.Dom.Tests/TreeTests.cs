@@ -620,4 +620,150 @@ public class TreeTests
             ancestors.Count <= nodeCount + 1,
             $"Ancestors() must stay bounded on a cyclic parent chain, got {ancestors.Count}");
     }
+
+    private static NodeId Foreign(DomTree tree, string local) =>
+        tree.NewNode(NodeData.Element(new QualName(null, "urn:foreign", local)));
+
+    // upstream d8f1467
+    [Fact]
+    public void TableRowsOrderSectionsAndExcludeNestedOrForeignRows()
+    {
+        var tree = new DomTree();
+        var table = Element(tree, "table");
+        var expected = new List<NodeId>();
+        foreach (var tag in new[] { "tfoot", "tbody", "thead" })
+        {
+            var section = Element(tree, tag);
+            tree.AppendChild(table, section);
+            var row = Element(tree, "tr");
+            tree.AppendChild(section, row);
+            expected.Add(row);
+        }
+
+        var direct = Element(tree, "tr");
+        tree.AppendChild(table, direct);
+        var nested = Element(tree, "table");
+        tree.AppendChild(expected[1], nested);
+        var nestedRow = Element(tree, "tr");
+        tree.AppendChild(nested, nestedRow);
+        var foreign = Foreign(tree, "tr");
+        tree.AppendChild(table, foreign);
+        AssertNodes([expected[2], expected[1], direct, expected[0]], tree.TableRows(table));
+        AssertNodes([nestedRow], tree.TableRows(nested));
+        tree.AppendChild(table, expected[2]);
+        AssertNodes([expected[1], direct, expected[2], expected[0]], tree.TableRows(table));
+        Assert.Null(tree.TableRows(foreign));
+        Assert.Null(tree.TableRows(NodeId.New(uint.MaxValue)));
+    }
+
+    // upstream 59276a3
+    [Fact]
+    public void TableChildCollectionsAndIndicesFollowNativeOwnership()
+    {
+        var tree = new DomTree();
+        var table = Element(tree, "table");
+        var sections = new List<NodeId>();
+        var rows = new List<NodeId>();
+        foreach (var tag in new[] { "tfoot", "tbody", "thead" })
+        {
+            var section = Element(tree, tag);
+            var row = Element(tree, "tr");
+            tree.AppendChild(table, section);
+            tree.AppendChild(section, row);
+            sections.Add(section);
+            rows.Add(row);
+        }
+
+        var first = Element(tree, "th");
+        var second = Element(tree, "td");
+        tree.AppendChild(rows[1], first);
+        tree.AppendChild(rows[1], second);
+        var foreign = Foreign(tree, "td");
+        tree.AppendChild(rows[1], foreign);
+        AssertNodes([sections[1]], tree.TableSections(table, "tbody"));
+        AssertNodes([rows[1]], tree.TableSectionRows(sections[1]));
+        AssertNodes([first, second], tree.TableRowCells(rows[1]));
+        Assert.Equal("HTMLTableCellElement", tree.TableInterface(first));
+        Assert.Null(tree.TableInterface(foreign));
+        Assert.Equal(2, tree.TableRowIndex(rows[0], false));
+        Assert.Equal(1, tree.TableRowIndex(rows[1], false));
+        Assert.Equal(0, tree.TableRowIndex(rows[1], true));
+        Assert.Equal(1, tree.TableCellIndex(second));
+        Assert.Null(tree.TableCellIndex(foreign));
+        Assert.Null(tree.TableRowCells(table));
+        Assert.Null(tree.TableSectionRows(NodeId.New(uint.MaxValue)));
+        tree.AppendChild(sections[2], rows[1]);
+        Assert.Equal(1, tree.TableRowIndex(rows[1], false));
+        Assert.Equal(1, tree.TableRowIndex(rows[1], true));
+        tree.RemoveChild(rows[1]);
+        Assert.Equal(-1, tree.TableRowIndex(rows[1], false));
+        Assert.Equal(-1, tree.TableRowIndex(rows[1], true));
+        Assert.Equal(1, tree.TableCellIndex(second));
+    }
+
+    // upstream 25700b9
+    [Fact]
+    public void SelectOptionsFollowNativeOwnershipBoundaries()
+    {
+        var tree = new DomTree();
+        var select = Element(tree, "select");
+        var first = Element(tree, "option");
+        tree.AppendChild(select, first);
+        var included = new List<NodeId> { first };
+        foreach (var tag in new[] { "div", "optgroup", "select", "datalist", "option" })
+        {
+            var parent = Element(tree, tag);
+            var option = Element(tree, "option");
+            tree.AppendChild(select, parent);
+            tree.AppendChild(parent, option);
+            if (tag is "div" or "optgroup")
+            {
+                included.Add(option);
+            }
+            else if (tag == "option")
+            {
+                included.Add(parent);
+            }
+
+            var expected = tag == "div" ? 1 : tag == "optgroup" ? 2 : 0;
+            Assert.Equal(expected, tree.OptionIndex(option));
+            if (tag == "select")
+            {
+                AssertNodes([option], tree.SelectOptions(parent));
+            }
+        }
+
+        var foreign = Foreign(tree, "select");
+        var foreignChild = Element(tree, "option");
+        tree.AppendChild(select, foreign);
+        tree.AppendChild(foreign, foreignChild);
+        included.Add(foreignChild);
+        AssertNodes(included, tree.SelectOptions(select));
+        Assert.Equal(4, tree.OptionIndex(foreignChild));
+        tree.Detach(first);
+        included.RemoveAt(0);
+        AssertNodes(included, tree.SelectOptions(select));
+        Assert.Equal(0, tree.OptionIndex(first));
+        Assert.Equal(3, tree.OptionIndex(foreignChild));
+        Assert.Null(tree.SelectOptions(foreign));
+        Assert.Null(tree.OptionIndex(select));
+        Assert.Null(tree.SelectOptions(NodeId.New(uint.MaxValue)));
+        Assert.Null(tree.OptionIndex(NodeId.New(uint.MaxValue)));
+    }
+
+    // upstream 25700b9
+    [Fact]
+    public void SelectOptionsAndIndexesBoundBrokenCycles()
+    {
+        var tree = new DomTree();
+        var select = Element(tree, "select");
+        var container = Element(tree, "div");
+        var option = Element(tree, "option");
+        tree.AppendChild(select, container);
+        tree.AppendChild(container, option);
+        tree.GetNode(container)!.FirstChild = container;
+        Assert.Null(tree.SelectOptions(select));
+        tree.GetNode(container)!.Parent = container;
+        Assert.Null(tree.OptionIndex(option));
+    }
 }

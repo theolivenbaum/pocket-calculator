@@ -3708,6 +3708,10 @@ function _ceFormReset(form) {
 // refuses it. Nothing runs between the set and the read: a derived constructor's own code
 // only runs after super() has returned.
 let _elementConstructKey = false;
+// The HTMLSelectElement interface and the Proxy handler that gives its wrappers indexed
+// properties (upstream 59276a3; see _selectIndexHandler). Set once both exist.
+var _HTMLSelectClass = null;
+var _selectIndexHandler = null;
 function _constructElement(C, nid) {
   _elementConstructKey = true;
   try { return new C(nid); } finally { _elementConstructKey = false; }
@@ -5291,8 +5295,14 @@ class Element extends Node {
       // The shim's own wrapper for an existing node (_constructElement).
       _elementConstructKey = false;
       super(arguments[0]);
-      this._style = _styleProxy(new CSSStyleDeclaration(this));
-      return;
+      // upstream 59276a3 gives a select indexed properties (select[0]) through a native
+      // V8 interceptor (op_create_select_allocator). ClearScript has no interceptors, so a
+      // select's wrapper is a Proxy over it instead (_selectIndexHandler); the Proxy is the
+      // wrapper the cache holds, so identity and expandos are unchanged.
+      const self = new.target === _HTMLSelectClass && _selectIndexHandler !== null
+        ? new Proxy(this, _selectIndexHandler) : this;
+      self._style = _styleProxy(new CSSStyleDeclaration(self));
+      return self;
     }
     // Port addition: page script reached the constructor itself. HTML's element constructors
     // allow that only for a defined custom element; every other interface (`new
@@ -5327,17 +5337,21 @@ class Element extends Node {
     const localName = def.localName;
     const nid = +_dom("create_element", localName);
     super(nid);
-    this._style = _styleProxy(new CSSStyleDeclaration(this));
-    this._tagName = localName.toUpperCase();
-    this._lname = localName;
-    this._ns = "http://www.w3.org/1999/xhtml";
-    this._nullNamespaceAttrs = new Map();
-    this._ceDef = def;
-    this._ceState = "custom";
-    _seedDetachedTreeState(this);
-    _cache.set(nid, this);
+    // A customized built-in select is indexed like any other select (see above).
+    const self = localName === "select" && _selectIndexHandler !== null
+      ? new Proxy(this, _selectIndexHandler) : this;
+    self._style = _styleProxy(new CSSStyleDeclaration(self));
+    self._tagName = localName.toUpperCase();
+    self._lname = localName;
+    self._ns = "http://www.w3.org/1999/xhtml";
+    self._nullNamespaceAttrs = new Map();
+    self._ceDef = def;
+    self._ceState = "custom";
+    _seedDetachedTreeState(self);
+    _cache.set(nid, self);
     _dom("ce_state", nid, "custom");
     if (def.name !== localName) _dom("ce_is", nid, def.name);
+    return self;
   }
   // Element wrappers always back a nodeType-1 node (_wrap/_wrapEl only build an
   // Element for element nodes, and node ids are never freed-and-reused), so this
@@ -6128,8 +6142,9 @@ class Element extends Node {
     const tag = _elGet('localName', this);
     const attr = (el, name) => _elCall('getAttribute', el, [name]);
     if (tag === 'select') {
-      // Selected option wins; otherwise first option (HTML default).
-      const opts = _qsa(this, 'option');
+      // Selected option wins; otherwise first option (HTML default). Only the options the
+      // select owns (upstream 25700b9), not a nested select's or datalist's.
+      const opts = _selectOptions(this);
       for (let i = 0; i < opts.length; i++) {
         if (_elGet('selected', opts[i])) {
           return attr(opts[i], 'value') !== null ? attr(opts[i], 'value') : _elGet('textContent', opts[i]);
@@ -6182,7 +6197,7 @@ class Element extends Node {
       // itself. Dispatching here fed pages that assign inside a change
       // handler back into that handler in an infinite loop.
       const wanted = String(v);
-      const opts = _qsa(this, 'option');
+      const opts = _selectOptions(this);
       _selectValueSetting = true;
       try {
         for (let i = 0; i < opts.length; i++) {
@@ -6616,25 +6631,32 @@ class Element extends Node {
     return null;
   }
   get options() {
-    if (this.localName !== 'select') return [];
+    if (this.localName === 'select') return HTMLCollection._from(_selectOptions(this));
+    if (this.localName !== 'datalist') return [];
     return HTMLCollection._from(_qsa(this, 'option'));
   }
+  // upstream 25700b9: `before` is an HTMLElement or a long. Anything that is not an HTML
+  // element converts to an index into the options the select owns, and the new option goes
+  // into that option's parent (an optgroup, say), as in Chromium 157.
   add(item, before = null) {
-    if (this.localName !== 'select') {
+    if (this.localName !== 'select' || !_isOwnNodeWrapper(this)) {
       throw new TypeError("Illegal invocation");
     }
-    if (!item || item.nodeType !== 1
-        || (item.localName !== 'option' && item.localName !== 'optgroup')) {
+    const htmlElement = (value) => _isOwnNodeWrapper(value) && value.nodeType === 1
+      && _domParse('namespace_uri', value._nid) === _XHTML_NS;
+    const itemName = htmlElement(item) ? _domParse('local_name', item._nid) : null;
+    if (itemName !== 'option' && itemName !== 'optgroup') {
       throw new TypeError("Failed to execute 'add' on 'HTMLSelectElement': parameter 1 is not of type 'HTMLOptionElement' or 'HTMLOptGroupElement'.");
     }
-    if (typeof before === 'number') {
-      const reference = this.options[before] || null;
-      this.insertBefore(item, reference);
-    } else if (before == null) {
-      this.appendChild(item);
-    } else {
-      this.insertBefore(item, before);
+    let reference = before;
+    if (before !== null && !htmlElement(before)) {
+      reference = _selectOptions(this)[+before | 0] || null;
     }
+    if (reference && (reference === this || !_reflectApply(_legacyContains, this, [reference]))) {
+      throw new DOMException("Failed to execute 'add' on 'HTMLSelectElement': The node before which the new node is to be inserted is not a descendant of this node.", "NotFoundError");
+    }
+    const parent = reference ? _reflectApply(_legacyParentNode, reference, []) : this;
+    _reflectApply(_legacyInsertBefore, parent, [item, reference]);
   }
   // <selectedcontent> (customizable select, Chromium 141): after a script changes the
   // selection of a single select, its first selectedcontent holds clones of the
@@ -6646,13 +6668,13 @@ class Element extends Node {
     if (this.localName !== 'select' || this.hasAttribute('multiple')) return;
     const content = _qs(this, 'selectedcontent');
     if (!content) return;
-    const option = this.options[this.selectedIndex];
+    const option = _selectOptions(this)[this.selectedIndex];
     const clones = [];
     if (option) for (let c = option.firstChild; c; c = c.nextSibling) clones.push(c.cloneNode(true));
     content.replaceChildren(...clones);
   }
   get selectedIndex() {
-    const opts = this.options;
+    const opts = _selectOptions(this);
     for (let i = 0; i < opts.length; i++) {
       if (opts[i].selected || opts[i].hasAttribute('selected')) return i;
     }
@@ -6661,7 +6683,7 @@ class Element extends Node {
     return opts.length && !this.hasAttribute('multiple') ? 0 : -1;
   }
   set selectedIndex(v) {
-    const opts = this.options;
+    const opts = _selectOptions(this);
     for (let i = 0; i < opts.length; i++) {
       opts[i]._selected = (i === v);
     }
@@ -17387,18 +17409,22 @@ globalThis.HTMLFormElement = class HTMLFormElement extends HTMLElement {
   }
 };
 globalThis.HTMLSelectElement = class HTMLSelectElement extends HTMLElement {};
+_HTMLSelectClass = globalThis.HTMLSelectElement;
 // HTMLSelectElement's own remove(): with no argument it is ChildNode's remove(), with an
 // index it removes that option (Chromium 141). The shim had only Element's remove(), so
-// `select.remove(0)` removed the select itself.
+// `select.remove(0)` removed the select itself. upstream 25700b9: the receiver is checked
+// first, the index converts as a long before the options are read, and the options are the
+// ones the select owns. Its length is 0, as in Chromium 157.
 (function () {
   const elementRemove = Element.prototype.remove;
   _defineProperty(HTMLSelectElement.prototype, 'remove', {
-    value: _markNative({ remove(index) {
+    value: _markNative({ remove() {
+      _selectOptions(this);
       if (arguments.length === 0) return _reflectApply(elementRemove, this, []);
-      const i = index | 0;
-      const options = this.options;
-      if (i < 0 || i >= options.length) return undefined;
-      _reflectApply(elementRemove, options[i], []);
+      const i = arguments[0] | 0;
+      const current = _selectOptions(this);
+      if (i < 0 || i >= current.length) return undefined;
+      _reflectApply(elementRemove, current[i], []);
       return undefined;
     } }.remove),
     writable: true, enumerable: true, configurable: true,
@@ -17430,90 +17456,11 @@ globalThis.HTMLTextAreaElement = class HTMLTextAreaElement extends HTMLElement {
 // discriminates: with an alias, every element is an instance of every one of
 // them. `_htmlTagClasses` below is what makes the parser/createElement path
 // hand out the matching prototype.
-class HTMLTableRowElement extends HTMLElement {
-  get cells() {
-    const out = [];
-    for (const child of this.children) {
-      if (child.tagName === "TD" || child.tagName === "TH") out.push(child);
-    }
-    return HTMLCollection._from(out);
-  }
-  get sectionRowIndex() {
-    const parent = this.parentNode;
-    if (!parent || parent.nodeType !== 1) return -1;
-    let index = -1;
-    for (const child of parent.children) {
-      if (child.tagName === "TR") index++;
-      if (child === this) return child.tagName === "TR" ? index : -1;
-    }
-    return -1;
-  }
-  get rowIndex() {
-    let table = this.parentNode;
-    while (table && table.nodeType === 1 && table.tagName !== "TABLE") table = table.parentNode;
-    if (!table || table.nodeType !== 1) return -1;
-    const rows = _qsa(table, "tr");
-    for (let i = 0; i < rows.length; i++) {
-      if (rows[i] === this) return i;
-    }
-    return -1;
-  }
-  insertCell(index) {
-    const cells = this.cells;
-    const at = (index === undefined || index === -1) ? cells.length : (index | 0);
-    if (at < 0 || at > cells.length) throw new DOMException("The index is not in the allowed range.", "IndexSizeError");
-    const cell = document.createElement("td");
-    if (at === cells.length) this.appendChild(cell);
-    else this.insertBefore(cell, cells[at]);
-    return cell;
-  }
-  deleteCell(index) {
-    const cells = this.cells;
-    const at = (index === -1) ? cells.length - 1 : (index | 0);
-    if (at < 0 || at >= cells.length) throw new DOMException("The index is not in the allowed range.", "IndexSizeError");
-    cells[at].remove();
-  }
-}
-class HTMLTableCellElement extends HTMLElement {
-  get cellIndex() {
-    const row = this.parentNode;
-    if (!row || row.nodeType !== 1 || row.tagName !== "TR") return -1;
-    let index = -1;
-    for (const child of row.children) {
-      if (child.tagName === "TD" || child.tagName === "TH") index++;
-      if (child === this) return index;
-    }
-    return -1;
-  }
-  get colSpan() { const v = parseInt(this.getAttribute("colspan"), 10); return Number.isFinite(v) && v > 0 ? v : 1; }
-  set colSpan(v) { this.setAttribute("colspan", String(v)); }
-  get rowSpan() { const v = parseInt(this.getAttribute("rowspan"), 10); return Number.isFinite(v) && v >= 0 ? v : 1; }
-  set rowSpan(v) { this.setAttribute("rowspan", String(v)); }
-}
-class HTMLTableSectionElement extends HTMLElement {
-  get rows() {
-    const out = [];
-    for (const child of this.children) {
-      if (child.tagName === "TR") out.push(child);
-    }
-    return HTMLCollection._from(out);
-  }
-  insertRow(index) {
-    const rows = this.rows;
-    const at = (index === undefined || index === -1) ? rows.length : (index | 0);
-    if (at < 0 || at > rows.length) throw new DOMException("The index is not in the allowed range.", "IndexSizeError");
-    const row = document.createElement("tr");
-    if (at === rows.length) this.appendChild(row);
-    else this.insertBefore(row, rows[at]);
-    return row;
-  }
-  deleteRow(index) {
-    const rows = this.rows;
-    const at = (index === -1) ? rows.length - 1 : (index | 0);
-    if (at < 0 || at >= rows.length) throw new DOMException("The index is not in the allowed range.", "IndexSizeError");
-    rows[at].remove();
-  }
-}
+// Their table members (rows, cells, indices, insert and delete) are defined with the table
+// collections below, after HTMLCollection.
+class HTMLTableRowElement extends HTMLElement {}
+class HTMLTableCellElement extends HTMLElement {}
+class HTMLTableSectionElement extends HTMLElement {}
 class HTMLTableCaptionElement extends HTMLElement {}
 class HTMLTableColElement extends HTMLElement {
   get span() { const v = parseInt(this.getAttribute("span"), 10); return Number.isFinite(v) && v > 0 ? v : 1; }
@@ -17925,6 +17872,487 @@ const _htmlCollectionProxy = {
 function _isHTMLEl(el) {
   return !!el && (el.namespaceURI === undefined || el.namespaceURI === "http://www.w3.org/1999/xhtml");
 }
+
+// The legacy table and select APIs (upstream d8f1467, 25700b9, 59276a3 and merge 4c12826).
+// Which rows, sections, cells and options an element owns is decided natively (op_dom
+// table_* / select_options / option_index, DomTree.LegacyCollections.cs) in one call. Every
+// member brand-checks its receiver: it must be this realm's own wrapper of an HTML element
+// with the interface. DEVIATION from crates/obscura-js/js/bootstrap.js: upstream forwards a
+// receiver from another realm to that realm's implementation (_tableRealmDispatch,
+// _documentRealmMember); the port's frames run in separate engines, so there is no such
+// receiver here.
+const _legacyReflectGet = Reflect.get;
+const _legacyReflectSet = Reflect.set;
+const _legacyReflectHas = Reflect.has;
+const _legacyReflectOwnKeys = Reflect.ownKeys;
+const _legacyReflectGetOwn = Reflect.getOwnPropertyDescriptor;
+const _legacyReflectDefine = Reflect.defineProperty;
+const _legacyReflectDelete = Reflect.deleteProperty;
+const _legacyAppendChild = Node.prototype.appendChild;
+const _legacyInsertBefore = Node.prototype.insertBefore;
+const _legacyRemoveChild = Node.prototype.removeChild;
+const _legacyReplaceChild = Node.prototype.replaceChild;
+const _legacyContains = Node.prototype.contains;
+const _legacyCreateElement = Document.prototype.createElement;
+const _legacyGetAttribute = Element.prototype.getAttribute;
+const _legacySetAttribute = Element.prototype.setAttribute;
+const _legacyParentNode = _getOwnPropertyDescriptor(Node.prototype, 'parentNode').get;
+const _legacyNextSibling = _getOwnPropertyDescriptor(Node.prototype, 'nextSibling').get;
+const _legacyFirstChild = _getOwnPropertyDescriptor(Node.prototype, 'firstChild').get;
+const _legacyOwnerDocument = _getOwnPropertyDescriptor(Node.prototype, 'ownerDocument').get;
+
+// True for this realm's own wrapper of a node.
+function _isOwnNodeWrapper(value) {
+  return value !== null && typeof value === 'object' && _cache.get(value._nid) === value;
+}
+// A canonical array index ("0", "17", below 2^32 - 1), without a RegExp the page can reach.
+function _isArrayIndexKey(key) {
+  if (typeof key !== 'string') return false;
+  const length = key.length;
+  if (length === 0 || length > 10) return false;
+  const first = _stringCharCodeAt(key, 0);
+  if (first === 48) return length === 1;
+  for (let i = 0; i < length; i++) {
+    const c = _stringCharCodeAt(key, i);
+    if (c < 48 || c > 57) return false;
+  }
+  return +key < 4294967295;
+}
+function _wrapIdList(ids) {
+  const out = [];
+  for (let i = 0; i < ids.length; i++) _arrayPush(out, _wrapEl(ids[i]));
+  return out;
+}
+// The elements an op names for `node`, or a TypeError when the node lacks the interface.
+function _legacyList(node, op) {
+  if (!_isOwnNodeWrapper(node)) throw new TypeError('Illegal invocation');
+  const ids = _domParse(op, node._nid);
+  if (ids === null) throw new TypeError('Illegal invocation');
+  return _wrapIdList(ids);
+}
+function _legacyValue(node, op) {
+  if (!_isOwnNodeWrapper(node)) throw new TypeError('Illegal invocation');
+  const value = _domParse(op, node._nid);
+  if (value === null) throw new TypeError('Illegal invocation');
+  return value;
+}
+function _legacyCreate(node, tag) {
+  return _reflectApply(_legacyCreateElement, _reflectApply(_legacyOwnerDocument, node, []), [tag]);
+}
+function _legacyRemove(node) {
+  const parent = _reflectApply(_legacyParentNode, node, []);
+  if (parent) _reflectApply(_legacyRemoveChild, parent, [node]);
+}
+function _legacyNamed(elements, key) {
+  if (key === '') return null;
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    if (_reflectApply(_legacyGetAttribute, el, ['id']) === key) return el;
+    if (_isHTMLEl(el) && _reflectApply(_legacyGetAttribute, el, ['name']) === key) return el;
+  }
+  return null;
+}
+
+// A live HTMLCollection over an op's answer for `owner`, refreshed when the DOM mutation
+// epoch moves. Indices and names are read-only, as in WebIDL. DEVIATION from Chromium 157,
+// where Reflect.set and Reflect.defineProperty of an index answer true (and change nothing)
+// although a strict-mode assignment throws: a Proxy cannot answer true and still throw, so
+// both answer false, as upstream's do and WebIDL says.
+function _liveLegacyCollection(owner, op) {
+  let epoch = -1;
+  let elements = [];
+  const refresh = () => {
+    if (epoch !== _domMutationEpoch) {
+      const ids = _domParse(op, owner._nid);
+      if (ids === null) throw new TypeError('Illegal invocation');
+      elements = _wrapIdList(ids);
+      epoch = _domMutationEpoch;
+    }
+    return elements;
+  };
+  const named = (t, key) => typeof key === 'string' && !_legacyReflectHas(t, key)
+    ? _legacyNamed(refresh(), key) : null;
+  const target = _objectCreate(HTMLCollection.prototype);
+  const collection = new Proxy(target, {
+    get(t, key, receiver) {
+      if (key === 'length') return refresh().length;
+      if (_isArrayIndexKey(key)) return refresh()[+key];
+      const value = _legacyReflectGet(t, key, receiver);
+      if (value !== undefined || typeof key !== 'string') return value;
+      return _legacyNamed(refresh(), key) || undefined;
+    },
+    has(t, key) {
+      if (_isArrayIndexKey(key)) return +key < refresh().length;
+      return _legacyReflectHas(t, key) || named(t, key) !== null;
+    },
+    // Chromium 157's order: indices, own expandos, then the supported names.
+    ownKeys(t) {
+      const rows = refresh();
+      const keys = [];
+      for (let i = 0; i < rows.length; i++) _arrayPush(keys, _String(i));
+      const own = _legacyReflectOwnKeys(t);
+      const symbols = [];
+      for (let i = 0; i < own.length; i++) {
+        if (typeof own[i] === 'string') _arrayPush(keys, own[i]);
+        else _arrayPush(symbols, own[i]);
+      }
+      const seen = _objectCreate(null);
+      for (let i = 0; i < keys.length; i++) seen[keys[i]] = true;
+      const add = (candidate) => {
+        if (candidate && seen[candidate] !== true && !_legacyReflectHas(t, candidate)) {
+          seen[candidate] = true;
+          _arrayPush(keys, candidate);
+        }
+      };
+      for (let i = 0; i < rows.length; i++) {
+        add(_reflectApply(_legacyGetAttribute, rows[i], ['id']));
+        if (_isHTMLEl(rows[i])) add(_reflectApply(_legacyGetAttribute, rows[i], ['name']));
+      }
+      for (let i = 0; i < symbols.length; i++) _arrayPush(keys, symbols[i]);
+      return keys;
+    },
+    getOwnPropertyDescriptor(t, key) {
+      if (_isArrayIndexKey(key)) {
+        const row = refresh()[+key];
+        return row ? { value: row, writable: false, enumerable: true, configurable: true } : undefined;
+      }
+      const descriptor = _legacyReflectGetOwn(t, key);
+      if (descriptor) return descriptor;
+      const row = named(t, key);
+      return row ? { value: row, writable: false, enumerable: false, configurable: true } : undefined;
+    },
+    set(t, key, value, receiver) {
+      if (key === 'length' || _isArrayIndexKey(key) || named(t, key) !== null) return false;
+      return _legacyReflectSet(t, key, value, receiver);
+    },
+    defineProperty(t, key, descriptor) {
+      if (key === 'length' || _isArrayIndexKey(key) || named(t, key) !== null) return false;
+      return _legacyReflectDefine(t, key, descriptor);
+    },
+    deleteProperty(t, key) {
+      if (_isArrayIndexKey(key)) return +key >= refresh().length;
+      if (named(t, key) !== null) return false;
+      return _legacyReflectDelete(t, key);
+    },
+    preventExtensions() { return false; },
+  });
+  refresh();
+  return collection;
+}
+
+function _defineLegacyAccessor(C, member, get, set) {
+  _defineProperty(get, 'name', { value: 'get ' + member, configurable: true });
+  _markNative(get);
+  if (set) {
+    _defineProperty(set, 'name', { value: 'set ' + member, configurable: true });
+    _markNative(set);
+  }
+  _defineProperty(C.prototype, member, { get, set, enumerable: true, configurable: true });
+}
+function _defineLegacyMethod(C, member, length, fn) {
+  const method = ({ [member](...args) { return _reflectApply(fn, this, args); } })[member];
+  _defineProperty(method, 'length', { value: length, configurable: true });
+  _markNative(method);
+  _defineProperty(C.prototype, member, { value: method, writable: true, enumerable: true, configurable: true });
+}
+// The interface check every table method makes before it converts its arguments.
+function _tableReceiver(node, iface) {
+  if (_legacyValue(node, 'table_interface') !== iface) throw new TypeError('Illegal invocation');
+}
+function _defineTableCollection(C, member, op) {
+  const collections = new WeakMap();
+  _defineLegacyAccessor(C, member, function () {
+    const cached = _weakMapGet(collections, this);
+    if (cached !== undefined) return cached;
+    if (!_isOwnNodeWrapper(this)) throw new TypeError('Illegal invocation');
+    const collection = _liveLegacyCollection(this, op);
+    _weakMapSet(collections, this, collection);
+    return collection;
+  });
+}
+_defineTableCollection(HTMLTableElement, 'rows', 'table_rows');
+_defineTableCollection(HTMLTableElement, 'tBodies', 'table_bodies');
+_defineTableCollection(HTMLTableSectionElement, 'rows', 'table_section_rows');
+_defineTableCollection(HTMLTableRowElement, 'cells', 'table_row_cells');
+_defineLegacyAccessor(HTMLTableRowElement, 'rowIndex', function () { return _legacyValue(this, 'table_row_index'); });
+_defineLegacyAccessor(HTMLTableRowElement, 'sectionRowIndex', function () { return _legacyValue(this, 'table_section_row_index'); });
+_defineLegacyAccessor(HTMLTableCellElement, 'cellIndex', function () { return _legacyValue(this, 'table_cell_index'); });
+
+// IndexSizeError unless -1 <= index <= length (inserting) or < length (deleting).
+function _tableIndex(index, length, method, iface, inserting) {
+  if (index < -1 || index > length - (inserting ? 0 : 1)) {
+    throw new DOMException("Failed to execute '" + method + "' on '" + iface
+      + "': The index provided (" + index + ") is outside the range [-1, " + (inserting ? length : length - 1) + "].", 'IndexSizeError');
+  }
+  return index;
+}
+function _insertTableRow(rows, container, index) {
+  const row = _legacyCreate(container, 'tr');
+  if (index === -1 || index === rows.length) {
+    const parent = rows.length ? _reflectApply(_legacyParentNode, rows[rows.length - 1], []) : container;
+    _reflectApply(_legacyAppendChild, parent, [row]);
+  } else {
+    _reflectApply(_legacyInsertBefore, _reflectApply(_legacyParentNode, rows[index], []), [row, rows[index]]);
+  }
+  return row;
+}
+function _deleteTableMember(items, index, method, iface) {
+  _tableIndex(index, items.length, method, iface, false);
+  if (index === -1) {
+    if (items.length) _legacyRemove(items[items.length - 1]);
+  } else {
+    _legacyRemove(items[index]);
+  }
+}
+function _requireArgument(count, method, iface) {
+  if (count === 0) {
+    throw new TypeError("Failed to execute '" + method + "' on '" + iface + "': 1 argument required, but only 0 present.");
+  }
+}
+// A table's first HTML child named `local`, or null.
+function _tableChild(table, local) {
+  const list = local === 'thead' ? _legacyList(table, 'table_head')
+    : local === 'tfoot' ? _legacyList(table, 'table_foot') : null;
+  if (list !== null) return list.length ? list[0] : null;
+  for (let n = _reflectApply(_legacyFirstChild, table, []); n; n = _reflectApply(_legacyNextSibling, n, [])) {
+    if (n.nodeType === 1 && _domParse('namespace_uri', n._nid) === _XHTML_NS
+        && _domParse('local_name', n._nid) === local) return n;
+  }
+  return null;
+}
+// The first child that is not a caption or colgroup: where a new thead goes.
+function _tableHeadPosition(table) {
+  let before = _reflectApply(_legacyFirstChild, table, []);
+  while (before && before.nodeType === 1 && _domParse('namespace_uri', before._nid) === _XHTML_NS) {
+    const local = _domParse('local_name', before._nid);
+    if (local !== 'caption' && local !== 'colgroup') break;
+    before = _reflectApply(_legacyNextSibling, before, []);
+  }
+  return before;
+}
+
+_defineLegacyMethod(HTMLTableElement, 'createTBody', 0, function () {
+  _tableReceiver(this, 'HTMLTableElement');
+  const body = _legacyCreate(this, 'tbody');
+  const bodies = _legacyList(this, 'table_bodies');
+  const last = bodies[bodies.length - 1];
+  _reflectApply(_legacyInsertBefore, this, [body, last ? _reflectApply(_legacyNextSibling, last, []) : null]);
+  return body;
+});
+_defineLegacyMethod(HTMLTableElement, 'insertRow', 0, function (index = -1) {
+  _tableReceiver(this, 'HTMLTableElement');
+  index = +index | 0;
+  const rows = _legacyList(this, 'table_rows');
+  _tableIndex(index, rows.length, 'insertRow', 'HTMLTableElement', true);
+  if (rows.length) return _insertTableRow(rows, this, index);
+  const bodies = _legacyList(this, 'table_bodies');
+  const body = bodies.length ? bodies[bodies.length - 1] : this.createTBody();
+  return _insertTableRow(rows, body, index);
+});
+_defineLegacyMethod(HTMLTableElement, 'deleteRow', 1, function (index) {
+  _tableReceiver(this, 'HTMLTableElement');
+  _requireArgument(arguments.length, 'deleteRow', 'HTMLTableElement');
+  index = +index | 0;
+  _deleteTableMember(_legacyList(this, 'table_rows'), index, 'deleteRow', 'HTMLTableElement');
+});
+_defineLegacyMethod(HTMLTableSectionElement, 'insertRow', 0, function (index = -1) {
+  _tableReceiver(this, 'HTMLTableSectionElement');
+  index = +index | 0;
+  const rows = _legacyList(this, 'table_section_rows');
+  _tableIndex(index, rows.length, 'insertRow', 'HTMLTableSectionElement', true);
+  return _insertTableRow(rows, this, index);
+});
+_defineLegacyMethod(HTMLTableSectionElement, 'deleteRow', 1, function (index) {
+  _tableReceiver(this, 'HTMLTableSectionElement');
+  _requireArgument(arguments.length, 'deleteRow', 'HTMLTableSectionElement');
+  index = +index | 0;
+  _deleteTableMember(_legacyList(this, 'table_section_rows'), index, 'deleteRow', 'HTMLTableSectionElement');
+});
+_defineLegacyMethod(HTMLTableRowElement, 'insertCell', 0, function (index = -1) {
+  _tableReceiver(this, 'HTMLTableRowElement');
+  index = +index | 0;
+  const cells = _legacyList(this, 'table_row_cells');
+  _tableIndex(index, cells.length, 'insertCell', 'HTMLTableRowElement', true);
+  const cell = _legacyCreate(this, 'td');
+  _reflectApply(_legacyInsertBefore, this, [cell, index === -1 || index === cells.length ? null : cells[index]]);
+  return cell;
+});
+_defineLegacyMethod(HTMLTableRowElement, 'deleteCell', 1, function (index) {
+  _tableReceiver(this, 'HTMLTableRowElement');
+  _requireArgument(arguments.length, 'deleteCell', 'HTMLTableRowElement');
+  index = +index | 0;
+  _deleteTableMember(_legacyList(this, 'table_row_cells'), index, 'deleteCell', 'HTMLTableRowElement');
+});
+
+// tHead, tFoot and caption. Port addition beyond upstream (which has tHead and tFoot only):
+// caption, createCaption/deleteCaption, createTHead/deleteTHead and createTFoot/deleteTFoot,
+// which Chromium 157 has (measured) and the shim had none of.
+function _setTableSection(table, value, local, member) {
+  _tableReceiver(table, 'HTMLTableElement');
+  if (value != null) {
+    const iface = local === 'caption' ? 'HTMLTableCaptionElement' : 'HTMLTableSectionElement';
+    if (!_isOwnNodeWrapper(value) || _domParse('namespace_uri', value._nid) !== _XHTML_NS) {
+      throw new TypeError("Failed to set the '" + member + "' property on 'HTMLTableElement': The provided value is not of type '" + iface + "'.");
+    }
+    if (_domParse('local_name', value._nid) !== local) {
+      if (local === 'caption' || _domParse('table_interface', value._nid) !== 'HTMLTableSectionElement') {
+        throw new TypeError("Failed to set the '" + member + "' property on 'HTMLTableElement': The provided value is not of type '" + iface + "'.");
+      }
+      throw new DOMException("Failed to set the '" + member + "' property on 'HTMLTableElement': Not a " + local + " element.", 'HierarchyRequestError');
+    }
+  }
+  const current = _tableChild(table, local);
+  if (current) _legacyRemove(current);
+  if (value == null) return;
+  if (local === 'tfoot') _reflectApply(_legacyAppendChild, table, [value]);
+  else if (local === 'caption') _reflectApply(_legacyInsertBefore, table, [value, _reflectApply(_legacyFirstChild, table, [])]);
+  else _reflectApply(_legacyInsertBefore, table, [value, _tableHeadPosition(table)]);
+}
+for (const [member, local, create, remove] of [
+  ['tHead', 'thead', 'createTHead', 'deleteTHead'],
+  ['tFoot', 'tfoot', 'createTFoot', 'deleteTFoot'],
+  ['caption', 'caption', 'createCaption', 'deleteCaption'],
+]) {
+  _defineLegacyAccessor(HTMLTableElement, member, function () {
+    _tableReceiver(this, 'HTMLTableElement');
+    return _tableChild(this, local);
+  }, function (value) { _setTableSection(this, value, local, member); });
+  _defineLegacyMethod(HTMLTableElement, create, 0, function () {
+    _tableReceiver(this, 'HTMLTableElement');
+    const current = _tableChild(this, local);
+    if (current) return current;
+    const created = _legacyCreate(this, local);
+    _setTableSection(this, created, local, member);
+    return created;
+  });
+  _defineLegacyMethod(HTMLTableElement, remove, 0, function () {
+    _tableReceiver(this, 'HTMLTableElement');
+    const current = _tableChild(this, local);
+    if (current) _legacyRemove(current);
+  });
+}
+
+// colSpan and rowSpan (upstream merge 4c12826): the HTML non-negative integer rules, clamped
+// to 1..1000 and 0..65534; the setter stores the unsigned value, and anything past 2^31 - 1
+// as 1 (Chromium 157, measured).
+function _defineTableSpan(member, attr, minimum, maximum) {
+  _defineLegacyAccessor(HTMLTableCellElement, member, function () {
+    _tableReceiver(this, 'HTMLTableCellElement');
+    const text = _reflectApply(_legacyGetAttribute, this, [attr]);
+    if (text === null) return 1;
+    let i = 0;
+    while (i < text.length) {
+      const c = _stringCharCodeAt(text, i);
+      if (c !== 32 && c !== 9 && c !== 10 && c !== 12 && c !== 13) break;
+      i++;
+    }
+    let negative = false;
+    if (i < text.length && (text[i] === '+' || text[i] === '-')) { negative = text[i] === '-'; i++; }
+    let value = 0, digits = 0;
+    for (; i < text.length; i++, digits++) {
+      const c = _stringCharCodeAt(text, i);
+      if (c < 48 || c > 57) break;
+      value = value * 10 + (c - 48);
+    }
+    if (digits === 0) return 1;
+    if (negative && value !== 0) return 1;
+    return value <= minimum ? minimum : value > maximum ? maximum : value;
+  }, function (value) {
+    _tableReceiver(this, 'HTMLTableCellElement');
+    const number = value >>> 0;
+    _reflectApply(_legacySetAttribute, this, [attr, _String(number <= 2147483647 ? number : 1)]);
+  });
+}
+_defineTableSpan('colSpan', 'colspan', 1, 1000);
+_defineTableSpan('rowSpan', 'rowspan', 0, 65534);
+
+// The options a select owns (upstream 25700b9): not those of a nested select or datalist.
+function _selectOptions(select) { return _legacyList(select, 'select_options'); }
+// A select's options for the shim's own reads, cached per DOM mutation epoch. Keyed by the
+// wrapper's Proxy target, which is what the index handler sees.
+const _selectSnapshots = new WeakMap();
+function _selectOptionsOfTarget(target) {
+  const snapshot = _weakMapGet(_selectSnapshots, target);
+  if (snapshot !== undefined && snapshot.epoch === _domMutationEpoch) return snapshot.options;
+  const ids = _domParse('select_options', target._nid);
+  const options = ids === null ? [] : _wrapIdList(ids);
+  _weakMapSet(_selectSnapshots, target, { epoch: _domMutationEpoch, options });
+  return options;
+}
+// select[index] = option (HTML "set the value of a new indexed property"). null removes the
+// option at index; an index past the end pads with new options first. DEVIATION from
+// crates/obscura-js/js/bootstrap.js, whose setter throws RangeError at 100,000 and over:
+// Chromium 157 ignores the assignment (measured).
+function _selectIndexedSet(target, index, value) {
+  const select = _cache.get(target._nid) || target;
+  if (value != null && (!_isOwnNodeWrapper(value) || _domParse('option_index', value._nid) === null)) {
+    throw new TypeError("Failed to set an indexed property [" + index + "] on 'HTMLSelectElement': The provided value is not of type 'HTMLOptionElement'.");
+  }
+  if (value != null && index >= 100000) return;
+  const options = _selectOptionsOfTarget(target);
+  const current = options[index];
+  if (value == null) {
+    if (current) _legacyRemove(current);
+  } else if (current !== value) {
+    if (index >= options.length) {
+      for (let i = options.length; i < index; i++) {
+        _reflectApply(_legacyAppendChild, select, [_legacyCreate(select, 'option')]);
+      }
+      _reflectApply(_legacyAppendChild, select, [value]);
+    } else {
+      _reflectApply(_legacyReplaceChild, _reflectApply(_legacyParentNode, current, []), [value, current]);
+    }
+  }
+}
+// The Proxy traps behind a select's indexed properties (see the Element constructor).
+// DEVIATION from Chromium 157: defining an index with `configurable: false` sets the option
+// but answers false (Object.defineProperty throws), because a Proxy may not report a
+// non-configurable property its target lacks; Chromium answers true.
+_selectIndexHandler = _objectFreeze({
+  __proto__: null,
+  get(t, key, receiver) {
+    if (_isArrayIndexKey(key)) {
+      const option = _selectOptionsOfTarget(t)[+key];
+      if (option !== undefined) return option;
+    }
+    return _legacyReflectGet(t, key, receiver);
+  },
+  set(t, key, value, receiver) {
+    if (!_isArrayIndexKey(key)) return _legacyReflectSet(t, key, value, receiver);
+    _selectIndexedSet(t, +key, value);
+    return true;
+  },
+  has(t, key) {
+    if (_isArrayIndexKey(key) && +key < _selectOptionsOfTarget(t).length) return true;
+    return _legacyReflectHas(t, key);
+  },
+  getOwnPropertyDescriptor(t, key) {
+    if (_isArrayIndexKey(key)) {
+      const option = _selectOptionsOfTarget(t)[+key];
+      if (option !== undefined) return { value: option, writable: true, enumerable: true, configurable: true };
+    }
+    return _legacyReflectGetOwn(t, key);
+  },
+  defineProperty(t, key, descriptor) {
+    if (!_isArrayIndexKey(key)) return _legacyReflectDefine(t, key, descriptor);
+    if (_objectHasOwn(descriptor, 'get') || _objectHasOwn(descriptor, 'set')) return descriptor.configurable !== false;
+    if (_objectHasOwn(descriptor, 'value')) _selectIndexedSet(t, +key, descriptor.value);
+    return descriptor.configurable !== false;
+  },
+  deleteProperty(t, key) {
+    if (_isArrayIndexKey(key)) return +key >= _selectOptionsOfTarget(t).length;
+    return _legacyReflectDelete(t, key);
+  },
+  ownKeys(t) {
+    const options = _selectOptionsOfTarget(t);
+    const keys = [];
+    for (let i = 0; i < options.length; i++) _arrayPush(keys, _String(i));
+    const own = _legacyReflectOwnKeys(t);
+    for (let i = 0; i < own.length; i++) _arrayPush(keys, own[i]);
+    return keys;
+  },
+  preventExtensions() { return false; },
+});
 // Build a NodeList (no named access, per spec) for querySelectorAll and
 // childNodes. Kept light on purpose: querySelectorAll is the hottest query API.
 function _nodeList(els) {
@@ -24069,22 +24497,36 @@ const _svgMemberOwners = {
   });
 
   const Select = globalThis.HTMLSelectElement;
-  const optionsOf = (select) => _elGet('options', select);
+  const optionsOf = (select) => _selectOptions(select);
+  // upstream 25700b9: length, item and namedItem check the receiver, convert their argument
+  // before reading the options (WebIDL), and see only the options the select owns. A length
+  // over 100,000 is ignored with a console warning, as in Chromium 157; the warning goes to
+  // the engine's console, not through the page's console.warn (upstream calls the page's).
   def(Select, 'length', function () { return optionsOf(this).length; }, function (v) {
+    optionsOf(this);
     const n = +v >>> 0;
+    if (n > 100000) {
+      _consoleFn('warning', ["Unable to expand the option list and set an option at index=" + n + ". The maximum list length is 100000."]);
+      return;
+    }
     const opts = optionsOf(this);
     if (n < opts.length) {
-      for (let i = opts.length - 1; i >= n; i--) opts[i].remove();
+      for (let i = opts.length - 1; i >= n; i--) _legacyRemove(opts[i]);
     } else {
-      const doc = this.ownerDocument;
-      for (let i = opts.length; i < n; i++) _elCall('appendChild', this, [doc.createElement('option')]);
+      for (let i = opts.length; i < n; i++) _reflectApply(_legacyAppendChild, this, [_legacyCreate(this, 'option')]);
     }
   });
   method(Select, 'item', 1, function (index) {
-    const o = optionsOf(this)[+index >>> 0];
+    optionsOf(this);
+    if (arguments.length === 0) throw new TypeError("Failed to execute 'item' on 'HTMLSelectElement': 1 argument required, but only 0 present.");
+    const i = +index >>> 0;
+    const o = optionsOf(this)[i];
     return o === undefined ? null : o;
   });
   method(Select, 'namedItem', 1, function (name) {
+    optionsOf(this);
+    if (arguments.length === 0) throw new TypeError("Failed to execute 'namedItem' on 'HTMLSelectElement': 1 argument required, but only 0 present.");
+    if (typeof name === 'symbol') throw new TypeError('Cannot convert a Symbol value to a string');
     const key = _String(name);
     if (key === '') return null;
     const opts = optionsOf(this);
@@ -24106,14 +24548,9 @@ const _svgMemberOwners = {
   });
 
   const Option = globalThis.HTMLOptionElement;
-  def(Option, 'index', function () {
-    let select = this.parentNode;
-    if (select && select.localName === 'optgroup') select = select.parentNode;
-    if (!select || select.localName !== 'select') return 0;
-    const opts = optionsOf(select);
-    for (let i = 0; i < opts.length; i++) if (opts[i] === this) return i;
-    return 0;
-  });
+  // upstream 25700b9: the index within the select that owns the option (through any
+  // container but a nested select, datalist or option), 0 when none does.
+  def(Option, 'index', function () { return _legacyValue(this, 'option_index'); });
   def(Option, 'label', function () {
     const v = _elCall('getAttribute', this, ['label']);
     return v !== null ? v : this.text;

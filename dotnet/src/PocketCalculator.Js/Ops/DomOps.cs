@@ -417,6 +417,49 @@ public static class DomOps
             case "child_nodes":
                 return SerdeJson.IntArray(ExposeAll(dom, dom.Children(ParseNodeOrZero(arg1))));
 
+            // The legacy table and select collections (upstream d8f1467, 25700b9, 59276a3):
+            // a JSON array of node ids, or null when the node has the wrong interface.
+            case "table_rows":
+            case "table_head":
+            case "table_foot":
+            case "table_bodies":
+            case "table_section_rows":
+            case "table_row_cells":
+            case "select_options":
+            {
+                var nid = ParseNodeOrMax(arg1);
+                var ids = cmd switch
+                {
+                    "table_rows" => dom.TableRows(nid),
+                    "table_head" => dom.TableSections(nid, "thead"),
+                    "table_foot" => dom.TableSections(nid, "tfoot"),
+                    "table_bodies" => dom.TableSections(nid, "tbody"),
+                    "table_section_rows" => dom.TableSectionRows(nid),
+                    "table_row_cells" => dom.TableRowCells(nid),
+                    _ => dom.SelectOptions(nid),
+                };
+                return ids is null ? "null" : SerdeJson.IntArray(ExposeAll(dom, ids));
+            }
+
+            case "table_interface":
+                return dom.TableInterface(ParseNodeOrMax(arg1)) is { } iface ? SerdeJson.String(iface) : "null";
+
+            case "table_row_index":
+            case "table_section_row_index":
+            case "table_cell_index":
+            case "option_index":
+            {
+                var nid = ParseNodeOrMax(arg1);
+                var index = cmd switch
+                {
+                    "table_row_index" => dom.TableRowIndex(nid, false),
+                    "table_section_row_index" => dom.TableRowIndex(nid, true),
+                    "table_cell_index" => dom.TableCellIndex(nid),
+                    _ => dom.OptionIndex(nid),
+                };
+                return index is { } value ? value.ToString(CultureInfo.InvariantCulture) : "null";
+            }
+
             case "tag_name":
             {
                 var element = dom.GetNode(ParseNodeOrZero(arg1))?.AsElement();
@@ -1582,6 +1625,10 @@ public static class DomOps
 
     private static NodeId ParseNodeOrZero(string value) =>
         NodeId.New(uint.TryParse(value, out var raw) ? raw : 0);
+
+    /// <summary>A node id, or one that names no node (upstream's <c>unwrap_or(u32::MAX)</c>).</summary>
+    private static NodeId ParseNodeOrMax(string value) =>
+        NodeId.New(uint.TryParse(value, out var raw) ? raw : uint.MaxValue);
 
     /// <summary>
     /// A node id as op_dom returns it: the full wire value, generation included (see
