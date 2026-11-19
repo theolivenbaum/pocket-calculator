@@ -424,7 +424,12 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `page.title()` after `setContent` read the old one). Open: Chromium reparses a reopened
       document from scratch, so written head content lands in `<head>`; here it is appended to
       `<body>`
-- [ ] CDP lifecycle and sessions: `b8586de` + `34346af`, `875c531`; `7034ad6` already
+- [x] `b8586de` + `34346af`: a target's Network events (navigation, script-issued, aborted and
+      failed) and a paused request's `requestWillBeSent` reach every session attached to it;
+      lifecycle events and `Fetch.requestPaused` stay with the driving session. (Chromium sends
+      Network events only to sessions that called `Network.enable`; `Network.enable` is still
+      a stateless fast-path command here, as upstream)
+- [ ] CDP lifecycle and sessions: `875c531`; `7034ad6` already
 - [x] `eb2b515`: `DOM.querySelector[All]` search the `nodeId`'s subtree (absent or 0 is the
       document), and an unknown or malformed `nodeId` or an invalid selector is an error, not 0
       or []. With it, `:scope` is now bound to the query's element (it always meant the

@@ -227,6 +227,27 @@ public static partial class Page
         bool stopped = false)
     {
         ArgumentNullException.ThrowIfNull(ctx);
+        int start = ctx.PendingEvents.Count;
+        EmitNavigationEventsCore(
+            ctx, sessionId, frameId, loaderId, pageUrl, pageId, networkEvents, waitUntil, reachedNetworkIdle,
+            readiness, stopped);
+        FanOutNetworkEvents(ctx, pageId, sessionId, start);
+    }
+
+    private static void EmitNavigationEventsCore(
+        CdpContext ctx,
+        string? sessionId,
+        string frameId,
+        string loaderId,
+        string pageUrl,
+        string pageId,
+        IReadOnlyList<NetworkEvent> networkEvents,
+        WaitUntil waitUntil,
+        bool reachedNetworkIdle,
+        DocumentReadiness readiness = DocumentReadiness.Loaded,
+        bool stopped = false)
+    {
+        ArgumentNullException.ThrowIfNull(ctx);
         ArgumentNullException.ThrowIfNull(networkEvents);
 
         ctx.CurrentLoaderIds[pageId] = loaderId;
@@ -503,6 +524,20 @@ public static partial class Page
         string method)
     {
         ArgumentNullException.ThrowIfNull(ctx);
+        int start = ctx.PendingEvents.Count;
+        EmitAbortedNavigationCore(ctx, sessionId, frameId, loaderId, url, method);
+        FanOutNetworkEvents(ctx, ctx.GetSessionPage(sessionId)?.Id, sessionId, start);
+    }
+
+    private static void EmitAbortedNavigationCore(
+        CdpContext ctx,
+        string? sessionId,
+        string frameId,
+        string loaderId,
+        string url,
+        string method)
+    {
+        ArgumentNullException.ThrowIfNull(ctx);
         double ts = Timestamp();
         ctx.PendingEvents.Add(new CdpEvent
         {
@@ -634,6 +669,20 @@ public static partial class Page
         IReadOnlyList<NetworkEvent> networkEvents)
     {
         ArgumentNullException.ThrowIfNull(ctx);
+        int start = ctx.PendingEvents.Count;
+        EmitRuntimeNetworkEventsCore(ctx, sessionId, frameId, pageUrl, pageId, networkEvents);
+        FanOutNetworkEvents(ctx, pageId, sessionId, start);
+    }
+
+    private static void EmitRuntimeNetworkEventsCore(
+        CdpContext ctx,
+        string? sessionId,
+        string frameId,
+        string pageUrl,
+        string pageId,
+        IReadOnlyList<NetworkEvent> networkEvents)
+    {
+        ArgumentNullException.ThrowIfNull(ctx);
         ArgumentNullException.ThrowIfNull(networkEvents);
         if (networkEvents.Count == 0)
         {
@@ -704,6 +753,70 @@ public static partial class Page
     /// (upstream b76d966 <c>emit_navigation_failure</c>).
     /// </summary>
     internal static void EmitNavigationFailure(
+        CdpContext ctx,
+        string? sessionId,
+        string requestId,
+        string errorText)
+    {
+        ArgumentNullException.ThrowIfNull(ctx);
+        int start = ctx.PendingEvents.Count;
+        EmitNavigationFailureCore(ctx, sessionId, requestId, errorText);
+        FanOutNetworkEvents(ctx, ctx.GetSessionPage(sessionId)?.Id, sessionId, start);
+    }
+
+    /// <summary>
+    /// The other sessions attached to <paramref name="pageId"/> (upstream b8586de), sorted:
+    /// each gets the target's Network events, while Fetch pauses and lifecycle events stay
+    /// with the driving session.
+    /// </summary>
+    internal static List<string> NetworkObserverSessions(CdpContext ctx, string? pageId, string? source)
+    {
+        List<string> observers = [];
+        if (pageId is null)
+        {
+            return observers;
+        }
+        foreach ((string session, string page) in ctx.Sessions)
+        {
+            if (string.Equals(page, pageId, StringComparison.Ordinal)
+                && !string.Equals(session, source, StringComparison.Ordinal))
+            {
+                observers.Add(session);
+            }
+        }
+        observers.Sort(StringComparer.Ordinal);
+        return observers;
+    }
+
+    /// <summary>Copy the Network events queued since <paramref name="start"/> to every observer session.</summary>
+    private static void FanOutNetworkEvents(CdpContext ctx, string? pageId, string? source, int start)
+    {
+        List<string> observers = NetworkObserverSessions(ctx, pageId, source);
+        if (observers.Count == 0)
+        {
+            return;
+        }
+        int end = ctx.PendingEvents.Count;
+        foreach (string observer in observers)
+        {
+            for (int i = start; i < end; i++)
+            {
+                CdpEvent queued = ctx.PendingEvents[i];
+                if (queued.Method is "Network.requestWillBeSent" or "Network.responseReceived"
+                    or "Network.loadingFinished" or "Network.loadingFailed")
+                {
+                    ctx.PendingEvents.Add(new CdpEvent
+                    {
+                        Method = queued.Method,
+                        Params = queued.Params?.DeepClone(),
+                        SessionId = observer,
+                    });
+                }
+            }
+        }
+    }
+
+    private static void EmitNavigationFailureCore(
         CdpContext ctx,
         string? sessionId,
         string requestId,

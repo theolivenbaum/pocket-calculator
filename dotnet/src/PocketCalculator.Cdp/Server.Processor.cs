@@ -361,7 +361,8 @@ public static partial class CdpServer
         if (route is { } live && replyTx is { } reply)
         {
             ServerSupport.EmitInterceptedRequest(
-                request, live.FrameId, live.SessionId, reply, interceptedPaused);
+                request, live.FrameId, live.SessionId, reply, interceptedPaused,
+                observers: Domains.Page.NetworkObserverSessions(ctx, request.PageId, live.SessionId));
         }
         else
         {

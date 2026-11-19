@@ -264,7 +264,8 @@ internal static class ServerSupport
         string? sessionId,
         ChannelWriter<string> replyTx,
         Dictionary<string, PausedIntercept> interceptedPaused,
-        string? loader = null)
+        string? loader = null,
+        IReadOnlyList<string>? observers = null)
     {
         CdpLog.Info(
             $"INTERCEPTION: requestPaused for {intercepted.Method} {intercepted.Url} (sending to client)");
@@ -296,6 +297,13 @@ internal static class ServerSupport
             ["sessionId"] = sessionId,
         };
         replyTx.TryWrite(CdpJson.Serialize(requestWillBeSent));
+        // upstream b8586de / 34346af: the target's other sessions see the request too; only the
+        // driving session is asked to resolve the pause.
+        foreach (string observer in observers ?? [])
+        {
+            requestWillBeSent["sessionId"] = observer;
+            replyTx.TryWrite(CdpJson.Serialize(requestWillBeSent));
+        }
 
         var requestPaused = new JsonObject
         {

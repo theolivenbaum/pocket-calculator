@@ -252,7 +252,8 @@ public static partial class CdpServer
                 }
 
                 ServerSupport.EmitInterceptedRequest(
-                    request, frameId, sessionForEvents, replyTx, interceptedPaused, loader);
+                    request, frameId, sessionForEvents, replyTx, interceptedPaused, loader,
+                    Domains.Page.NetworkObserverSessions(ctx, request.PageId, sessionForEvents));
                 await Task.Delay(50).ConfigureAwait(false);
                 continue;
             }
