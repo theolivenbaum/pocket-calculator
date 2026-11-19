@@ -20623,6 +20623,20 @@ for (const name of ['appCodeName', 'appName', 'appVersion', 'platform', 'product
 _defineProperty(WorkerNavigator.prototype, Symbol.toStringTag, { value: 'WorkerNavigator', configurable: true });
 _markNative(WorkerNavigator);
 
+const _WORKER_GLOBALS = _objectFreeze([
+  'Object', 'Function', 'Array', 'Number', 'parseFloat', 'parseInt', 'Infinity', 'NaN', 'undefined',
+  'Boolean', 'String', 'Symbol', 'Date', 'Promise', 'RegExp', 'Error', 'AggregateError', 'EvalError',
+  'RangeError', 'ReferenceError', 'SyntaxError', 'TypeError', 'URIError', 'JSON', 'Math', 'Intl',
+  'ArrayBuffer', 'SharedArrayBuffer', 'Atomics', 'Uint8Array', 'Int8Array', 'Uint16Array', 'Int16Array',
+  'Uint32Array', 'Int32Array', 'Float32Array', 'Float64Array', 'Uint8ClampedArray', 'BigUint64Array',
+  'BigInt64Array', 'DataView', 'Map', 'BigInt', 'Set', 'WeakMap', 'WeakSet', 'WeakRef',
+  'FinalizationRegistry', 'Proxy', 'Reflect', 'WebAssembly', 'decodeURI', 'decodeURIComponent',
+  'encodeURI', 'encodeURIComponent', 'escape', 'unescape', 'isFinite', 'isNaN',
+  'queueMicrotask', 'structuredClone', 'URL', 'URLSearchParams', 'Blob', 'File', 'FormData', 'Headers',
+  'Request', 'Response', 'AbortController', 'AbortSignal', 'Event', 'CustomEvent', 'EventTarget',
+  'MessageChannel', 'MessagePort', 'BroadcastChannel', 'ReadableStream', 'WritableStream',
+  'TransformStream', 'XMLHttpRequest', 'WebSocket', 'indexedDB', 'navigator', 'DOMException',
+]);
 globalThis.Worker = class Worker {
   constructor(url, options) {
     if (arguments.length === 0) {
@@ -20736,6 +20750,15 @@ globalThis.Worker = class Worker {
       _defineProperty(scope, key, { value: undefined, writable: true, enumerable: false, configurable: true });
     }
     _defineProperty(scope, Symbol.unscopables, { value: _workerUnscopables, writable: false, enumerable: false, configurable: false });
+    // upstream e4f11db: a worker global carries the ECMAScript builtins and the worker-visible
+    // web APIs as its own properties. Bare identifiers already resolved through the page
+    // global, but code that treats `self` as the global object (Go's wasm_exec runs with
+    // `global = self`, reading `self.Object`, `self.Promise`, `self.JSON`) saw undefined.
+    for (const name of _WORKER_GLOBALS) {
+      if (!(name in scope) && name in globalThis) {
+        _defineProperty(scope, name, { value: globalThis[name], writable: true, enumerable: false, configurable: true });
+      }
+    }
     _defineProperty(scope, 'self', { value: scope, writable: true, enumerable: true, configurable: true });
     _defineProperty(scope, 'globalThis', { value: scope, writable: true, enumerable: false, configurable: true });
     return scope;

@@ -569,8 +569,13 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `--storage-dir` does not persist IndexedDB. Left open, as upstream: store/index renaming,
       `continuePrimaryKey()`, the getAll options dictionaries, readonly transactions that run
       in parallel, index and cursor steps that use a native index instead of scanning
+- [x] `e4f11db`: the worker global carries the ECMAScript builtins and worker-visible web APIs
+      as own non-enumerable properties (`self.Object`, `self.Promise`, `self.JSON`; Go's
+      `wasm_exec` needs them); `globalThis` already was the scope
 - [ ] Frames (within the separate-engine design): `20299be`, `12b40f6` + `bcf6d03`,
-      `8dddc6f`, `47a3431`, `6d25c43`, `667eb59`, `e4f11db`; a real-realm
+      `8dddc6f`, `47a3431`, `6d25c43`, `667eb59` (Chromium: named access matches a child
+      context by its name fixed at creation, `contentWindow.name`, which the port reports as
+      empty; an iframe's `name` attribute alone does not make it a named element); a real-realm
       `contentWindow` (`24d8742`, `911c45c`) needs a design decision first
 - [ ] DOM and web APIs: `19fa7a3`, `4dfc90f`, `831cb29`/`ccdaf10` interface brands,
       `790a77d`, `cbcafc1` Response validation, `d57489c` AES-KW, `e4b6138` User Timing,

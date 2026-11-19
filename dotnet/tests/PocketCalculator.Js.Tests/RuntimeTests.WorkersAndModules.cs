@@ -40,6 +40,18 @@ public sealed partial class RuntimeTests
         return rt.Evaluate("globalThis.__w");
     }
 
+    // Upstream e4f11db: the builtins and worker-visible web APIs are own, non-enumerable
+    // properties of the worker global. Chromium 1243 answers the same array.
+    [Fact]
+    public async Task WorkerScopeCarriesBuiltinsAsProperties()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
+        var result = await RunWorkerAsync(
+            fixture.Runtime,
+            "new Worker(URL.createObjectURL(new Blob([\"postMessage(JSON.stringify([typeof self.Object, typeof self.Promise, typeof self.JSON, self.JSON === JSON, globalThis === self, Object.keys(self).includes('Object'), typeof self.WebAssembly, typeof self.URL, 'Promise' in self]))\"], {type: 'text/javascript'})))");
+        Assert.Equal("[\"function\",\"function\",\"object\",true,true,false,\"object\",\"function\",true]", result?.GetValue<string>());
+    }
+
     private const string ImportScriptsWorker = """
         var Module = { a: 5 };
         const out = {};
