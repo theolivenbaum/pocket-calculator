@@ -9880,7 +9880,13 @@ let _bootHistory = null;
 function _fragmentNavigate(target, replace) {
   var current = __currentUrl();
   var h = _bootHistory;
-  if (h) {
+  // Upstream fb23f18: a fragment navigation to the URL the document is already at keeps
+  // its entry, state included (no new entry, no hashchange). Chromium 1243 still fires
+  // popstate for it, with a null state; upstream fires nothing (deviation).
+  var same = current === target;
+  if (same) {
+    // Nothing moves.
+  } else if (h) {
     // A fragment navigation gets a fresh entry with null state, per spec.
     _reflectApply(replace ? h.replaceState : h.pushState, h.history, [null, '', target]);
   } else {
@@ -9895,7 +9901,7 @@ function _fragmentNavigate(target, replace) {
   }
   try {
     var state = null;
-    try { state = h ? _reflectApply(h.state, h.history, []) : null; } catch (e) {}
+    try { state = h && !same ? _reflectApply(h.state, h.history, []) : null; } catch (e) {}
     _dispatchWindowEventWithHandler(new PopStateEvent('popstate', { state: state }), 'onpopstate');
   } catch (e) {}
 }

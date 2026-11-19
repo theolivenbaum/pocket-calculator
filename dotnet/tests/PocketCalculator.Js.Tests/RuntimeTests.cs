@@ -1236,6 +1236,66 @@ public sealed partial class RuntimeTests
         Assert.True(obj["illegal"]!.GetValue<bool>());
     }
 
+    /// <summary>Upstream fb23f18. Chromium 1243 gives the same values.</summary>
+    [Fact]
+    public async Task LocationHashPreservesLeadingHashesAndIgnoresAnUnchangedEmptyFragment()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
+        var rt = fixture.Runtime;
+        rt.ExecuteScript(
+            "hash-setter",
+            """
+            globalThis.__hashEvents = [];
+            addEventListener('hashchange', e => __hashEvents.push([e.oldURL, e.newURL]));
+            location.hash = '';
+            location.hash = '#';
+            globalThis.__emptyHashResult = [location.href, history.length];
+            location.hash = '##panel';
+            location.hash = '##panel';
+            """);
+        Assert.Null(rt.TakePendingNavigation());
+        await EventLoopWait.UntilIdleAsync(rt);
+        AssertJson(
+            """
+            [["http://example.com/test",1],"http://example.com/test##panel","##panel",2,
+             [["http://example.com/test","http://example.com/test##panel"]]]
+            """,
+            rt.Evaluate("[__emptyHashResult, location.href, location.hash, history.length, __hashEvents]"));
+    }
+
+    /// <summary>
+    /// Upstream fb23f18: a fragment navigation to the URL the document is already at is a
+    /// replace that keeps the entry's state. Measured in Chromium 1243 (http document,
+    /// replaceState({saved:1}, '', '#panel') then location.assign/href/replace('#panel') and
+    /// a click on &lt;a href=#panel&gt;): history.state stays {saved:1}, history.length does
+    /// not grow and no hashchange fires, but each one still fires popstate, with a null
+    /// state. Upstream fires nothing at all.
+    /// </summary>
+    [Fact]
+    public async Task SameFragmentNavigationPreservesHistoryState()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body><a id=tab href='#panel'>tab</a></body></html>");
+        var rt = fixture.Runtime;
+        rt.ExecuteScript(
+            "same-fragment",
+            """
+            history.replaceState({saved: 1}, '', '#panel');
+            globalThis.__sameHashEvents = 0;
+            globalThis.__pops = [];
+            addEventListener('hashchange', () => __sameHashEvents++);
+            addEventListener('popstate', e => __pops.push(e.state));
+            location.assign('#panel');
+            location.href = '#panel';
+            location.replace('#panel');
+            document.getElementById('tab').click();
+            """);
+        await EventLoopWait.UntilIdleAsync(rt);
+        Assert.Null(rt.TakePendingNavigation());
+        AssertJson(
+            """[{"saved":1},1,"#panel",0,[null,null,null,null]]""",
+            rt.Evaluate("[history.state, history.length, location.hash, __sameHashEvents, __pops]"));
+    }
+
     /// <summary>Upstream d01bc8d (for 1a0773d).</summary>
     [Fact]
     public void HistoryReadsHostSessionEntriesAndQueuesCrossDocumentTraversal()
