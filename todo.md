@@ -459,7 +459,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `DOM.documentUpdated` on a new document, and qualified attribute names. Shadow roots are
       reported (`shadowRoots`, expanded with `pierce`) and pushed through, as Chromium does
       (see Known deviations)
-- [ ] CDP DOM domain and evaluation: `229d1ed`, `f66ac0a` (`__proto__` in JSON args), `7a2b9ae`
+- [x] `229d1ed`: every connected iframe/frame owner in a `getDocument`, `describeNode` or
+      `setChildNodes` tree carries its live child `frameId`, not only a described root; a
+      removed owner reports none. A reinserted owner keeps its old frame id (see Known
+      deviations)
+- [ ] CDP DOM domain and evaluation: `f66ac0a` (`__proto__` in JSON args), `7a2b9ae`
 - [x] CDP control plane: `1faf17f` allowlist part (`POCKETCALCULATOR_CDP_ALLOWED_ORIGINS`, like
       Chromium's --remote-allow-origins); its default acceptance of the endpoint's own Origin is
       declined: Chromium 1243 refuses every Origin without the flag (measured 2026-11-18).
@@ -2744,6 +2748,13 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
     `pierce`, user-agent shadow roots, `assignedSlot`/`distributedNodes`, `parentId`, the
     inlined lone text child, `children: []` on empty nodes, and the mutation events
     (`childNodeInserted`, `shadowRootPushed`) that would publish nodes added later.
+- Frame owners in DOM trees (`229d1ed`): an owner reports a `frameId` only while it is
+  connected, read from the DOM tree, where upstream checks the owner's document generation
+  and the frame's live timers. Not matched: an iframe removed and reinserted keeps its frame
+  state and id here, where Chromium (measured, 1243) and upstream create a new frame with a
+  new id, so `ChildFrameTree.CrossOriginIframeOwnerMetadataDoesNotReviveDetachedContexts`
+  leaves out upstream's "new id" assertion. That is frame lifecycle in the shim's
+  `_iframeStates`, not the DOM domain.
 
 ### Operator font directories load per render pass, not into a cached base database
 

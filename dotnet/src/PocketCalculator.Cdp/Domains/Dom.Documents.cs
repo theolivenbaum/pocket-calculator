@@ -209,6 +209,12 @@ public static partial class Dom
     {
         foreach ((NodeId parent, JsonArray nodes) in pushes)
         {
+            // upstream 229d1ed: pushed iframe owners carry their live frame's id too.
+            foreach (JsonNode? node in nodes)
+            {
+                AnnotateFrameOwners(page, 0, node);
+            }
+
             ctx.PendingEvents.Add(new CdpEvent
             {
                 Method = "DOM.setChildNodes",

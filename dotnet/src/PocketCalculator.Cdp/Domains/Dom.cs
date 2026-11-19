@@ -91,6 +91,7 @@ public static partial class Dom
 
                 // upstream 717dd92: remember what this session was given, for the
                 // setChildNodes pushes that requestChildNodes and requestNode make.
+                AnnotateFrameOwners(page, 0, root);
                 var state = new DomDocument(page.Id, sessionId);
                 state.Remember(root);
                 ctx.DomDocuments[DocumentKey(sessionId)] = state;
@@ -261,7 +262,7 @@ public static partial class Dom
                     node = SerializeNode(dom, NodeId.New((uint)nodeId), unchecked((uint)depth), 0, ctx, pierce);
                     return true;
                 });
-                AddContentFrameId(page, document, node);
+                AnnotateFrameOwners(page, document, node);
                 return DomainResult.Ok(new JsonObject { ["node"] = node });
             }
 
@@ -720,25 +721,55 @@ public static partial class Dom
             : 0;
 
     /// <summary>
-    /// Chromium's <c>Node.frameId</c> on an iframe element that owns a live child frame,
-    /// which is how Playwright's and Puppeteer's <c>contentFrame()</c> find the frame.
+    /// Chromium's <c>Node.frameId</c> on every iframe element in a serialized tree that owns a
+    /// live child frame, which is how Playwright's and Puppeteer's <c>contentFrame()</c> find
+    /// the frame (upstream 229d1ed: the whole tree, in getDocument, describeNode and
+    /// setChildNodes pushes, not only a described root).
     /// </summary>
-    private static void AddContentFrameId(BrowserPage page, uint document, JsonNode? node)
+    /// <param name="document">The frame whose document the tree is from; 0 for the page's.</param>
+    private static void AnnotateFrameOwners(BrowserPage page, uint document, JsonNode? root)
     {
-        if (page.Frames.Count == 0
-            || node is not JsonObject value
-            || value["localName"]?.GetValue<string>() is not ("iframe" or "frame")
-            || value["backendNodeId"]?.GetValue<ulong>() is not { } nid)
+        if (page.Frames.Count == 0)
         {
             return;
         }
 
-        double? child = page.EvaluateHostIn(
-            document,
-            $"__obscura_host.frameIdOf(__obscura_host.dom.wrap({nid.ToString(CultureInfo.InvariantCulture)}))").AsF64();
-        if (child is { } id and > 0 && page.FrameById((uint)id) is not null)
+        var pending = new Stack<JsonNode?>();
+        pending.Push(root);
+        while (pending.TryPop(out JsonNode? node))
         {
-            value["frameId"] = Page.ChildFrameId(page.FrameId, (uint)id);
+            if (node is not JsonObject value)
+            {
+                continue;
+            }
+
+            // Only a connected owner has a live frame: Chromium destroys an iframe's frame when
+            // it leaves the document (upstream 229d1ed checks the owner's document generation
+            // and the frame's live timers; the port's frame record outlives the removal until
+            // the next settle, so it asks the tree).
+            if (value["localName"].AsString() is "iframe" or "frame"
+                && value["backendNodeId"].AsU64() is { } nid and <= uint.MaxValue
+                && page.WithFrameDom(document, dom => dom.GetNode(NodeId.New((uint)nid))?.Connected == true))
+            {
+                double? child = page.EvaluateHostIn(
+                    document,
+                    $"__obscura_host.frameIdOf(__obscura_host.dom.wrap({nid.ToString(CultureInfo.InvariantCulture)}))").AsF64();
+                if (child is { } id and > 0 && page.FrameById((uint)id) is not null)
+                {
+                    value["frameId"] = Page.ChildFrameId(page.FrameId, (uint)id);
+                }
+            }
+
+            foreach (string key in (ReadOnlySpan<string>)["children", "shadowRoots"])
+            {
+                if (value[key] is JsonArray items)
+                {
+                    foreach (JsonNode? item in items)
+                    {
+                        pending.Push(item);
+                    }
+                }
+            }
         }
     }
 
