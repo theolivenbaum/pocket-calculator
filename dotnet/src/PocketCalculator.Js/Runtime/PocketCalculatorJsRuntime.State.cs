@@ -496,7 +496,7 @@ public sealed partial class PocketCalculatorJsRuntime
 
     // upstream 3f37d91: module responses, recorded by the loader on whichever thread fetched
     // them and moved into the page state on the page thread when events or bodies are read.
-    private readonly System.Collections.Concurrent.ConcurrentQueue<(JsNetworkEvent Event, StoredNetworkResponseBody Body, int Bytes)>
+    private readonly System.Collections.Concurrent.ConcurrentQueue<(JsNetworkEvent Event, StoredNetworkResponseBody? Body, int Bytes)>
         _moduleResponses = new();
 
     private static long s_nextModuleRequestId;
@@ -529,11 +529,36 @@ public sealed partial class PocketCalculatorJsRuntime
         }, new StoredNetworkResponseBody(body, base64), response.Body.Length));
     }
 
+    /// <summary>
+    /// upstream 8440fe6: a module request that failed in the transport reports
+    /// <c>net::ERR_FAILED</c> to the same Network listeners as a failed fetch.
+    /// </summary>
+    private void RecordModuleFailure(string url) =>
+        _moduleResponses.Enqueue((new JsNetworkEvent
+        {
+            RequestId = "module-" + Interlocked.Increment(ref s_nextModuleRequestId).ToString(CultureInfo.InvariantCulture),
+            Url = url,
+            Method = "GET",
+            ResourceType = "Script",
+            Status = 0,
+            ResponseHeaders = new Dictionary<string, string>(StringComparer.Ordinal),
+            BodySize = 0,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+            ErrorText = "net::ERR_FAILED",
+        }, null, 0));
+
     private void DrainModuleResponses()
     {
         while (_moduleResponses.TryDequeue(out var recorded))
         {
-            FetchOps.RecordNetworkCompletion(State, recorded.Event, recorded.Body, recorded.Bytes);
+            if (recorded.Body is { } body)
+            {
+                FetchOps.RecordNetworkCompletion(State, recorded.Event, body, recorded.Bytes);
+            }
+            else
+            {
+                FetchOps.RecordNetworkFailure(State, recorded.Event);
+            }
         }
     }
 

@@ -1192,6 +1192,7 @@ public sealed partial class PocketCalculatorJsRuntime
         {
             ReferrerPolicy = page.ReferrerPolicyCache?.Policy ?? page.ReferrerPolicyHeader,
             RecordResponse = page.HttpClient is null ? null : RecordModuleResponse,
+            RecordFailure = page.HttpClient is null ? null : RecordModuleFailure,
         };
     }
 

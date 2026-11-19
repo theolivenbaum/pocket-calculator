@@ -53,6 +53,12 @@ public readonly record struct ModuleNetworkContext
     /// </summary>
     public Action<Response>? RecordResponse { get; init; }
 
+    /// <summary>
+    /// Records a module request that failed without a response (upstream 8440fe6), as a
+    /// failed fetch or XHR is. May be called off the runtime thread.
+    /// </summary>
+    public Action<string>? RecordFailure { get; init; }
+
     /// <summary>Why there is no usable network context, or null.</summary>
     public string? Error { get; private init; }
 
@@ -688,6 +694,10 @@ public sealed class PocketCalculatorModuleLoader : DocumentLoader, IDisposable
         }
         catch (Exception ex) when (ex is not ModuleLoadException)
         {
+            if (!isFile)
+            {
+                network.RecordFailure?.Invoke(url);
+            }
             if (isFile)
             {
                 // No I/O detail ("Could not find a part of the path"), for the reason above.

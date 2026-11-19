@@ -58,6 +58,27 @@ public sealed class ModuleNetworkEvents
         AssertModule(page, server, "/child.js", 200, Child, resourceType: "Fetch");
     }
 
+    // Upstream 8440fe6: a module request that fails without a response is reported too.
+    [Fact]
+    public async Task Failed_module_requests_report_a_network_failure()
+    {
+        var closed = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        closed.Start();
+        var deadPort = ((System.Net.IPEndPoint)closed.LocalEndpoint).Port;
+        closed.Stop();
+        var deadUrl = $"http://127.0.0.1:{deadPort}/dead.js";
+        using TestHttpServer server = TestHttpServer.Start(_ => TestResponse.Html(
+            $"<html><head><script type=module src=\"{deadUrl}\"></script></head><body></body></html>"));
+        using Page page = PageFixtures.NewPage("module-network-failure");
+        await page.NavigateAsync($"{server.Origin}/");
+        page.SyncJsNetworkEvents();
+
+        var failure = Assert.Single(page.NetworkEvents, e => e.Url == deadUrl);
+        Assert.Equal("Script", failure.ResourceType);
+        Assert.Equal(0, failure.Status);
+        Assert.Equal("net::ERR_FAILED", failure.ErrorText);
+    }
+
     private static void AssertModule(
         Page page, TestHttpServer server, string path, int status, string body, string resourceType = "Script")
     {

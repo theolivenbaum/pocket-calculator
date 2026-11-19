@@ -472,7 +472,9 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       headers and body, under a `module-{N}` id, whether the graph later fails) instead of a
       synthetic 200 for the entry module; the script phase ends by syncing script-issued
       requests, and suspending a runtime keeps its events and stored bodies on the page
-- [ ] Network fidelity: `8440fe6`, `3aa2f59`, `a1dd711`
+- [x] `8440fe6`: a module request that fails in the transport reports a `net::ERR_FAILED`
+      Script event, as a failed fetch or XHR does
+- [ ] Network fidelity: `3aa2f59`, `a1dd711`
 - [x] `0155807` (AbortSignal): fetch() rejects with the signal's reason before and during the
       request (the op is cancelled, Network.loadingFailed net::ERR_ABORTED), an unread body
       errors on abort, Request has its own following signal, private signal state, trusted

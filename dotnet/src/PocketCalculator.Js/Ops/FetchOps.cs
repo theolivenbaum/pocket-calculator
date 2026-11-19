@@ -258,6 +258,16 @@ public static partial class FetchOps
         }
     }
 
+    /// <summary>Queue a failure event (no body) for the CDP layer.</summary>
+    internal static void RecordNetworkFailure(PocketCalculatorState gs, JsNetworkEvent networkEvent)
+    {
+        gs.JsNetworkEvents.Add(networkEvent);
+        if (gs.JsNetworkEvents.Count > MaxJsNetworkEvents)
+        {
+            gs.JsNetworkEvents.RemoveRange(0, gs.JsNetworkEvents.Count - MaxJsNetworkEvents);
+        }
+    }
+
     internal static void RecordInterceptedCompletion(
         PocketCalculatorState gs,
         string requestId,
