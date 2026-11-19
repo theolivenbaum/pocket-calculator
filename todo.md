@@ -642,7 +642,8 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [ ] From merges: `61aa8fb` CDP URL pattern matcher (done, see CDP Fetch), `fded066` (done,
       see Render layout), `8a4d745` real bold faces and kerning (done, see Render text),
       `322f46c` (done, see Render layout), `ab19571` (already, tests ported), `97f8f81`
-      (done), `d04b661` (done, see Computed style), `4c12826`, `716826c`
+      (done), `d04b661` (done, see Computed style), `716826c` (already: FileList is a real
+      interface whose list members include `Symbol.iterator`), `4c12826` (with the DOM and web APIs group)
 - [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `35b9448`, `a2bfd32`,
       `3a4a0b5`, `8bb46be`, `3a9eb06`, `8310ebf`, `acff100`, `503a66d`, `786fde5` + `7d9ed8a`
 
