@@ -6644,7 +6644,7 @@ class Element extends Node {
     return null;
   }
   get options() {
-    if (this.localName === 'select') return HTMLCollection._from(_selectOptions(this));
+    if (this.localName === 'select') return _selectOptionsCollection(this);
     if (this.localName !== 'datalist') return [];
     return HTMLCollection._from(_qsa(this, 'option'));
   }
@@ -18051,21 +18051,27 @@ function _legacyNamed(elements, key) {
 // where Reflect.set and Reflect.defineProperty of an index answer true (and change nothing)
 // although a strict-mode assignment throws: a Proxy cannot answer true and still throw, so
 // both answer false, as upstream's do and WebIDL says.
-function _liveLegacyCollection(owner, op) {
+// `op` is an op_dom command, or a function answering the elements. With `setIndex` (an
+// HTMLOptionsCollection), an index is settable through it and `length` through the prototype.
+function _liveLegacyCollection(owner, op, proto = HTMLCollection.prototype, setIndex = null) {
   let epoch = -1;
   let elements = [];
   const refresh = () => {
     if (epoch !== _domMutationEpoch) {
-      const ids = _domParse(op, owner._nid);
-      if (ids === null) throw new TypeError('Illegal invocation');
-      elements = _wrapIdList(ids);
+      if (typeof op === 'function') {
+        elements = op();
+      } else {
+        const ids = _domParse(op, owner._nid);
+        if (ids === null) throw new TypeError('Illegal invocation');
+        elements = _wrapIdList(ids);
+      }
       epoch = _domMutationEpoch;
     }
     return elements;
   };
   const named = (t, key) => typeof key === 'string' && !_legacyReflectHas(t, key)
     ? _legacyNamed(refresh(), key) : null;
-  const target = _objectCreate(HTMLCollection.prototype);
+  const target = _objectCreate(proto);
   const collection = new Proxy(target, {
     get(t, key, receiver) {
       if (key === 'length') return refresh().length;
@@ -18115,10 +18121,19 @@ function _liveLegacyCollection(owner, op) {
       return row ? { value: row, writable: false, enumerable: false, configurable: true } : undefined;
     },
     set(t, key, value, receiver) {
+      if (setIndex !== null) {
+        if (key === 'length') return _legacyReflectSet(t, key, value, receiver);
+        if (_isArrayIndexKey(key)) { setIndex(+key, value); return true; }
+      }
       if (key === 'length' || _isArrayIndexKey(key) || named(t, key) !== null) return false;
       return _legacyReflectSet(t, key, value, receiver);
     },
     defineProperty(t, key, descriptor) {
+      if (setIndex !== null && _isArrayIndexKey(key)
+          && !_objectHasOwn(descriptor, 'get') && !_objectHasOwn(descriptor, 'set')) {
+        if (_objectHasOwn(descriptor, 'value')) setIndex(+key, descriptor.value);
+        return true;
+      }
       if (key === 'length' || _isArrayIndexKey(key) || named(t, key) !== null) return false;
       return _legacyReflectDefine(t, key, descriptor);
     },
@@ -18360,7 +18375,18 @@ _defineTableSpan('colSpan', 'colspan', 1, 1000);
 _defineTableSpan('rowSpan', 'rowspan', 0, 65534);
 
 // The options a select owns (upstream 25700b9): not those of a nested select or datalist.
-function _selectOptions(select) { return _legacyList(select, 'select_options'); }
+// upstream 8310ebf: reused while the document is unmutated (per DOM mutation epoch), so a
+// `for (i < select.length) select.options[i]` loop is not quadratic in native queries. The
+// shim's readers never modify the array.
+const _selectOptionLists = new WeakMap();
+function _selectOptionsEntry(select) {
+  const cached = _weakMapGet(_selectOptionLists, select);
+  if (cached !== undefined && cached.epoch === _domMutationEpoch) return cached;
+  const entry = { epoch: _domMutationEpoch, options: _legacyList(select, 'select_options') };
+  _weakMapSet(_selectOptionLists, select, entry);
+  return entry;
+}
+function _selectOptions(select) { return _selectOptionsEntry(select).options; }
 // A select's options for the shim's own reads, cached per DOM mutation epoch. Keyed by the
 // wrapper's Proxy target, which is what the index handler sees.
 const _selectSnapshots = new WeakMap();
@@ -18445,6 +18471,47 @@ _selectIndexHandler = _objectFreeze({
     return keys;
   },
   preventExtensions() { return false; },
+});
+// select.options is an HTMLOptionsCollection: one live object per select (Chromium 157:
+// `select.options === select.options`), whose length, indices, selectedIndex, add() and
+// remove() act on the select. DEVIATION from crates/obscura-js/js/bootstrap.js, whose options
+// is a new static HTMLCollection on every read (setting its length did nothing) and which has
+// no HTMLOptionsCollection interface.
+const _optionsCollectionOwners = new WeakMap();
+const _optionsCollections = new WeakMap();
+globalThis.HTMLOptionsCollection = class HTMLOptionsCollection extends HTMLCollection {
+  constructor() { throw new TypeError('Illegal constructor'); }
+};
+_markNative(HTMLOptionsCollection);
+function _optionsOwner(collection) {
+  const select = _weakMapGet(_optionsCollectionOwners, collection);
+  if (select === undefined) throw new TypeError('Illegal invocation');
+  return select;
+}
+function _selectOptionsCollection(select) {
+  let collection = _weakMapGet(_optionsCollections, select);
+  if (collection !== undefined) return collection;
+  _selectOptions(select);
+  collection = _liveLegacyCollection(select, () => _selectOptions(select),
+    HTMLOptionsCollection.prototype, (index, value) => { select[index] = value; });
+  _weakMapSet(_optionsCollections, select, collection);
+  _weakMapSet(_optionsCollectionOwners, collection, select);
+  return collection;
+}
+_defineLegacyAccessor(HTMLOptionsCollection, 'length',
+  function () { return _selectOptions(_optionsOwner(this)).length; },
+  function (value) { _optionsOwner(this).length = value; });
+_defineLegacyAccessor(HTMLOptionsCollection, 'selectedIndex',
+  function () { return _optionsOwner(this).selectedIndex; },
+  function (value) { _optionsOwner(this).selectedIndex = value; });
+_defineLegacyMethod(HTMLOptionsCollection, 'add', 1, function (element, before = null) {
+  return _optionsOwner(this).add(element, before);
+});
+_defineLegacyMethod(HTMLOptionsCollection, 'remove', 1, function (index) {
+  const select = _optionsOwner(this);
+  if (arguments.length === 0) throw new TypeError("Failed to execute 'remove' on 'HTMLOptionsCollection': 1 argument required, but only 0 present.");
+  const option = _selectOptions(select)[+index | 0];
+  if (option) _legacyRemove(option);
 });
 // Build a NodeList (no named access, per spec) for querySelectorAll and
 // childNodes. Kept light on purpose: querySelectorAll is the hottest query API.

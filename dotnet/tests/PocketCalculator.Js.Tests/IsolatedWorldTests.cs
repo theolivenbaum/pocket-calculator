@@ -238,4 +238,23 @@ public sealed class IsolatedWorldTests
         Assert.Equal(1, (await InWorld(runtime, "initRan", world))?.GetValue<double>());
         Assert.Equal("undefined", runtime.Evaluate("typeof initRan")?.GetValue<string>());
     }
+
+    // Upstream 8310ebf (select_length_snapshot_observes_native_dom_mutations): the page's cached
+    // select options see a mutation made outside its realm. Upstream mutates the native tree
+    // directly; here every mutation goes through a realm, so it comes from an isolated world.
+    [Fact]
+    public async Task SelectOptionsCacheObservesAnotherRealmsMutation()
+    {
+        using var fixture = RuntimeFixture.Setup(
+            "<html><body><select id='s'><option>A</option><option id='b'>B</option></select></body></html>");
+        var runtime = fixture.Runtime;
+        Assert.Equal(2, runtime.Evaluate(
+            "(() => { globalThis.savedSelect = document.getElementById('s'); return savedSelect.options.length; })()")
+            ?.GetValue<double>());
+        await InWorld(runtime, "document.getElementById('b').remove(); 1");
+        Assert.Equal(
+            "[1,true,1]",
+            runtime.Evaluate("JSON.stringify([savedSelect.length, savedSelect[1] === undefined, savedSelect.options.length])")
+                ?.GetValue<string>());
+    }
 }

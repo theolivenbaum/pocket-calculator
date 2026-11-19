@@ -757,7 +757,13 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       with Chromium's brands, `HTMLDivElement`, where upstream expects `HTMLElement`).
       Interleaved, 300 transform writes each followed by offset/client reads on a carousel page:
       ~2,000 ms before, ~200 ms after
-- [ ] Performance, benchmark before and after: `abf247b`, `3a9eb06`, `8310ebf`
+- [x] `8310ebf`: a select's owned options are reused per DOM mutation epoch (another realm's
+      mutation bumps it too), and `select.options` is now one live `HTMLOptionsCollection` per
+      select (length setter, settable indices, selectedIndex, add, remove), where it was a new
+      static HTMLCollection per read; upstream's test expects `options.length = 0` to do
+      nothing, Chromium truncates (measured). 1,000 options, 5 x `options[i]` over
+      `select.length`: ~760 ms before, ~30 ms after
+- [ ] Performance, benchmark before and after: `abf247b`, `3a9eb06`
 
 Parity against a reference built at `4eb1235` (2026-11-18): 377 of 385 cases identical. The
 eight that differed are queued above or since ported: `legacy-table-apis` html/text/markdown
@@ -2945,6 +2951,9 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   reduced snapshot for a set of properties; the port keeps one full snapshot per element and
   instead leaves the custom properties out of `op_computed_style_static` until script reads
   a `--` name, `length` or `item()`, and lets that op answer from a current render.
+
+- select.options (`8310ebf`): an `HTMLOptionsCollection`, one live object per select, as in
+  Chromium; upstream's is a static HTMLCollection built per read, whose length cannot be set.
 
 ### Operator font directories load per render pass, not into a cached base database
 
