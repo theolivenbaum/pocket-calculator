@@ -763,7 +763,13 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       static HTMLCollection per read; upstream's test expects `options.length = 0` to do
       nothing, Chromium truncates (measured). 1,000 options, 5 x `options[i]` over
       `select.length`: ~760 ms before, ~30 ms after
-- [ ] Performance, benchmark before and after: `abf247b`, `3a9eb06`
+- [x] `3a9eb06`: an element wrapper's inline style declaration (and its Proxy) is made on first
+      use, held in a private field (a WeakMap for the select Proxy) instead of an own `_style`
+      property, so a page expando cannot replace it; the declaration is built from boot-time
+      intrinsics, since page script may have replaced `Proxy` or `Object.defineProperty` by
+      then. Interleaved, 3 x 40,000 wrappers + 15,000 created elements: ~430 ms before,
+      ~360-390 ms after; 50,000 style read/writes within noise (medians 225 vs 240 ms, 12 runs)
+- [ ] Performance, benchmark before and after: `abf247b`
 
 Parity against a reference built at `4eb1235` (2026-11-18): 377 of 385 cases identical. The
 eight that differed are queued above or since ported: `legacy-table-apis` html/text/markdown

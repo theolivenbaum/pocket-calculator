@@ -2170,16 +2170,16 @@ function _serializeCss(props) {
 class CSSStyleDeclaration {
   constructor(owner, onChange) {
     // Non-enumerable so they never leak through the proxy's own-key traps.
-    Object.defineProperty(this, "_props", { value: {}, writable: true, enumerable: false, configurable: true });
+    _defineProperty(this, "_props", { value: {}, writable: true, enumerable: false, configurable: true });
     // The owner Element, if any. A live declaration reflects that element's
     // `style` content attribute in both directions; an owner-less declaration
     // (getComputedStyle fallback, stylesheet rules) is purely in-memory.
-    Object.defineProperty(this, "_owner", { value: owner || null, writable: true, enumerable: false, configurable: true });
-    Object.defineProperty(this, "_onChange", { value: onChange || null, writable: true, enumerable: false, configurable: true });
+    _defineProperty(this, "_owner", { value: owner || null, writable: true, enumerable: false, configurable: true });
+    _defineProperty(this, "_onChange", { value: onChange || null, writable: true, enumerable: false, configurable: true });
     // Load the content attribute only when style is first observed. Keeping
     // this as a primitive avoids allocating a separate sync object for every
     // wrapped element.
-    Object.defineProperty(this, "_loaded", { value: !owner, writable: true, enumerable: false, configurable: true });
+    _defineProperty(this, "_loaded", { value: !owner, writable: true, enumerable: false, configurable: true });
   }
   // Pull the initial `style` attribute once. Later attribute mutations update
   // the declaration directly from Element.setAttribute/removeAttribute, so
@@ -2247,7 +2247,10 @@ class CSSStyleDeclaration {
   item(i) { this._pull(); return Object.keys(this._props)[i] || ""; }
 }
 
-const _styleProxy = (decl) => new Proxy(decl, {
+// The boot-time Proxy: an element's declaration is now made on first use, when page script
+// may have replaced globalThis.Proxy (upstream 3a9eb06).
+const _BootProxy = Proxy;
+const _styleProxy = (decl) => new _BootProxy(decl, {
   get(t, p) {
     if (typeof p === "symbol" || p in t) return t[p];
     if (/^\d+$/.test(p)) return t.item(+p);
@@ -5299,7 +5302,31 @@ function _animationsForTarget(target) {
   });
 }
 
+// upstream 3a9eb06: an element wrapper's inline style declaration (and its Proxy) is made on
+// first use, not for every wrapper; most wrappers never have their style read. Kept in the
+// closure, so a page's own `element._style` expando neither replaces nor reaches it.
+// The declaration lives in a private field (set by the static block below); a select's
+// wrapper is a Proxy, which a private field does not see through, so those go in a WeakMap.
+const _inlineStyles = new WeakMap();
+let _inlineStyleOf = null;
+let _existingInlineStyle = null;
 class Element extends Node {
+  #inlineStyle = undefined;
+  static {
+    _inlineStyleOf = (element) => {
+      if (#inlineStyle in element) {
+        return element.#inlineStyle ?? (element.#inlineStyle = _styleProxy(new CSSStyleDeclaration(element)));
+      }
+      let style = _weakMapGet(_inlineStyles, element);
+      if (style === undefined) {
+        style = _styleProxy(new CSSStyleDeclaration(element));
+        _weakMapSet(_inlineStyles, element, style);
+      }
+      return style;
+    };
+    _existingInlineStyle = (element) => #inlineStyle in element
+      ? element.#inlineStyle : _weakMapGet(_inlineStyles, element);
+  }
   // No declared parameter, so Element.length is 0 as in Chromium. The node id is the
   // first argument of the shim's own `new C(nid)` (_constructElement).
   constructor() {
@@ -5313,7 +5340,6 @@ class Element extends Node {
       // wrapper the cache holds, so identity and expandos are unchanged.
       const self = new.target === _HTMLSelectClass && _selectIndexHandler !== null
         ? new Proxy(this, _selectIndexHandler) : this;
-      self._style = _styleProxy(new CSSStyleDeclaration(self));
       return self;
     }
     // Port addition: page script reached the constructor itself. HTML's element constructors
@@ -5352,7 +5378,6 @@ class Element extends Node {
     // A customized built-in select is indexed like any other select (see above).
     const self = localName === "select" && _selectIndexHandler !== null
       ? new Proxy(this, _selectIndexHandler) : this;
-    self._style = _styleProxy(new CSSStyleDeclaration(self));
     self._tagName = localName.toUpperCase();
     self._lname = localName;
     self._ns = "http://www.w3.org/1999/xhtml";
@@ -5607,8 +5632,8 @@ class Element extends Node {
       this.setAttribute("for", String(v));
     }
   }
-  get style() { return this._style; }
-  set style(v) { if (typeof v === "string") this._style.cssText = v; }
+  get style() { return _inlineStyleOf(this); }
+  set style(v) { if (typeof v === "string") _inlineStyleOf(this).cssText = v; }
   getAttribute(n) {
     n = _htmlAttrName(this, n);
     // Script-created elements start with a provably empty attribute set. Keep
@@ -5651,7 +5676,7 @@ class Element extends Node {
         _reconcileWindowNamedProperty(previousWindowName);
       }
     }
-    if (n === "style") this._style._replaceFromAttribute(value);
+    if (n === "style") _existingInlineStyle(this)?._replaceFromAttribute(value);
     if (handlerTarget !== null) _handlerAttributeChanged(handlerTarget, this, n, value);
     if (popoverPrev !== undefined) this._popoverTypeMaybeChanged(popoverPrev);
     if (_hostVars.__mutationObservers?.length) _hostVars.__notifyMutation('attributes', this._nid, [], [], n);
@@ -5681,7 +5706,7 @@ class Element extends Node {
     // while changing its qualified name. Fall back to native reads afterwards
     // instead of maintaining a second, subtly different key space here.
     this._nullNamespaceAttrs = null;
-    if (ns === "" && n === "style") this._style._replaceFromAttribute(value);
+    if (ns === "" && n === "style") _existingInlineStyle(this)?._replaceFromAttribute(value);
     if (_ceDefCount !== 0) _ceAttributeChanged(this, ceLocal, ceOld, value, ns === "" ? null : ns);
     _queueDetailsToggle(this, detailsWasOpen);
   }
@@ -5706,7 +5731,7 @@ class Element extends Node {
         && (n === "id" || (n === "name" && _windowNameEligibleElement(this)))) {
       _reconcileWindowNamedProperty(previousWindowName);
     }
-    if (n === "style") this._style._replaceFromAttribute("");
+    if (n === "style") _existingInlineStyle(this)?._replaceFromAttribute("");
     if (handlerTarget !== null) _handlerAttributeChanged(handlerTarget, this, n, null);
     if (popoverPrev !== undefined) this._popoverTypeMaybeChanged(popoverPrev);
     if (this.localName === "source"
@@ -5732,7 +5757,7 @@ class Element extends Node {
     const ceOld = _ceDefCount !== 0 ? _ceObservedOld(this, n, ns) : undefined;
     _dom("remove_attribute_ns", this._nid, ns + "\0" + n);
     this._nullNamespaceAttrs = null;
-    if (ns === "" && n === "style") this._style._replaceFromAttribute("");
+    if (ns === "" && n === "style") _existingInlineStyle(this)?._replaceFromAttribute("");
     if (_ceDefCount !== 0) {
       _ceAttributeChanged(this, n, ceOld === null ? undefined : ceOld, null, ns === "" ? null : ns);
     }
@@ -12699,7 +12724,7 @@ globalThis.getComputedStyle = (el, pseudoElt) => {
   // getComputedStyle here. Not ported: the parent realm cannot hold a frame realm's objects
   // (todo.md, "Cross-realm objects cannot be shared"), and the blank-iframe stand-in window's
   // getComputedStyle calls this one, so delegating to it would recurse.
-  const style = el?.style || el?._style || new CSSStyleDeclaration();
+  const style = el?.style || new CSSStyleDeclaration();
   // DEVIATION from crates/obscura-js: its getComputedStyle takes one argument and ignores
   // pseudoElt, so every call answered with the originating element's own style. Chromium
   // ignores null/undefined/'' and answers for the element, answers a recognised pseudo-element
@@ -24444,7 +24469,7 @@ const _svgMemberOwners = {
   ];
   // Element: classList and style (style lives on HTMLElement/SVGElement, see the mixins).
   accessor(EP, 'classList', getterOf('classList'), putForwards('class'));
-  const styleSet = function (v) { this._style.cssText = v === null ? '' : _String(v); };
+  const styleSet = function (v) { _inlineStyleOf(this).cssText = v === null ? '' : _String(v); };
   for (const proto of [HTMLElement.prototype, SVGElement.prototype]) {
     const d = own(proto, 'style');
     if (d && d.get) accessor(proto, 'style', d.get, styleSet);
