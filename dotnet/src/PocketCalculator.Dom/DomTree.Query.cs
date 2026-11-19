@@ -59,7 +59,7 @@ public sealed partial class DomTree
         }
 
         var selectorList = SelectorParser.Parse(selector);
-        var context = new MatchingContext(SelectorQuirksMode);
+        var context = new MatchingContext(SelectorQuirksMode) { ScopeElement = ScopeFor(root) };
 
         // Walked lazily in tree order, so the first match ends the walk. Snapshotting every
         // descendant first made each call cost the whole tree: document.body, which is this
@@ -94,10 +94,14 @@ public sealed partial class DomTree
     // class/id selectors match ASCII-case-insensitively.
     private QuirksMode SelectorQuirksMode => IsQuirks ? QuirksMode.Quirks : QuirksMode.NoQuirks;
 
+    // `:scope` is the element a query runs on; from a document or shadow root it stays the
+    // document element (selector.rs only binds an element root).
+    private NodeId? ScopeFor(NodeId root) => GetNode(root)?.IsElement == true ? root : null;
+
     public List<NodeId> QuerySelectorAllFrom(NodeId root, string selector)
     {
         var selectorList = SelectorParser.Parse(selector);
-        var context = new MatchingContext(SelectorQuirksMode);
+        var context = new MatchingContext(SelectorQuirksMode) { ScopeElement = ScopeFor(root) };
         var results = new List<NodeId>();
 
         foreach (var descId in Descendants(root))
@@ -129,7 +133,7 @@ public sealed partial class DomTree
         }
 
         var selectorList = SelectorParser.Parse(selector);
-        var context = new MatchingContext(QuirksMode.NoQuirks);
+        var context = new MatchingContext(QuirksMode.NoQuirks) { ScopeElement = nid };
         return SelectorMatching.MatchesSelectorList(selectorList, new DomElement(this, nid), context);
     }
 

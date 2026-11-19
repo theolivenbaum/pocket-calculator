@@ -19,6 +19,12 @@ public sealed class MatchingContext
     /// <summary>The ancestor bloom filter, when the caller drives a treewalk cascade.</summary>
     public BloomFilter? BloomFilter { get; set; }
 
+    /// <summary>
+    /// The element <c>:scope</c> matches: the element a query was called on, or the element
+    /// being tested by <c>matches()</c>. Null means the document element, as in a stylesheet.
+    /// </summary>
+    public NodeId? ScopeElement { get; set; }
+
     /// <summary>The shadow host whose tree scope is being matched, for <c>:host</c>/<c>::slotted()</c>.</summary>
     public NodeId? CurrentHost { get; set; }
 
@@ -417,9 +423,10 @@ public static class SelectorMatching
             }
 
             case ScopeComponent:
-                // No scope element is ever bound, so :scope falls back to the root, matching the
-                // reference implementation.
-                return element.IsRoot();
+                // Bound to the query's element, as crates/obscura-dom (selector.rs) sets
+                // `scope_element`; the port used to fall back to the document element always,
+                // so element.querySelector(':scope > x') found nothing (Chromium finds x).
+                return context.ScopeElement is { } scopeElement ? element.NodeId == scopeElement : element.IsRoot();
 
             case NthComponent nth:
                 return MatchesGenericNthChild(element, context, nth.Data, nth.Of);
