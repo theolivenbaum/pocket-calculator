@@ -647,8 +647,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] `8bb46be`: `Runtime.getHeapUsage` reports the isolate's V8 heap (used, total, external;
       embedder 0) without running a page task, and `HeapProfiler.collectGarbage` runs a full
       collection; both were missing (HeapProfiler was a blanket no-op)
-- [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `35b9448`, `a2bfd32`,
-      `3a4a0b5`, `3a9eb06`, `8310ebf`, `acff100`, `503a66d`, `786fde5` + `7d9ed8a`
+- [x] Performance, nothing to port: `503a66d` (the port's `NodeId` carries its generation, so
+      there is no identity side map), `786fde5` + `7d9ed8a` (the module loader's in-flight map
+      is shared and entries leave on completion), `a2bfd32` (follow-up to a Rust-only cache)
+- [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `35b9448`, `3a4a0b5`,
+      `3a9eb06`, `8310ebf`, `acff100`
 
 Parity against a reference built at `4eb1235` (2026-11-18): 377 of 385 cases identical. The
 eight that differ are all queued above: `legacy-table-apis` html/text/markdown (`25700b9`,
