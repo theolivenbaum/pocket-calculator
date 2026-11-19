@@ -13848,23 +13848,201 @@ public sealed partial class RuntimeTests
         Assert.Equal("Hello World", rt.Evaluate("document.body.textContent")!.GetValue<string>().Trim());
     }
 
+    /// <summary>
+    /// Upstream 721e40f (replacing <c>test_document_open_clears_body</c>): document.open()
+    /// removes the whole old tree, doctype included. Chromium 1243 gives the same values.
+    /// </summary>
     [Fact]
-    public void TestDocumentOpenClearsBody()
+    public void DocumentOpenRemovesOldDocumentTreeBeforeWriting()
     {
-        // Ported from crates/obscura-js/src/runtime.rs. The Rust body is kept verbatim so the test
-        // can be switched on without being reconstructed from scratch.
-        /*
-            fn test_document_open_clears_body() {
-                let mut rt = setup_runtime("<html><body><p>Old content</p></body></html>");
-                rt.evaluate("document.open()").unwrap();
-                let html = rt.evaluate("document.body.innerHTML").unwrap();
-                assert_eq!(html.as_str().unwrap(), "");
-            }
-        */
-        using var fixture = RuntimeFixture.Setup("<html><body><p>Old content</p></body></html>");
-        var rt = fixture.Runtime;
-        rt.Evaluate("document.open()");
-        Assert.Equal("", rt.Evaluate("document.body.innerHTML")!.GetValue<string>());
+        using var fixture = RuntimeFixture.Setup("<!doctype html><html><body><p>Old content</p></body></html>");
+        AssertJson(
+            "[true,null,null,null,null,0,false,false]",
+            fixture.Runtime.Evaluate("""
+                (() => {
+                    const oldRoot = document.documentElement, oldType = document.doctype;
+                    const opened = document.open();
+                    return [opened === document, document.documentElement, document.head,
+                        document.body, document.doctype, document.childNodes.length,
+                        oldRoot.isConnected, oldType.isConnected];
+                })()
+                """));
+    }
+
+    /// <summary>Upstream 721e40f. Chromium 1243: the same, and BackCompat.</summary>
+    [Fact]
+    public void DocumentOpenCloseEmitsTheEmptyDocumentAtEof()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body>old</body></html>");
+        AssertJson(
+            """[true,"HTML","HEAD","BODY",0,"<html><head></head><body></body></html>"]""",
+            fixture.Runtime.Evaluate("""
+                (() => {
+                    document.open();
+                    const emptyBeforeClose = document.childNodes.length === 0;
+                    document.close();
+                    return [emptyBeforeClose, document.documentElement.nodeName,
+                        document.head.nodeName, document.body.nodeName, document.body.childNodes.length,
+                        document.documentElement.outerHTML];
+                })()
+                """));
+    }
+
+    /// <summary>
+    /// The task's Chromium 1243 measurement: written head content lands in &lt;head&gt;, where
+    /// the port used to append it to &lt;body&gt; (todo.md a74e050 open item).
+    /// </summary>
+    [Fact]
+    public void DocumentOpenWriteParsesHeadContentIntoTheHead()
+    {
+        using var fixture = RuntimeFixture.Setup("<!doctype html><html><head><meta id=old></head><body>old</body></html>");
+        AssertJson(
+            """["<html><head><title>four</title></head><body><p id=\"q\">set</p></body></html>","four","BackCompat"]""",
+            fixture.Runtime.Evaluate("""
+                (() => {
+                    document.open();
+                    document.write('<title>four</title><p id=q>set</p>');
+                    document.close();
+                    return [document.documentElement.outerHTML, document.title, document.compatMode];
+                })()
+                """));
+    }
+
+    /// <summary>Upstream 721e40f. Chromium 1243 gives the same values.</summary>
+    [Fact]
+    public void DocumentOpenCloseRetainsUnclosedScriptWithoutRunningIt()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
+        AssertJson(
+            """["HEAD","globalThis.unclosedWriteRan = true;",false]""",
+            fixture.Runtime.Evaluate("""
+                (() => {
+                    globalThis.unclosedWriteRan = false;
+                    document.open();
+                    document.write('<script id="unclosed">globalThis.unclosedWriteRan = true;');
+                    document.close();
+                    return [document.getElementById('unclosed').parentNode.nodeName,
+                        document.getElementById('unclosed').textContent, globalThis.unclosedWriteRan];
+                })()
+                """));
+    }
+
+    /// <summary>Upstream 721e40f. Chromium 1243 gives the same values.</summary>
+    [Fact]
+    public void DocumentOpenWriteUsesDocumentInsertionModesAcrossCalls()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><head><meta id='old'></head><body>old</body></html>");
+        AssertJson(
+            """["HEAD",["STYLE"],["INPUT"],"BODY",0,true]""",
+            fixture.Runtime.Evaluate("""
+                (() => {
+                    document.open();
+                    document.write('<sty');
+                    document.write('le id="written-style">body{margin:0}');
+                    document.write('</style>\n      <input id="widget">');
+                    document.close();
+                    const widget = document.getElementById('widget');
+                    const range = document.createRange(); range.selectNode(widget);
+                    return [document.getElementById('written-style').parentNode.nodeName,
+                        Array.from(document.head.children, n => n.nodeName),
+                        Array.from(document.body.childNodes, n => n.nodeName),
+                        range.startContainer.nodeName, range.startOffset,
+                        document.getElementById('old') === null];
+                })()
+                """));
+    }
+
+    /// <summary>Upstream 721e40f.</summary>
+    [Fact]
+    public void DocumentOpenWritePreservesExplicitDocumentStructure()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><head></head><body></body></html>");
+        AssertJson(
+            """[1,1,1,"fr","written-body","HEAD","TBODY",[10,1]]""",
+            fixture.Runtime.Evaluate("""
+                (() => {
+                    document.open();
+                    document.write('<!doctype html><html lang="fr"><head><title>Written</title></head>');
+                    document.write('<body id="written-body"><table><tr><td id="cell">value</td></tr></table></body></html>');
+                    document.close();
+                    return [document.querySelectorAll('html').length, document.querySelectorAll('head').length,
+                        document.querySelectorAll('body').length, document.documentElement.lang,
+                        document.body.id, document.querySelector('title').parentNode.nodeName,
+                        document.getElementById('cell').parentNode.parentNode.nodeName,
+                        Array.from(document.childNodes, n => n.nodeType)];
+                })()
+                """));
+    }
+
+    /// <summary>Upstream 721e40f.</summary>
+    [Theory]
+    [InlineData("<p>quirks</p>", "BackCompat")]
+    [InlineData("<!doctype html><p>standards</p>", "CSS1Compat")]
+    [InlineData("<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01 Transitional//EN\" \"http://www.w3.org/TR/html4/loose.dtd\"><p>limited</p>", "CSS1Compat")]
+    public void DocumentCompatModeReadsTheParsedDocumentMode(string html, string expected)
+    {
+        using var fixture = RuntimeFixture.Setup(html);
+        Assert.Equal(expected, fixture.Runtime.Evaluate("document.compatMode")!.GetValue<string>());
+    }
+
+    /// <summary>
+    /// Upstream 721e40f. The last value deviates: a write with no open after close() is
+    /// still appended to the body here, as upstream does, where Chromium 1243 opens a new
+    /// document implicitly (BackCompat, the body replaced). Open in todo.md.
+    /// </summary>
+    [Fact]
+    public void DocumentOpenWriteUpdatesQuirksModeWithoutFragmentLeaks()
+    {
+        using var fixture = RuntimeFixture.Setup("<!doctype html><p>old</p>");
+        AssertJson(
+            """["CSS1Compat","CSS1Compat","BackCompat","BackCompat","CSS1Compat","CSS1Compat","CSS1Compat"]""",
+            fixture.Runtime.Evaluate("""
+                (() => {
+                    const modes = [document.compatMode];
+                    document.open(); modes.push(document.compatMode);
+                    document.write('<p>new</p>'); modes.push(document.compatMode);
+                    document.close(); modes.push(document.compatMode);
+                    document.open(); modes.push(document.compatMode);
+                    document.write('<!doctype html><p>standards</p>'); modes.push(document.compatMode);
+                    document.close();
+                    document.body.innerHTML = '<p>fragment</p>';
+                    document.write('<span>fragment write</span>'); modes.push(document.compatMode);
+                    return modes;
+                })()
+                """));
+    }
+
+    /// <summary>Upstream 721e40f. Chromium 1243 gives the same values.</summary>
+    [Fact]
+    public void DocumentOpenCloseSetsQuirksModeAtEof()
+    {
+        using var fixture = RuntimeFixture.Setup("<!doctype html><p>old</p>");
+        AssertJson(
+            """["CSS1Compat","BackCompat"]""",
+            fixture.Runtime.Evaluate("""
+                (() => {
+                    document.open();
+                    const before = document.compatMode;
+                    document.close();
+                    return [before, document.compatMode];
+                })()
+                """));
+    }
+
+    /// <summary>Upstream 721e40f, for the port's iframe stand-in.</summary>
+    [Fact]
+    public void InitialBlankIframeStartsInQuirksMode()
+    {
+        using var fixture = RuntimeFixture.Setup("<!doctype html><body></body>");
+        AssertJson(
+            """["BackCompat","CSS1Compat"]""",
+            fixture.Runtime.Evaluate("""
+                (() => {
+                    const iframe = document.createElement('iframe');
+                    document.body.appendChild(iframe);
+                    return [iframe.contentDocument.compatMode, document.compatMode];
+                })()
+                """));
     }
 
     [Fact]

@@ -48,6 +48,70 @@ internal sealed partial class HtmlTreeBuilder
         return builder;
     }
 
+    /// <summary>
+    /// A builder for a whole document, built into <paramref name="tree"/>'s document node and
+    /// fed by <see cref="Feed"/>: the parser <c>document.open()</c> creates (upstream 721e40f).
+    /// </summary>
+    internal static HtmlTreeBuilder CreateIncrementalDocument(DomTree tree) =>
+        new(tree, string.Empty, context: null) { _openIds = [] };
+
+    /// <summary>
+    /// Parse <paramref name="input"/>, the rest of the input stream, to its end and process the
+    /// end of file (<c>document.close()</c>): what is still open is closed, and nothing more can
+    /// be fed.
+    /// </summary>
+    internal void Finish(string input)
+    {
+        if (_stopped)
+        {
+            return;
+        }
+
+        try
+        {
+            _tokenizer = NewTokenizer(input);
+            if (_replay is { } replay)
+            {
+                ClearText(replay.Element);
+                _tokenizer.GetStructToken();
+                _tokenizer.State = replay.State;
+                _skipNextNewline = replay.SkipNewline;
+                _replay = null;
+            }
+
+            while (true)
+            {
+                WorkCancellation.ThrowIfCancellationRequested();
+                var acn = AdjustedCurrentNode;
+                _tokenizer.IsAcceptingCharacterData = acn is not null && acn.Ns != ElemNs.Html;
+                ref var token = ref _tokenizer.GetStructToken();
+                var eof = token.Type == HtmlTokenType.EndOfFile;
+                ProcessToken(ref token);
+                if (eof)
+                {
+                    break;
+                }
+            }
+
+            FlushText();
+            PopOpenOptionsAtEnd();
+        }
+        catch (DomQuotaExceededException)
+        {
+            _tree.ParseTruncated = true;
+        }
+        finally
+        {
+            WriteBackGrowingText();
+            // "Stop parsing" pops every open element: nothing can add to them any more.
+            _openIds?.Clear();
+            _stopped = true;
+        }
+    }
+
+    /// <summary>Whether the document being built is in quirks mode.</summary>
+    internal bool IsQuirksMode => _quirks;
+
     /// <summary>Whether <paramref name="id"/> is on the stack of open elements: more input can still add to it.</summary>
     internal bool IsOpen(NodeId id) => _openIds?.Contains(id) ?? false;
 

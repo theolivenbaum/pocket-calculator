@@ -783,7 +783,7 @@ internal sealed class WorldMutationForwarder(PocketCalculatorJsRuntime runtime) 
         "append_child" or "insert_before" or "remove_child"
             or "set_attribute" or "remove_attribute"
             or "set_text_content" or "set_inner_html" or "set_inner_html_context"
-            or "set_fragment_html_executable" or "document_write" => true,
+            or "set_fragment_html_executable" or "document_write" or "document_write_close" => true,
         _ => false,
     };
 
@@ -860,7 +860,7 @@ internal sealed class WorldMutationForwarder(PocketCalculatorJsRuntime runtime) 
                 childrenOf = NodeId.New(raw);
                 return new WorldMutationRecord("childList", raw, string.Empty, Csv(dom, dom.Children(NodeId.New(raw))), null, null);
             }
-            case "document_write":
+            case "document_write" or "document_write_close":
                 return new WorldMutationRecord("childList", dom.Document.Raw, string.Empty, string.Empty, null, null);
             default:
                 return null;

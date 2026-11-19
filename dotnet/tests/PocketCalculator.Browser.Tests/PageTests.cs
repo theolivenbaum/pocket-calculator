@@ -362,6 +362,24 @@ public sealed class PageTests
         Assert.Equal(two, page.UrlString());
     }
 
+    /// <summary>Upstream 721e40f. Chromium 1243 gives the same values for a new tab.</summary>
+    [Fact]
+    public async Task BlankNavigationHasNoDoctypeAndStartsInQuirksMode()
+    {
+        using Page page = PageFixtures.NewPage("blank-mode");
+        await page.NavigateAsync("about:blank");
+        PageFixtures.AssertJson(
+            """["BackCompat",null,[1],"HTML","HEAD","BODY"]""",
+            page.Evaluate("""
+                (() => [
+                    document.compatMode, document.doctype,
+                    Array.from(document.childNodes, node => node.nodeType),
+                    document.documentElement.nodeName, document.head.nodeName, document.body.nodeName
+                ])()
+                """));
+        Assert.True(page.WithDom(dom => dom.IsQuirks));
+    }
+
     /// <summary>Upstream 0ecc417.</summary>
     [Fact]
     public async Task SameDocumentHistoryKeepsEntriesWhenTheCursorMoves()

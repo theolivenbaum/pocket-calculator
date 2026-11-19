@@ -946,7 +946,9 @@ public sealed partial class Page
         Frames.Clear();
         Js = null;
         Url = PageUrl.TryParse("about:blank")!;
-        Dom = HtmlParsing.ParseHtml("<!DOCTYPE html><html><head></head><body></body></html>");
+        // upstream 721e40f: about:blank has no doctype and is in quirks mode, as in
+        // Chromium 1243 (compatMode BackCompat, doctype null).
+        Dom = HtmlParsing.ParseHtml("<html><head></head><body></body></html>");
         Title = string.Empty;
         Lifecycle = LifecycleState.Loaded;
         _documentTimelineOrigin = Stopwatch.GetTimestamp();

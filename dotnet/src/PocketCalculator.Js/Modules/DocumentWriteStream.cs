@@ -40,8 +40,15 @@ public readonly record struct Placement(NodeId? Parent, NodeId Node);
 /// small writes took 30 s.
 /// </para>
 /// </remarks>
-public sealed class DocumentWriteStream
+public sealed class DocumentWriteStream(bool document = false)
 {
+    /// <summary>
+    /// Whether this is the parser of a document <c>document.open()</c> replaced (upstream
+    /// 721e40f): it parses a whole document into the document node, and decides its mode.
+    /// Otherwise it parses as the children of a <c>body</c>, for a write with no open.
+    /// </summary>
+    public bool IsDocument => document;
+
     /// <summary>The input from where the tree builder stopped, newlines normalized.</summary>
     private readonly StringBuilder _pending = new();
 
@@ -94,18 +101,12 @@ public sealed class DocumentWriteStream
         ArgumentNullException.ThrowIfNull(dom);
 
         AppendNormalized(html);
-        if (_builder is null)
-        {
-            _source = new DomTree();
-            var fragmentRoot = _source.NewNode(NodeData.Element(QualName.Html("html")));
-            _source.AppendChild(_source.Document, fragmentRoot);
-            _builder = HtmlTreeBuilder.CreateIncremental(_source, fragmentRoot, QualName.Html("body"));
-        }
+        var builder = EnsureBuilder();
 
         int consumed;
         try
         {
-            consumed = _builder.Feed(_pending.ToString());
+            consumed = builder.Feed(_pending.ToString());
         }
         catch
         {
@@ -121,9 +122,60 @@ public sealed class DocumentWriteStream
         }
 
         _pending.Remove(0, consumed);
+        return Mirror(dom);
+    }
 
+    /// <summary>
+    /// <c>document.close()</c>: the end of the input stream. What it still held is parsed, the
+    /// end of file closes everything still open, and the nodes that completes are returned
+    /// (upstream 721e40f). The stream takes no more input.
+    /// </summary>
+    public List<Placement> Close(DomTree dom)
+    {
+        ArgumentNullException.ThrowIfNull(dom);
+        if (_pendingCr)
+        {
+            _pending.Append('\n');
+            _pendingCr = false;
+        }
+
+        EnsureBuilder().Finish(_pending.ToString());
+        _pending.Clear();
+        return Mirror(dom);
+    }
+
+    private HtmlTreeBuilder EnsureBuilder()
+    {
+        if (_builder is { } existing)
+        {
+            return existing;
+        }
+
+        _source = new DomTree();
+        if (document)
+        {
+            _builder = HtmlTreeBuilder.CreateIncrementalDocument(_source);
+        }
+        else
+        {
+            var fragmentRoot = _source.NewNode(NodeData.Element(QualName.Html("html")));
+            _source.AppendChild(_source.Document, fragmentRoot);
+            _builder = HtmlTreeBuilder.CreateIncremental(_source, fragmentRoot, QualName.Html("body"));
+        }
+
+        return _builder;
+    }
+
+    /// <summary>Hand over what the parser made since the last call.</summary>
+    private List<Placement> Mirror(DomTree dom)
+    {
         var source = _source!;
-        var root = source.FragmentRoot();
+        if (document)
+        {
+            dom.SetQuirks(_builder!.IsQuirksMode);
+        }
+
+        var root = document ? source.Document : source.FragmentRoot();
         var placements = new List<Placement>();
         var stack = new List<NodeId>();
         AppendFreshChildren(stack, source, root);
@@ -163,8 +215,9 @@ public sealed class DocumentWriteStream
 
             if (sourceParent == root)
             {
-                // A direct child of the fragment root belongs at the insertion point.
-                parent = null;
+                // A direct child of the fragment root belongs at the insertion point; one of
+                // a replacement document's root is the document's own child.
+                parent = document ? dom.Document : null;
             }
             else if (_handedOver.TryGetValue(sourceParent, out var parentCopy))
             {
@@ -179,7 +232,7 @@ public sealed class DocumentWriteStream
             if (NeedsToBeComplete(source, current))
             {
                 // Still open: the parser can still add to it.
-                if (_builder.IsOpen(current))
+                if (_builder!.IsOpen(current))
                 {
                     continue;
                 }

@@ -778,17 +778,45 @@ public static class DomOps
             // document.write() feeds the document's input stream, so the calls share
             // one parser and one tokenizer state. Returns the nodes that became
             // complete with this call, as [[parent, node], ...], parents before
-            // children. A `parent` of 0 means the node belongs at the insertion point,
-            // which the caller knows. Nothing is inserted here: that must go through
-            // Node.appendChild on the JS side, because that call also reports the
-            // mutation, registers window named access, and loads a written stylesheet.
+            // children. A `parent` of -1 means the node belongs at the insertion point,
+            // which the caller knows (upstream 721e40f; it was 0, which is now the
+            // document node a replacement document's root goes into). Nothing is inserted
+            // here: that must go through Node.appendChild on the JS side, because that
+            // call also reports the mutation, registers window named access, and loads a
+            // written stylesheet. document_write_close is the end of the input stream
+            // (document.close()).
             case "document_write":
+            case "document_write_close":
             {
-                // The stream keeps every write and reparses it, so a write that cannot fit
-                // is refused before it joins the stream (M7).
-                dom.EnsureCanGrow(2L * arg2.Length);
-                gs.WriteStream ??= new DocumentWriteStream();
-                var placements = gs.WriteStream.Write(arg2, dom);
+                List<Placement> placements;
+                if (string.Equals(cmd, "document_write_close", StringComparison.Ordinal))
+                {
+                    if (gs.WriteStream is not { } stream)
+                    {
+                        return "[]";
+                    }
+
+                    gs.WriteStream = null;
+                    placements = stream.Close(dom);
+                    // A script the end of file closed had no end tag: it is marked already
+                    // started and never runs (upstream 721e40f, as Chromium 1243 does).
+                    foreach (var placement in placements)
+                    {
+                        if (StateHelpers.NodeIsScript(dom, placement.Node))
+                        {
+                            gs.AlreadyStartedScripts.Add(placement.Node);
+                        }
+                    }
+                }
+                else
+                {
+                    // The stream keeps every write and reparses it, so a write that cannot fit
+                    // is refused before it joins the stream (M7).
+                    dom.EnsureCanGrow(2L * arg2.Length);
+                    gs.WriteStream ??= new DocumentWriteStream();
+                    placements = gs.WriteStream.Write(arg2, dom);
+                }
+
                 var sb = new StringBuilder(placements.Count * 8 + 2);
                 sb.Append('[');
                 for (var i = 0; i < placements.Count; i++)
@@ -799,7 +827,7 @@ public static class DomOps
                     }
 
                     sb.Append('[');
-                    sb.Append(placements[i].Parent is { } placedParent ? Expose(dom, placedParent) : "0");
+                    sb.Append(placements[i].Parent is { } placedParent ? Expose(dom, placedParent) : "-1");
                     sb.Append(',');
                     sb.Append(Expose(dom, placements[i].Node));
                     sb.Append(']');
@@ -809,10 +837,17 @@ public static class DomOps
                 return sb.ToString();
             }
 
-            // document.open() discards what the input stream holds and starts over.
+            // document.open() discards what the input stream holds and starts a new parse of
+            // a whole document, in no-quirks mode until the parser decides (upstream 721e40f).
             case "document_write_reset":
-                gs.WriteStream = null;
+                gs.WriteStream = new DocumentWriteStream(document: true);
+                dom.SetQuirks(false);
                 return "true";
+
+            // upstream 721e40f: the mode the document was parsed in, or the one a reopened
+            // document's parser decided.
+            case "document_compat_mode":
+                return dom.IsQuirks ? "BackCompat" : "CSS1Compat";
 
             // Port addition: document.close() ended the parser document.open() started on
             // a loaded document, so the document has loaded again. The CDP layer reports

@@ -349,7 +349,7 @@ const _DOM_MUTATION_COMMANDS = _private(new Set([
   "append_child", "insert_before", "remove_child",
   "set_attribute", "remove_attribute",
   "set_text_content", "set_inner_html", "set_inner_html_context",
-  "set_fragment_html_executable", "document_write",
+  "set_fragment_html_executable", "document_write", "document_write_close",
   // A custom element upgrade changes what :defined matches.
   "ce_state",
   // Manual slot assignment changes the composed tree.
@@ -358,7 +358,7 @@ const _DOM_MUTATION_COMMANDS = _private(new Set([
 const _DOM_TREE_MUTATION_COMMANDS = _private(new Set([
   "append_child", "insert_before", "remove_child",
   "set_inner_html", "set_inner_html_context", "set_fragment_html_executable",
-  "document_write",
+  "document_write", "document_write_close",
   // Changes a subtree's node document, which ownerDocument caches by this epoch.
   "adopt_node",
 ]));
@@ -7846,7 +7846,14 @@ class Document extends Node {
   get nodeType() { return 9; }
   get nodeName() { return "#document"; }
   get ownerDocument() { return null; } // Document has no ownerDocument
-  get compatMode() { return this._quirks === true ? "BackCompat" : "CSS1Compat"; }
+  // upstream 721e40f: this realm's document reports the mode it was parsed in (or that a
+  // reopened document's parser decided); the shim used to answer CSS1Compat always.
+  get compatMode() {
+    if (this._nid == null || _isParsedDoc(this) || this !== _realmDocument) {
+      return this._quirks === true ? "BackCompat" : "CSS1Compat";
+    }
+    return _dom("document_compat_mode") === "BackCompat" ? "BackCompat" : "CSS1Compat";
+  }
   // The document's character encoding, detected from the response charset
   // (HTTP Content-Type -> <meta charset>). characterSet/charset/inputEncoding
   // are WHATWG aliases. A node-less document (DOMParser/createDocument) has no
@@ -8393,45 +8400,10 @@ class Document extends Node {
     // rest of the document, a written inline script runs inside write(), and a written external
     // script blocks the parser (HTML "document.write()" steps 6-7, Chromium 141).
     if (this === _realmDocument && __obscuraCore.ops.op_parser_write(html, false)) return;
-    var body = this.body;
-    if (!body) return;
-    // The host parses into the input stream and returns [[parent, node], …], parents first. The
+    // The host parses into the input stream and returns [[parent, node], ...], parents first. The
     // insertion stays here, because appendChild does more than append: it reports the
     // mutation, registers window named access, and loads a written stylesheet.
-    var placements = _domParse("document_write", "", html) || [];
-    // The insertion point is the position of the running script. What it writes belongs
-    // behind it, not at the end of the body. The point moves along with every node placed,
-    // even across calls, so that a script's second call lands behind the first instead of
-    // directly behind the script again.
-    var scriptNid = _hostVars.__currentScriptNid || 0;
-    var after = null;
-    if (scriptNid) {
-      var anchorNid = this._writeAnchorScript === scriptNid && this._writeAnchorNid
-        ? this._writeAnchorNid
-        : scriptNid;
-      var anchor = _wrap(anchorNid);
-      if (anchor && anchor.parentNode) after = anchor;
-    }
-    for (var i = 0; i < placements.length; i++) {
-      var parentNid = +placements[i][0];
-      var node = _wrap(+placements[i][1]);
-      if (!node) continue;
-      if (parentNid) {
-        var parent = _wrap(parentNid);
-        if (parent) parent.appendChild(node);
-        continue;
-      }
-      if (after) {
-        after.parentNode.insertBefore(node, after.nextSibling);
-        after = node;
-      } else {
-        body.appendChild(node);
-      }
-    }
-    if (scriptNid && after) {
-      this._writeAnchorScript = scriptNid;
-      this._writeAnchorNid = after._nid;
-    }
+    _insertWrittenNodes(this, _domParse("document_write", "", html) || []);
   }
   writeln(...args) {
     this.write(args.join('') + '\n');
@@ -8440,13 +8412,18 @@ class Document extends Node {
     if (_isParsedDoc(this)) return _parsedDocOpen(this);
     // HTML document.open() step 5: a document whose parser is running a script is left alone.
     if (this === _realmDocument && __obscuraCore.ops.op_parser_write('', true)) return this;
-    // upstream a74e050: the old head goes too, so a written <title> is the document's title.
-    var head = this.head;
-    if (head) head.innerHTML = '';
-    var body = this.body;
-    if (body) body.innerHTML = '';
+    // upstream 721e40f (replacing a74e050's emptied head and body): the old tree goes
+    // whole, doctype included, and what is written next is parsed as a new document, so
+    // written head content lands in <head> and the mode is decided again, as in Chromium.
+    // Native algorithms use the receiver's tree, not script-overridden getters.
+    var children = _domParse('child_nodes', this._nid) || [];
+    for (var i = 0; i < children.length; i++) {
+      var child = _wrap(+children[i]);
+      if (child) _reflectApply(Node.prototype.removeChild, this, [child]);
+    }
     // A new parse begins. Whatever the input stream still held is gone.
     _dom("document_write_reset");
+    this._writeOpen = true;
     this._writeAnchorScript = 0;
     this._writeAnchorNid = 0;
     // DEVIATION from crates/obscura-js/js/bootstrap.js, whose close() does nothing. A
@@ -8461,6 +8438,12 @@ class Document extends Node {
   }
   close() {
     if (_isParsedDoc(this)) { _parsedDocClose(this); return; }
+    // upstream 721e40f: the end of the input stream. What the parser still held is
+    // parsed, and the end of file builds an empty document's html, head and body.
+    if (this._writeOpen) {
+      this._writeOpen = false;
+      _insertWrittenNodes(this, _domParse("document_write_close") || []);
+    }
     if (this._reopened) {
       this._reopened = false;
       _dom("document_close");
@@ -9909,6 +9892,42 @@ function _fragmentNavigate(target, replace) {
 // change through op_navigate tore down and rebooted the whole execution
 // context, so a hash router lost all its state on every route change (and, in
 // a survey of one SPA, re-booted the app 20 times over 157 routes).
+// The nodes document.write's stream handed over ([[parent, node], ...], parents first),
+// inserted with Node's own methods. A parent of -1 is the insertion point: behind the
+// running script (moving along with every node placed, even across calls, so a script's
+// second call lands behind the first), else the end of the body. Any other parent is a
+// node: the document itself (0) for a replacement document's root (upstream 721e40f's
+// _insertWrittenNodes, shared by write and close).
+function _insertWrittenNodes(doc, placements) {
+  var scriptNid = _hostVars.__currentScriptNid || 0;
+  var after = null;
+  if (scriptNid) {
+    var anchorNid = doc._writeAnchorScript === scriptNid && doc._writeAnchorNid
+      ? doc._writeAnchorNid
+      : scriptNid;
+    var anchor = _wrap(anchorNid);
+    if (anchor && anchor.parentNode) after = anchor;
+  }
+  for (var i = 0; i < placements.length; i++) {
+    var parentNid = +placements[i][0];
+    var node = _wrap(+placements[i][1]);
+    if (!node) continue;
+    if (parentNid >= 0) {
+      var parent = _wrap(parentNid);
+      if (parent) parent.appendChild(node);
+    } else if (after) {
+      after.parentNode.insertBefore(node, after.nextSibling);
+      after = node;
+    } else {
+      var body = doc.body;
+      if (body) body.appendChild(node);
+    }
+  }
+  if (scriptNid && after) {
+    doc._writeAnchorScript = scriptNid;
+    doc._writeAnchorNid = after._nid;
+  }
+}
 function _locationNavigate(url, replace) {
   var current = __currentUrl();
   var target = _resolveUrl(url);
@@ -18472,6 +18491,9 @@ class _IframeDocument {
   constructor(html, url, iframeEl) {
     this._url = url;
     this._iframeEl = iframeEl;
+    // A document without a doctype (the initial about:blank among them) is in quirks mode
+    // (upstream 721e40f; Chromium 1243 reports BackCompat for a new iframe).
+    this._noDoctype = !/^\s*<!DOCTYPE/i.test(String(html));
     this.nodeType = 9;
     this.nodeName = '#document';
     this.readyState = 'complete';
@@ -18512,7 +18534,7 @@ class _IframeDocument {
   get location() { return this._iframeEl?.contentWindow?.location; }
   get defaultView() { return this._iframeEl?.contentWindow; }
   get ownerDocument() { return null; }
-  get compatMode() { return 'CSS1Compat'; }
+  get compatMode() { return this._noDoctype ? 'BackCompat' : 'CSS1Compat'; }
   get activeElement() { return this._body; }
 
   getElementById(id) {
@@ -18707,7 +18729,8 @@ const _iframeWindowOwners = _private(new WeakMap());
 // An iframe element -> its cross-origin window, one per element so that
 // `event.source === iframe.contentWindow` holds across navigations of the frame.
 const _crossOriginWindows = _private(new WeakMap());
-const _BLANK_FRAME_HTML = '<!DOCTYPE html><html><head></head><body></body></html>';
+// upstream 721e40f: the initial about:blank has no doctype (quirks mode, as in Chromium 1243).
+const _BLANK_FRAME_HTML = '<html><head></head><body></body></html>';
 
 function _makeIframeWindow(el, doc, url) {
   const win = new _IframeWindow(doc, url);
