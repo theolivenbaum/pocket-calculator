@@ -1362,7 +1362,9 @@ public static class DomOps
         // walks the node's ancestors (ContainingShadowRoot). Doing that for every detached
         // append made building a deep subtree off-document quadratic (SECURITY.md M11). Nothing
         // above mutates the tree, so this still sees the pre-mutation state.
-        var retainedStyleMutation = state.Dom is { } styleDom
+        // upstream acff100: and only while a render is retained; with none, both branches below
+        // drop the same state, so the walk's answer would be thrown away.
+        var retainedStyleMutation = state.PreparedRender is not null && state.Dom is { } styleDom
             ? RenderInvalidation.RetainedMutation(styleDom, cmd, arg1, arg2)
             : null;
         if (retainedStyleMutation is { } mutation)

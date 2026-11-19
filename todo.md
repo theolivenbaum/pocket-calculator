@@ -655,8 +655,13 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] Performance, nothing to port: `503a66d` (the port's `NodeId` carries its generation, so
       there is no identity side map), `786fde5` + `7d9ed8a` (the module loader's in-flight map
       is shared and entries leave on completion), `a2bfd32` (follow-up to a Rust-only cache)
+- [x] `acff100` (applicable part): the retained-style classification of a DOM mutation (an
+      ancestor walk) is computed only while a render is retained; without one both outcomes drop
+      the same state. Behaviour unchanged; interleaved runs of 5 x (2,000 nested appends + a
+      layout + 300 appends) show no measurable difference (medians 2,129 vs 2,193 ms on a loaded
+      host, within noise)
 - [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `35b9448`, `3a4a0b5`,
-      `3a9eb06`, `8310ebf`, `acff100`
+      `3a9eb06`, `8310ebf`
 
 Parity against a reference built at `4eb1235` (2026-11-18): 377 of 385 cases identical. The
 eight that differ are all queued above: `legacy-table-apis` html/text/markdown (`25700b9`,
