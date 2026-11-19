@@ -211,8 +211,10 @@ Upstream d8f1467, 25700b9 and 59276a3 (ported): the legacy table and select coll
 `table_row_cells` and `select_options` (arg1 a node id) answer a JSON array of node ids, or
 `null` when the node does not have the interface; `table_interface` answers the table
 interface name as a JSON string or `null`; `table_row_index`, `table_section_row_index`,
-`table_cell_index` and `option_index` answer a number or `null`. Upstream's `tag_name` mode
-`"interface"` (arg2) is not ported: the C# shim maps tag names to interfaces itself.
+`table_cell_index` and `option_index` answer a number or `null`. `tag_name` with arg2
+`"interface"` (upstream d8f1467) answers `[tagName, namespace, localName]` for anything but an
+unprefixed HTML element with a lower-case local name, and the plain tagName otherwise.
+`prefix` answers the element's namespace prefix or `null`.
 
 Port addition: `document_close` (no arguments, answers `"true"`). The C# shim's
 `document.close()` sends it when it ends a parser `document.open()` started on a loaded

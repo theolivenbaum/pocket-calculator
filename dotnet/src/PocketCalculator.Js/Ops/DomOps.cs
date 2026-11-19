@@ -468,15 +468,37 @@ public static class DomOps
                 {
                     // An HTML element is upper-cased in an HTML document only: an XHTML element
                     // of an XML document keeps its case (DOM "HTML-uppercased qualified name").
+                    var qualified = element.Name.Prefix is { } prefix
+                        ? prefix + ":" + element.Name.Local
+                        : element.Name.Local;
+                    // The prefix is part of an HTML element's upper-cased tagName too
+                    // (createElementNS(XHTML, 'x:div') is "X:DIV" in Chromium 157).
                     name = string.Equals(element.Name.Ns, Namespaces.Html, StringComparison.Ordinal)
                         && !InXmlDocument(dom, ParseNodeOrZero(arg1))
-                        ? element.Name.Local.ToUpperInvariant()
-                        : element.Name.Prefix is { } prefix
-                            ? prefix + ":" + element.Name.Local
-                            : element.Name.Local;
+                        ? qualified.ToUpperInvariant()
+                        : qualified;
+
+                    // upstream d8f1467: with arg2 "interface", anything but an unprefixed HTML
+                    // element with a lower-case local name answers [tagName, namespace, local
+                    // name], so the shim picks the interface in one call.
+                    if (arg2 == "interface"
+                        && (!string.Equals(element.Name.Ns, Namespaces.Html, StringComparison.Ordinal)
+                            || element.Name.Prefix is not null
+                            || element.Name.Local.AsSpan().IndexOfAnyInRange('A', 'Z') >= 0))
+                    {
+                        return "[" + SerdeJson.String(name) + "," + SerdeJson.String(element.Name.Ns) + ","
+                            + SerdeJson.String(element.Name.Local) + "]";
+                    }
                 }
 
                 return SerdeJson.String(name);
+            }
+
+            // upstream's "prefix": the element's namespace prefix, or null.
+            case "prefix":
+            {
+                var element = dom.GetNode(ParseNodeOrZero(arg1))?.AsElement();
+                return element?.Name.Prefix is { } prefix ? SerdeJson.String(prefix) : "null";
             }
 
             case "local_name":

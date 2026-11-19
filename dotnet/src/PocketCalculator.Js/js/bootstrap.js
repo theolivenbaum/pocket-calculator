@@ -119,6 +119,7 @@ const _weakMapGet = _uncurry(WeakMap.prototype.get);
 const _weakMapSet = _uncurry(WeakMap.prototype.set);
 const _stringSlice = _uncurry(String.prototype.slice);
 const _stringToLowerCase = _uncurry(String.prototype.toLowerCase);
+const _stringToUpperCase = _uncurry(String.prototype.toUpperCase);
 const _stringCharAt = _uncurry(String.prototype.charAt);
 const _stringCharCodeAt = _uncurry(String.prototype.charCodeAt);
 const _stringTrim = _uncurry(String.prototype.trim);
@@ -5378,10 +5379,11 @@ class Element extends Node {
   }
   // The namespace prefix of the qualified name, or null (an XML document's <s:k>). Port
   // addition: Element.prototype had no prefix.
+  // The element's own prefix (op_dom "prefix"). It used to be cut from tagName, which is
+  // upper-cased for HTML elements and has a colon in createElement('x:td') too.
   get prefix() {
-    const qualified = _domParse("tag_name", this._nid) || "";
-    const colon = qualified.indexOf(":");
-    return colon > 0 ? qualified.slice(0, colon) : null;
+    const prefix = _domParse("prefix", this._nid);
+    return typeof prefix === "string" ? prefix : null;
   }
   get id() { return this.getAttribute("id") || ""; }
   set id(v) { this.setAttribute("id", v); }
@@ -7969,10 +7971,9 @@ class Document extends Node {
       }
     }
     const nid = +_dom("create_element", localName);
-    const C = _elementClassForKnownName(
-      "http://www.w3.org/1999/xhtml",
-      localName,
-    );
+    // createElement's name is all local name, colon included: 'x:td' has no interface of
+    // its own (HTMLUnknownElement, Chromium 157).
+    const C = _htmlElementClassForTag(_stringToUpperCase(localName));
     const el = _constructElement(C, nid);
     // This node was just created from values already known to JS. Seed its
     // immutable metadata instead of rediscovering it through native calls in
@@ -8011,7 +8012,12 @@ class Document extends Node {
     const namespace = ns == null ? null : String(ns);
     const qualified = String(t);
     _ns_validateQualifiedName(namespace == null ? "" : namespace, qualified);
-    if (namespace === "http://www.w3.org/1999/xhtml") {
+    // An HTML name with a prefix or upper case in it keeps both (Chromium 157:
+    // createElementNS(XHTML, 'x:div') is an HTMLDivElement named "X:DIV", 'SELECT' an
+    // HTMLUnknownElement named "SELECT"); createElement would lower-case it.
+    const htmlByName = namespace === "http://www.w3.org/1999/xhtml"
+      && qualified.indexOf(":") < 0 && qualified === _stringToLowerCase(qualified);
+    if (htmlByName) {
       const el = this.createElement(qualified);
       if (el) el._ns = namespace;
       return el;
@@ -8026,7 +8032,8 @@ class Document extends Node {
     const localName = qualified.includes(":")
       ? qualified.slice(qualified.indexOf(":") + 1)
       : qualified;
-    el._tagName = qualified;
+    // An HTML element's tagName is upper-cased in an HTML document; the native op knows.
+    if (effectiveNamespace !== "http://www.w3.org/1999/xhtml") el._tagName = qualified;
     el._lname = localName;
     el._ns = effectiveNamespace;
     el._nullNamespaceAttrs = new Map();
@@ -9620,30 +9627,32 @@ function _foreignElementClass(namespace, localName) {
   if (namespace === _MATHML_NS && _mathMLElementClass !== null) return _mathMLElementClass;
   return Element;
 }
+// upstream d8f1467: tag_name with "interface" answers a plain string only for an unprefixed
+// HTML element with a lower-case local name, the common case, which is one map lookup.
+// Anything else (foreign, prefixed, or an HTML name with upper case in it) comes back as
+// [tagName, namespace, localName] in the same call. The shim used to guess the namespace from
+// an upper-case tagName, so a cloned createElementNS('urn:x', 'OL') became an HTMLOListElement.
 function _elementClassFor(nid) {
-  const tag = _domParse("tag_name", nid);
-  if (!tag) return Element;
-  // An HTML element in an HTML document has an ASCII-upper-case tagName, so the common
-  // case is one map lookup and no further native call. Foreign (SVG, MathML) names and
-  // the elements of an XML document keep their case: those ask the native tree for the
-  // namespace. An upper-case name the map does not know asks too, so an XML document's
-  // <ROOT> stays a plain Element rather than becoming an HTMLUnknownElement.
-  if (tag === tag.toUpperCase()) {
-    const known = _htmlTagClasses !== null ? _htmlTagClasses[tag] : undefined;
-    if (known !== undefined) return known;
-    if (tag.indexOf("-") > 0 && tag.indexOf(":") < 0) return _htmlElementClassForTag(tag);
+  const info = _domParse("tag_name", nid, "interface");
+  if (typeof info === "string") {
+    if (!info) return Element;
+    const upper = _stringToUpperCase(info);
+    const known = _htmlTagClasses !== null ? _htmlTagClasses[upper] : undefined;
+    return known !== undefined ? known : _htmlElementClassForTag(upper);
   }
-  const namespace = _domParse("namespace_uri", nid);
-  const colon = tag.indexOf(":");
-  const localName = colon >= 0 ? tag.slice(colon + 1) : tag;
-  if (namespace === _XHTML_NS) return _htmlElementClassForTag(localName.toUpperCase());
-  return _foreignElementClass(namespace, localName);
+  if (info === null || typeof info !== "object") return Element;
+  return _elementClassForKnownName(info[1], info[2]);
 }
 function _elementClassForKnownName(namespace, qualifiedName) {
   const localName = qualifiedName.includes(":")
     ? qualifiedName.slice(qualifiedName.indexOf(":") + 1)
     : qualifiedName;
-  if (namespace === _XHTML_NS) return _htmlElementClassForTag(localName.toUpperCase());
+  if (namespace === _XHTML_NS) {
+    // An HTML local name with upper case in it names no HTML interface (createElementNS
+    // with 'SELECT' is an HTMLUnknownElement in Chromium 157).
+    if (localName !== _stringToLowerCase(localName)) return _htmlUnknownElementClass || Element;
+    return _htmlElementClassForTag(_stringToUpperCase(localName));
+  }
   return _foreignElementClass(namespace, localName);
 }
 function _wrap(nid) {
