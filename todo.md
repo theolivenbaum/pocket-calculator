@@ -443,6 +443,8 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `<body>`. Also open: an iframe written by `document.write` after `open()` (Playwright's
       `setContent`) is not attached as a child frame, so Playwright's `page.frames()` misses it;
       a navigated document's iframes are (measured 2026-11-19, also before the 717dd92 merge)
+      `page.title()` after `setContent` read the old one). Fixed with `721e40f`: a reopened
+      document is reparsed from scratch, so written head content lands in `<head>`
 - [x] `b8586de` + `34346af`: a target's Network events (navigation, script-issued, aborted and
       failed) and a paused request's `requestWillBeSent` reach every session attached to it;
       lifecycle events and `Fetch.requestPaused` stay with the driving session. (Chromium sends
@@ -508,10 +510,38 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] `22eb6b4` + `335f929`: text/plain and text/markdown responses build Chromium's plain-text
       document (color-scheme meta, one pre-wrap `<pre>`, standards mode) and document.contentType
       reports the type; upstream's markup lacks the meta and the pre style
-- [ ] History and navigation: `1a0773d` (+ `ba807f4`, `d01bc8d`), `0ecc417`, `8a7aa8c`,
-      `fb23f18`, `0a14a4c`, `721e40f` (with open
-      `2b07b76`), `ee74973`, `60107d1`. Keep history helpers on `__obscura_host` and
-      gate traversal through the `file://` check
+- [x] `1a0773d` (+ `ba807f4` merge copy, `d01bc8d` test): `history.length` counts the page's
+      session history and a `history.go()` that leaves the document queues a traversal
+      (`op_history_traverse`, page-initiated, so behind the `file:` gate) that moves the cursor;
+      a new tab's about:blank is the first entry (Chromium 1243: 1, 2, 3 over two gotos). CDP
+      `navigateToHistoryEntry` and MCP back/forward go through `NavigateToHistoryEntryAsync`,
+      and a failed load leaves history as it was
+- [x] `0ecc417`: a history entry of the live document is traversed in place (popstate with its
+      state, `Page.navigatedWithinDocument` "fragment" as Chromium 1243 reports it, no
+      `frameNavigated`); `getNavigationHistory` and navigations record the document's entries
+      first; `resetNavigationHistory` leaves one entry, `history.length` 1 (Chromium 1243).
+      Helpers on `__obscura_host`, not upstream's page-visible `__obscuraHistory`
+- [x] `fb23f18`: a fragment navigation to the current URL keeps its entry and state (measured)
+- [x] `8a7aa8c`: already in C#; its three tests pass
+- [x] `0a14a4c`: network idle waits to the navigation deadline and never reports idle it did not
+      reach; the CLI fails `--wait-until networkidle0` then (exit 1, as Playwright's goto
+      times out against Chromium 1243 and keeps the committed page). A page `fetch()` now
+      counts as an active request until its headers arrive (it never counted)
+- [x] `721e40f`: `document.open()` replaces the document (new parse, EOF at `close()`,
+      compatMode from the parsed mode, a script left open by EOF does not run); about:blank
+      and the initial iframe are quirks without a doctype. Open: a `write()` with no open on a
+      closed document still appends to the body, where Chromium 1243 opens a new document
+      implicitly (BackCompat, the body replaced); an iframe written after `document.open()`
+      (Playwright `setContent`) is still not attached as a child frame (unchanged by this)
+- [x] `ee74973`: foster-parented written nodes go before their live anchor (`[parent, node,
+      before]`). Its fourth test (`keeps_the_inline_insertion_point`) is not ported: it sets
+      the page-visible `__currentScriptNid`, which is host state here
+- [x] `60107d1`: navigation timing from host marks (fetch, response, realm init, the host's
+      lifecycle steps, End marks only when the dispatch returned); DNS/TCP/TLS/request/response
+      phases are 0 instead of fabricated, and timeOrigin is the navigation start, not a skewed
+      `Date.now()`
+- [ ] Open from the history ports: session history is not capped (Chromium keeps 50
+      entries); `2b07b76` (document.write script ordering) remains open above
 - [x] `a134a7e`: the resource cache gives a response with only `Last-Modified` a tenth of its
       age (24 h cap, 200/203/204/206, no `Expires`, less its current age); `max-age` is strict,
       and a repeated, quoted-empty, signed or spaced value disables reuse and the heuristic
@@ -2493,6 +2523,27 @@ Servers:
 
 Each is commented at its site. Where upstream and Chromium differ, Chromium wins.
 
+- Session history (`1a0773d`, `0ecc417`): the host records the document's same-document
+  entries as `op_history_url` reports each push, replace and traversal (it gained `action`
+  and `index`); upstream pulls a change record out of the realm (`__obscuraHistory.take()`).
+  The traverse and reset helpers are `__obscura_host.historyTraverse`/`historyReset`, not a
+  page-visible global. `op_history_traverse` refuses an index inside the document's own
+  entries (upstream would reload it). A History API move back to the document's first
+  entry moves `Page.Url` back to the committed URL (upstream 1a0773d left it on the entry
+  it came from). History URLs resolve against the current entry, not a Location setter's
+  preview.
+- Fragment navigation to the current URL (`fb23f18`): no new entry and the state is kept, as
+  upstream; Chromium 1243 still fires `popstate` (with a null state), which upstream does not.
+- Network idle (`0a14a4c`): upstream fails the navigation at the deadline; here a committed
+  page is kept (the port's deadline deviation) without network idle, and the CLI turns that
+  into the error. Page `fetch()` requests count toward network idle (they send on their own
+  handler, which the page client's count did not see).
+- `document.open()` (`721e40f`): compatMode of a loaded document comes from its parse too
+  (the shim answered CSS1Compat for every document). A write with no open is still a
+  fragment append (as upstream), not Chromium's implicit open.
+- Navigation timing (`60107d1`): marks are relative to timeOrigin and taken in
+  `__obscura_host.lifecycle`, not from page listeners; unmeasured transport phases read 0 in
+  both the legacy and Level 2 entries (upstream omits the legacy fields).
 - Cookies (`8162c0f`): `Expires` validates the RFC 6265 5.1.1 ranges as upstream does, but
   maps two-digit years (70-99 to 19xx, 0-69 to 20xx) like Chromium, where upstream rejects
   them; a pre-1970 date expires the cookie. Both `Expires` and `Max-Age` are capped at 400
