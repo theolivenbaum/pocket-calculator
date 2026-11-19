@@ -438,13 +438,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `commit`, `document.open()` restarts the later phases)
 - [x] `a74e050` (in-page part; the reopened-document lifecycle was the port's own already):
       `document.open()` drops the old head too, so a written `<title>` is the title (Playwright's
-      `page.title()` after `setContent` read the old one). Open: Chromium reparses a reopened
-      document from scratch, so written head content lands in `<head>`; here it is appended to
-      `<body>`. Also open: an iframe written by `document.write` after `open()` (Playwright's
-      `setContent`) is not attached as a child frame, so Playwright's `page.frames()` misses it;
-      a navigated document's iframes are (measured 2026-11-19, also before the 717dd92 merge)
       `page.title()` after `setContent` read the old one). Fixed with `721e40f`: a reopened
-      document is reparsed from scratch, so written head content lands in `<head>`
+      document is reparsed from scratch, so written head content lands in `<head>`. Still open:
+      an iframe written by `document.write` after `open()` (Playwright's `setContent`) is not
+      attached as a child frame, so Playwright's `page.frames()` misses it; a navigated
+      document's iframes are (measured 2026-11-19, also before the 717dd92 merge)
 - [x] `b8586de` + `34346af`: a target's Network events (navigation, script-issued, aborted and
       failed) and a paused request's `requestWillBeSent` reach every session attached to it;
       lifecycle events and `Fetch.requestPaused` stay with the driving session. (Chromium sends
