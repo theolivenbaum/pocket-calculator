@@ -12621,11 +12621,14 @@ globalThis.getComputedStyle = (el, pseudoElt) => {
     snapshot.viewportHeight = viewportHeight;
     snapshot.rendered = null;
     snapshot.omitted = null;
+    snapshot.customPending = false;
     if (el?._nid != null && !pseudo && !needsLayout && !hasRunningAnimation) {
       const staticOp = __obscuraCore.ops.op_computed_style_static;
       if (typeof staticOp === 'function') {
         try {
-          const raw = staticOp(String(el._nid | 0));
+          // upstream 35b9448: without the custom properties, which a page can declare by the
+          // thousand on its root; readCustom asks for them when script reads a `--` name.
+          const raw = staticOp(String(el._nid | 0), '0');
           if (raw) {
             const parsed = _JSONparse(raw);
             const names = parsed[1];
@@ -12635,7 +12638,9 @@ globalThis.getComputedStyle = (el, pseudoElt) => {
               _computedStyleLayoutNames[names[i]] = true;
             }
             snapshot.rendered = parsed[0];
-            snapshot.omitted = omitted;
+            // Nothing omitted: the snapshot came from a current render and is complete.
+            snapshot.omitted = names.length ? omitted : null;
+            snapshot.customPending = true;
           }
         } catch (e) {}
       }
@@ -12656,6 +12661,21 @@ globalThis.getComputedStyle = (el, pseudoElt) => {
       }
     }
     snapshot.names = snapshot.rendered ? Object.keys(snapshot.rendered) : [];
+  };
+  // The custom properties a static snapshot left out, from the same prepared render; the full
+  // snapshot when the static one no longer answers.
+  const readCustom = () => {
+    snapshot.customPending = false;
+    let custom = null;
+    try {
+      const raw = __obscuraCore.ops.op_computed_style_static(String(el._nid | 0), '1');
+      custom = raw ? _JSONparse(raw)[0] : null;
+    } catch (e) {}
+    if (!custom) { snapshot.epoch = -1; refreshRendered(true); return; }
+    for (const name in custom) {
+      if (name.startsWith('--')) snapshot.rendered[name] = custom[name];
+    }
+    snapshot.names = Object.keys(snapshot.rendered);
   };
   // React virtualization libraries (react-window, tanstack-virtual,
   // react-virtuoso) all compute container dimensions via getComputedStyle.
@@ -12723,6 +12743,7 @@ globalThis.getComputedStyle = (el, pseudoElt) => {
     if (kebab === 'css-float') kebab = 'float';
     refreshRendered(_computedStyleLayoutNames[kebab] === true);
     if (snapshot.omitted && snapshot.omitted[kebab] === true) refreshRendered(true);
+    if (snapshot.customPending && kebab.startsWith('--')) readCustom();
     if (snapshot.rendered && _objectHasOwn(snapshot.rendered, kebab))
       return snapshot.rendered[kebab];
     // A pseudo-element has neither an inline style nor a box of the element's to fall back on,
@@ -12754,10 +12775,12 @@ globalThis.getComputedStyle = (el, pseudoElt) => {
       if (prop === 'getPropertyPriority') return () => '';
       if (prop === 'item') return (i) => {
         refreshRendered(true);
+        if (snapshot.customPending) readCustom();
         return snapshot.names[i | 0] || '';
       };
       if (prop === 'length') {
         refreshRendered(true);
+        if (snapshot.customPending) readCustom();
         return snapshot.names.length;
       }
       if (prop === 'cssText') return '';

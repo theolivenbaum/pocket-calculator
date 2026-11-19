@@ -693,8 +693,15 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       (`CdpBody()`), and `takeResponseBodyAsStream` returns the stored bytes, so a non-UTF-8
       text body now streams byte-exact. Interleaved, 12 runs each, a page with 20 x 1.8 MB
       non-ASCII scripts: median 714 ms before, 643 ms after
-- [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `35b9448`,
-      `3a9eb06`, `8310ebf`
+- [x] `35b9448` (the port's own way): getComputedStyle() reads no longer carry the
+      custom-property environment. `op_computed_style_static` also answers from a current
+      render (nothing pending: the whole snapshot, no names omitted) and leaves the custom
+      properties out unless asked; the shim fetches them on a `--` read, `length` or `item()`.
+      `op_computed_style` keeps its payload. Upstream's per-query cascade cache is not needed:
+      the retained render already answers sibling reads. Interleaved, 5 runs, 1,024 rows: with
+      2,500 variables on body ~1,150 ms per read loop before, ~160 ms after; with 81, ~200 ms
+      before, ~165 ms after
+- [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `3a9eb06`, `8310ebf`
 
 Parity against a reference built at `4eb1235` (2026-11-18): 377 of 385 cases identical. The
 eight that differ are all queued above: `legacy-table-apis` html/text/markdown (`25700b9`,

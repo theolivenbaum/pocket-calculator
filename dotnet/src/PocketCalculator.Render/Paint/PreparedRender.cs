@@ -2492,6 +2492,14 @@ public sealed partial class PreparedRender
     }
 
     /// <summary>Cascaded custom properties exposed by CSSOM.</summary>
+    /// <summary>
+    /// The element's computed custom properties, read in place (no copy); null when it has none.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? CustomPropertiesOf(NodeId id) =>
+        Layout.CustomProperties.TryGetValue(id, out IReadOnlyDictionary<string, string>? properties)
+            ? properties
+            : null;
+
     public Dictionary<string, string>? ComputedCustomProperties(NodeId id) =>
         Layout.CustomProperties.TryGetValue(id, out IReadOnlyDictionary<string, string>? properties)
             ? new Dictionary<string, string>(properties, StringComparer.Ordinal)

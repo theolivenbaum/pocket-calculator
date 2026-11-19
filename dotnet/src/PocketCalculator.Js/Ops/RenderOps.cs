@@ -616,7 +616,8 @@ public static class RenderOps
     /// <c>op_computed_style_static</c>. The layout-independent part of the
     /// <c>op_computed_style</c> snapshot, answered without restyling or laying out the pending
     /// mutations when they cannot change it: <c>[{...}, [omitted names]]</c>, or the empty string
-    /// when getComputedStyle() has to take <c>op_computed_style</c>.
+    /// when getComputedStyle() has to take <c>op_computed_style</c>. With nothing pending it is
+    /// the whole snapshot and omits no name.
     /// </summary>
     /// <remarks>
     /// Additive, like <c>op_computed_style_pseudo</c>: crates/obscura-js has no such op, and its
@@ -624,35 +625,62 @@ public static class RenderOps
     /// used values (size, insets, margins, padding, transform, grid tracks); bootstrap.js asks
     /// <c>op_computed_style</c> when page script reads one of them. See
     /// <see cref="PreparedRender.TryRetainedComputedStyle"/>.
+    /// <para>
+    /// The custom properties are included only when <paramref name="withCustom"/> is set
+    /// (upstream 35b9448, which reads common properties without copying the inherited
+    /// custom-property environment). A page with thousands of variables on its root made every
+    /// snapshot carry all of them; bootstrap.js asks for them when script reads a <c>--</c>
+    /// name, or <c>length</c> and <c>item()</c>, which list them.
+    /// </para>
     /// </remarks>
-    public static string OpComputedStyleStatic(PocketCalculatorState state, string nidStr) => OpGuard.Run(
+    public static string OpComputedStyleStatic(PocketCalculatorState state, string nidStr, bool withCustom = true) => OpGuard.Run(
         "op_computed_style_static",
         () =>
         {
             ArgumentNullException.ThrowIfNull(state);
             var nid = ParseNode(nidStr);
             RenderState.SampleLiveDocumentAnimations(state);
-            if (state.Dom is not { } dom
-                || RenderState.PreparedForStaticStyle(state, out var sampleAdvanced) is not { } prepared)
+            if (state.Dom is not { } dom)
             {
                 return string.Empty;
             }
 
-            HashSet<NodeId>? waapi = null;
-            var timeline = state.AnimationTimeline;
-            if (prepared.TryRetainedComputedStyle(
+            Dictionary<string, string>? snapshot;
+            string[] omitted;
+            PreparedRender? prepared;
+            if (RenderState.PreparedForStaticStyle(state, out var sampleAdvanced) is { } retained)
+            {
+                prepared = retained;
+                HashSet<NodeId>? waapi = null;
+                var timeline = state.AnimationTimeline;
+                snapshot = retained.TryRetainedComputedStyle(
                     dom,
                     state.PendingStyleMutations,
                     nid,
                     sampleAdvanced,
                     node => (waapi ??= timeline.WaapiNodes()).Contains(node),
                     state.ActivityGeneration,
-                    out var omitted) is not { } snapshot)
+                    out omitted);
+            }
+            else if (state.PendingStyleMutations.Count == 0)
+            {
+                // Nothing pending: the full snapshot, as op_computed_style answers it, with no
+                // names omitted. Only the custom properties are left to withCustom.
+                prepared = RenderState.EnsurePreparedRender(state);
+                snapshot = prepared?.ComputedStyle(nid, null);
+                omitted = [];
+            }
+            else
             {
                 return string.Empty;
             }
 
-            var custom = prepared.ComputedCustomProperties(nid);
+            if (prepared is null || snapshot is null)
+            {
+                return string.Empty;
+            }
+
+            var custom = withCustom ? prepared.CustomPropertiesOf(nid) : null;
             var sb = new StringBuilder(4096);
             sb.Append("[{");
             var first = true;
@@ -743,7 +771,7 @@ public static class RenderOps
 
             // A pseudo-element has no custom properties of its own in this snapshot; it
             // inherits the originating element's, which is what page script reads them for.
-            var custom = prepared.ComputedCustomProperties(nid);
+            var custom = prepared.CustomPropertiesOf(nid);
             var sb = new StringBuilder(4096);
             sb.Append('{');
             var first = true;

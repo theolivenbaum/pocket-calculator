@@ -394,8 +394,8 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
             (nid, pseudo) => RenderOps.OpComputedStylePseudo(Page, S(nid), S(pseudo))));
         // Additive: the layout-independent part of the snapshot, answered before pending
         // mutations are restyled when they cannot change it (RenderOps.OpComputedStyleStatic).
-        Bind(ops, "op_computed_style_static", (Func<object?, string>)(
-            nid => RenderOps.OpComputedStyleStatic(Page, S(nid))));
+        Bind(ops, "op_computed_style_static", (Func<object?, object?, string>)(
+            (nid, custom) => RenderOps.OpComputedStyleStatic(Page, S(nid), S(custom) == "1")));
         // Additive as well: innerText for a whole subtree in one call (RenderOps.OpInnerText).
         Bind(ops, "op_inner_text", (Func<object?, string>)(
             nid => RenderOps.OpInnerText(Page, S(nid))));
@@ -609,8 +609,8 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
             (nid, opacity, visibility) => RenderOps.OpCheckVisibility(document, U32(nid), B(opacity), B(visibility))));
         Bind(ops, "op_computed_style_pseudo", (Func<object?, object?, string>)(
             (nid, pseudo) => RenderOps.OpComputedStylePseudo(document, S(nid), S(pseudo))));
-        Bind(ops, "op_computed_style_static", (Func<object?, string>)(
-            nid => RenderOps.OpComputedStyleStatic(document, S(nid))));
+        Bind(ops, "op_computed_style_static", (Func<object?, object?, string>)(
+            (nid, custom) => RenderOps.OpComputedStyleStatic(document, S(nid), S(custom) == "1")));
         Bind(ops, "op_inner_text", (Func<object?, string>)(
             nid => RenderOps.OpInnerText(document, S(nid))));
         Bind(ops, "op_layout_metrics", (Func<string>)(() => RenderOps.OpLayoutMetrics(document)));
