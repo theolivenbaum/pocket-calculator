@@ -20,6 +20,12 @@ public static class Dispatcher
     /// managed field reads. <see cref="CdpContext.GetSessionPageMut"/> triggers
     /// suspend/resume of an isolate and must stay behind the lock.
     /// </remarks>
+    private static DomainResult CollectGarbage(PocketCalculator.Js.Runtime.PocketCalculatorJsRuntime js)
+    {
+        js.CollectGarbage();
+        return DomainResult.Empty();
+    }
+
     internal static bool IsV8FreeMethod(string method) => method switch
     {
         "Target.getTargets"
@@ -216,6 +222,12 @@ public static class Dispatcher
                     .ConfigureAwait(false),
                 "Accessibility" => await Domains.Accessibility.HandleAsync(method, req.Params, ctx, req.SessionId)
                     .ConfigureAwait(false),
+
+                // upstream 8bb46be: a real collection of the session page's isolate.
+                "HeapProfiler" when method == "collectGarbage" =>
+                    ctx.GetSessionPageMut(req.SessionId)?.Js is { } heapJs
+                        ? CollectGarbage(heapJs)
+                        : DomainResult.Err("No JavaScript runtime"),
 
                 // Accepted but no-op. Puppeteer's FrameManager.initialize calls
                 // Audits.enable on connect - refusing it breaks

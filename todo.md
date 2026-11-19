@@ -644,8 +644,11 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `322f46c` (done, see Render layout), `ab19571` (already, tests ported), `97f8f81`
       (done), `d04b661` (done, see Computed style), `716826c` (already: FileList is a real
       interface whose list members include `Symbol.iterator`), `4c12826` (with the DOM and web APIs group)
+- [x] `8bb46be`: `Runtime.getHeapUsage` reports the isolate's V8 heap (used, total, external;
+      embedder 0) without running a page task, and `HeapProfiler.collectGarbage` runs a full
+      collection; both were missing (HeapProfiler was a blanket no-op)
 - [ ] Performance, benchmark before and after: `abf247b`, `30e8d7a`, `35b9448`, `a2bfd32`,
-      `3a4a0b5`, `8bb46be`, `3a9eb06`, `8310ebf`, `acff100`, `503a66d`, `786fde5` + `7d9ed8a`
+      `3a4a0b5`, `3a9eb06`, `8310ebf`, `acff100`, `503a66d`, `786fde5` + `7d9ed8a`
 
 Parity against a reference built at `4eb1235` (2026-11-18): 377 of 385 cases identical. The
 eight that differ are all queued above: `legacy-table-apis` html/text/markdown (`25700b9`,

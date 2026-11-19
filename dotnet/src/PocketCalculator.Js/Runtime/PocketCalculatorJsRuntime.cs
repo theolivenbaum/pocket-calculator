@@ -542,6 +542,19 @@ public sealed partial class PocketCalculatorJsRuntime
     /// error and hand control back. Always balance with
     /// <see cref="DisarmWatchdog"/>.
     /// </remarks>
+    /// <summary>
+    /// The isolate's V8 heap: used and total size, and memory held outside it (upstream
+    /// 8bb46be's <c>Runtime.getHeapUsage</c>). Runs no page task.
+    /// </summary>
+    public (ulong Used, ulong Total, ulong External) HeapUsage()
+    {
+        var info = _v8.GetHeapInfo();
+        return (info.UsedHeapSize, info.TotalHeapSize, info.TotalExternalSize);
+    }
+
+    /// <summary>A full, exhaustive collection of the isolate (<c>HeapProfiler.collectGarbage</c>).</summary>
+    public void CollectGarbage() => _v8.CollectGarbage(true);
+
     public WatchdogToken ArmWatchdog(TimeSpan budget) => Watchdog.Spawn(_engine, budget, _ops.Cancellation);
 
     /// <summary>

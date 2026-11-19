@@ -172,6 +172,22 @@ public static class Runtime
     {
         switch (method)
         {
+            case "getHeapUsage":
+            {
+                // upstream 8bb46be. The DOM is C#-owned, not a V8 cppgc heap, so the embedder
+                // heap reads 0, as upstream's Rust-owned DOM does.
+                BrowserPage heapPage = ctx.GetSessionPageMut(sessionId) ?? throw new DomainError("No page");
+                var heapJs = heapPage.Js ?? throw new DomainError("No JavaScript runtime");
+                (ulong used, ulong total, ulong external) = heapJs.HeapUsage();
+                return DomainResult.Ok(new JsonObject
+                {
+                    ["usedSize"] = used,
+                    ["totalSize"] = total,
+                    ["embedderHeapUsedSize"] = 0,
+                    ["backingStorageSize"] = external,
+                });
+            }
+
             case "enable":
             {
                 // puppeteer-extra's FrameManager.initialize calls Runtime.enable on the
