@@ -257,7 +257,7 @@ public sealed class PocketCalculatorHttpClient : IDisposable
             var proxied = false;
             if (_proxyUrl is not null && Uri.TryCreate(_proxyUrl, UriKind.Absolute, out var proxyUri))
             {
-                handler.Proxy = new WebProxy(proxyUri);
+                handler.Proxy = CreateProxy(proxyUri);
                 handler.UseProxy = true;
                 proxied = true;
             }
@@ -266,6 +266,35 @@ public sealed class PocketCalculatorHttpClient : IDisposable
             _client = new HttpClient(guard, disposeHandler: true) { Timeout = Timeout };
             return _client;
         }
+    }
+
+    /// <summary>
+    /// The upstream proxy for <paramref name="proxyUri"/>, with the credentials its user info
+    /// carries (<c>http://user:password@host:port</c>, percent-encoded).
+    /// </summary>
+    /// <remarks>
+    /// reqwest's <c>Proxy::all</c> reads the user info and authenticates with it; <c>WebProxy</c>
+    /// ignores it, so a proxy that requires authentication answered every request with 407.
+    /// Deviation from client.rs: reqwest sends Basic credentials preemptively, while the handler
+    /// sends them once the proxy asks (407 with <c>Proxy-Authenticate</c>), which also lets it
+    /// answer a Digest, NTLM or Negotiate challenge with the same credentials.
+    /// </remarks>
+    internal static WebProxy CreateProxy(Uri proxyUri)
+    {
+        if (string.IsNullOrEmpty(proxyUri.UserInfo))
+        {
+            return new WebProxy(proxyUri);
+        }
+
+        var separator = proxyUri.UserInfo.IndexOf(':', StringComparison.Ordinal);
+        var user = separator < 0 ? proxyUri.UserInfo : proxyUri.UserInfo[..separator];
+        var password = separator < 0 ? string.Empty : proxyUri.UserInfo[(separator + 1)..];
+        var address = new UriBuilder(proxyUri) { UserName = string.Empty, Password = string.Empty }.Uri;
+
+        return new WebProxy(address)
+        {
+            Credentials = new NetworkCredential(Uri.UnescapeDataString(user), Uri.UnescapeDataString(password)),
+        };
     }
 
     /// <summary>Whether <see cref="BlockTrackers"/> refuses a request to <paramref name="url"/>.</summary>

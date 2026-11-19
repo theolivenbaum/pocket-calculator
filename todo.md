@@ -6942,3 +6942,13 @@ there is no speculative parser past a blocked script beyond the up-front script 
 style sheet or image after a parser-blocking script is fetched when the parser reaches it; a load
 abandoned at its deadline parses the rest of the document without running its scripts, where
 Chromium would go on loading.
+
+### Proxy credentials are sent when the proxy asks for them
+
+`reqwest::Proxy::all` reads `user:password@` from the proxy URL and sends Basic credentials with
+every proxied request. The port used to build `new WebProxy(uri)`, whose user info .NET 10's
+`SocketsHttpHandler` ignores (.NET 11 reads it), so on .NET 10 a proxy requiring authentication
+answered every request with 407. `PocketCalculatorHttpClient.CreateProxy` now moves the
+percent-decoded user info into `WebProxy.Credentials`, which both runtimes use. `SocketsHttpHandler` sends them
+once the proxy answers 407 with `Proxy-Authenticate` rather than up front, which costs one round trip
+per connection and also answers a Digest, NTLM or Negotiate challenge. Pinned by `ProxyCredentialsTests`.

@@ -97,6 +97,10 @@ Global options include `--stealth`, `--proxy <url>`, `--user-agent`,
 `--storage-dir`, `--obey-robots` and `--allow-private-network`. Run
 `pocket-calculator --help` or `pocket-calculator <command> --help` for the full list.
 
+A proxy that requires authentication takes its credentials in the URL, percent-encoded:
+`--proxy http://user:p%40ssword@proxy.example:3128`. Set `POCKETCALCULATOR_PROXY`
+instead of `--proxy` to keep them out of the process list.
+
 ## Connect Puppeteer or Playwright
 
 Start the CDP server and point a CDP client at it:
