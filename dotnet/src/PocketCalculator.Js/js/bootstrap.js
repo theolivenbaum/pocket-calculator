@@ -8337,6 +8337,9 @@ class Document extends Node {
     if (_isParsedDoc(this)) return _parsedDocOpen(this);
     // HTML document.open() step 5: a document whose parser is running a script is left alone.
     if (this === _realmDocument && __obscuraCore.ops.op_parser_write('', true)) return this;
+    // upstream a74e050: the old head goes too, so a written <title> is the document's title.
+    var head = this.head;
+    if (head) head.innerHTML = '';
     var body = this.body;
     if (body) body.innerHTML = '';
     // A new parse begins. Whatever the input stream still held is gone.

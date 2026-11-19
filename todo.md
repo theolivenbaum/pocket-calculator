@@ -419,7 +419,12 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       `Page.lifecycleEvent`s go only to subscribers, and enabling replays the current
       document's reached phases with their original timestamps (a failed navigation only
       `commit`, `document.open()` restarts the later phases)
-- [ ] CDP lifecycle and sessions: `a74e050`, `b8586de` + `34346af`, `875c531`; `7034ad6` already
+- [x] `a74e050` (in-page part; the reopened-document lifecycle was the port's own already):
+      `document.open()` drops the old head too, so a written `<title>` is the title (Playwright's
+      `page.title()` after `setContent` read the old one). Open: Chromium reparses a reopened
+      document from scratch, so written head content lands in `<head>`; here it is appended to
+      `<body>`
+- [ ] CDP lifecycle and sessions: `b8586de` + `34346af`, `875c531`; `7034ad6` already
 - [x] `eb2b515`: `DOM.querySelector[All]` search the `nodeId`'s subtree (absent or 0 is the
       document), and an unknown or malformed `nodeId` or an invalid selector is an error, not 0
       or []. With it, `:scope` is now bound to the query's element (it always meant the

@@ -253,6 +253,17 @@ public sealed class NavigationLifecycle
 
         JsonNode written = await CoreCdp.EvalAsync(ctx, 7, "document.getElementById('x').textContent", session);
         Assert.Equal("hello", written["result"]!["value"].AsString());
+
+        // upstream a74e050: open() drops the old head, so a written <title> is the title
+        // (Chromium: "new"; Playwright's page.title() after setContent read the old one).
+        await CoreCdp.CdpAsync(
+            ctx,
+            8,
+            "Runtime.evaluate",
+            new JsonObject { ["expression"] = "document.title = 'old'; document.open(); document.write('<title>new</title>'); document.close();" },
+            session);
+        JsonNode title = await CoreCdp.EvalAsync(ctx, 9, "document.title", session);
+        Assert.Equal("new", title["result"]!["value"].AsString());
     }
 
     /// <summary>
