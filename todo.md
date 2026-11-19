@@ -605,11 +605,55 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       context by its name fixed at creation, `contentWindow.name`, which the port reports as
       empty; an iframe's `name` attribute alone does not make it a named element); a real-realm
       `contentWindow` (`24d8742`, `911c45c`) needs a design decision first
-- [ ] DOM and web APIs: `19fa7a3`, `4dfc90f`, `831cb29`/`ccdaf10` interface brands,
-      `790a77d`, `cbcafc1` Response validation, `d57489c` AES-KW, `e4b6138` User Timing,
-      `aea9bca`, `cfce062` + `8ba9e5e` custom element reactions, `24adea2`,
-      `414e649` window.event, `7451e39` + `48538d6`, `2f302d9`, `25700b9` + `59276a3` +
-      `d8f1467` select and table APIs, `75bd891`, `955524a`, `a695bfc` nomodule
+- [x] `d8f1467` + `25700b9` + `59276a3` + merge `4c12826` (select and table APIs): the DOM
+      tree answers which rows, sections, cells and options an HTML table or select owns
+      (`DomTree.LegacyCollections.cs`, op_dom `table_*`, `select_options`, `option_index`).
+      `table.rows`/`tBodies`, `section.rows` and `row.cells` are live, cached, read-only
+      HTMLCollections; tHead/tFoot (with setters), rowIndex/sectionRowIndex/cellIndex,
+      insertRow/deleteRow/insertCell/deleteCell/createTBody with WebIDL conversions; colSpan
+      and rowSpan clamp and reflect as Chromium does. A select's options, value, length, item,
+      namedItem, remove and add see only the options it owns; `select[i]` reads and assigns
+      (the wrapper is a Proxy; upstream uses a V8 interceptor); option.index is native. Port
+      additions measured in Chromium 157: caption, createCaption/deleteCaption,
+      createTHead/deleteTHead, createTFoot/deleteTFoot, and datalist.options. Upstream's
+      `tag_name` "interface" mode (the perf half of d8f1467) is moot: the shim maps tag names
+      to interfaces itself. Tests: `TreeTests`, `RuntimeTests.LegacyTableAndSelect.cs`,
+      Cdp `LegacyTableApis.cs`. Measured with a 200-select / 300-row page: select reads
+      ~410 to ~330 ms, row reads ~490 to ~80 ms (the old code walked with querySelectorAll)
+- [x] `cfce062` + `8ba9e5e` (custom element reactions): already (the shim's reactions model);
+      upstream's six runtime.rs tests ported to `CustomElementReactionsTests`, where Chromium
+      157 and the port agree and upstream's own expectation for the insertion test does not
+- [x] `414e649` (window.event): already (`_currentEvent`); `window_event.rs` ported as
+      `WindowEvent`, Chromium 157 values
+- [x] `cbcafc1` (Response validation): page-made responses are type `default` with no URL or
+      redirect flag; status 200-599 (RangeError), statusText bytes and null-body statuses
+      (TypeError) checked; fetch, data:, blob:, clone() and Response.error() (type `error`)
+      use an internal path; Response.redirect parses its URL and checks the status;
+      Response.json rejects unserializable data and keeps the init's headers
+- [x] `831cb29` + `ccdaf10` (interface brands) and the interface half of `d8f1467`: tag_name's
+      "interface" mode answers [tagName, namespace, localName] for anything but an unprefixed
+      lower-case HTML name, so a cloned createElementNS('urn:x', 'OL') is no HTMLOListElement;
+      createElementNS(XHTML) keeps a prefix and upper case ('x:div' an HTMLDivElement "X:DIV",
+      'SELECT' an HTMLUnknownElement), createElement('x:td') is an HTMLUnknownElement, and
+      `prefix` is read from the node (op_dom `prefix`). Tests: `HtmlInterfaceBrands`
+- [x] `790a77d`: `new DocumentFragment()` is its node's wrapper (cached), so removeChild works
+- [x] `2f302d9`: HTMLLIElement.value reflects a long (default 0); long reflection rejects a
+      BigInt. OL reversed/start/type were already reflected
+- [x] `24adea2` (DOMImplementation): already; its two tests pinned in
+      `RuntimeTests.ListsAndFragments.cs`
+- [x] `a695bfc` (nomodule): already; page.rs test ported to `ScriptOrderTests`
+- [x] `7451e39` + `48538d6` (setRangeText, selection offsets): type check (InvalidStateError),
+      argument count and selection mode (TypeError), start past end (IndexSizeError), unsigned
+      offsets clamped to the value, preserve/shift/collapse of the selection;
+      setSelectionRange clamps; selectionDirection reads `forward` unless `backward`, null on
+      an element without text selection (Chromium 157 on Linux). Tests: `RangeTextCompat`
+- [x] `aea9bca`: a throwing queueMicrotask callback is reported as an ErrorEvent at the window
+      (Chromium 157), not an unhandledrejection; later microtasks run
+- [ ] DOM and web APIs still open: `19fa7a3` (Attr as a Node, document clones), `4dfc90f`
+      (remaining SVG interfaces), `d57489c` (AES-KW and native JWK serialization),
+      `e4b6138` (User Timing and PerformanceObserver), `75bd891` (form ownership and submitted
+      fields), `955524a` (named child-frame targets: in the port already, `<base target>`
+      default still missing)
 - [x] MCP `7500e6d` + `b13604b` + `a3aea0a` (evaluate part): `browser_evaluate` awaits a
       returned promise through the host-side CDP await (upstream first used a page-visible
       slot, `__obscura_mcp_expression`, which a page could forge; its final version uses the
@@ -676,7 +720,8 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       see Render layout), `8a4d745` real bold faces and kerning (done, see Render text),
       `322f46c` (done, see Render layout), `ab19571` (already, tests ported), `97f8f81`
       (done), `d04b661` (done, see Computed style), `716826c` (already: FileList is a real
-      interface whose list members include `Symbol.iterator`), `4c12826` (with the DOM and web APIs group)
+      interface whose list members include `Symbol.iterator`), `4c12826` (done, with the select
+      and table APIs below)
 - [x] `8bb46be`: `Runtime.getHeapUsage` reports the isolate's V8 heap (used, total, external;
       embedder 0) without running a page task, and `HeapProfiler.collectGarbage` runs a full
       collection; both were missing (HeapProfiler was a blanket no-op)
@@ -715,8 +760,9 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [ ] Performance, benchmark before and after: `abf247b`, `3a9eb06`, `8310ebf`
 
 Parity against a reference built at `4eb1235` (2026-11-18): 377 of 385 cases identical. The
-eight that differ are all queued above: `legacy-table-apis` html/text/markdown (`25700b9`,
-`59276a3`, `d8f1467`, merge `4c12826`), `cssom-rule-ownership` and `retained-cssom-raster`
+eight that differed are queued above or since ported: `legacy-table-apis` html/text/markdown
+(`25700b9`, `59276a3`, `d8f1467`, merge `4c12826`; ported 2026-11-19, the fixture's result line
+now matches Chromium 157, not yet rerun against a Rust binary), `cssom-rule-ownership` and `retained-cssom-raster`
 html (CSSOM source preservation and rule ownership), `computed-insets` and
 `modern-hydration-contracts` html (script-appended nodes land on the other side of trailing
 whitespace; with `721e40f`, `ee74973`, `2b07b76`).
@@ -2855,6 +2901,50 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   new id, so `ChildFrameTree.CrossOriginIframeOwnerMetadataDoesNotReviveDetachedContexts`
   leaves out upstream's "new id" assertion. That is frame lifecycle in the shim's
   `_iframeStates`, not the DOM domain.
+
+- Select and table APIs (`d8f1467`, `25700b9`, `59276a3`, merge `4c12826`), measured in
+  Chromium 157.0.8103.78:
+  - `select[i]`: upstream gives the select wrapper a V8 indexed interceptor
+    (`op_create_select_allocator`); ClearScript has none, so a select's wrapper is a Proxy
+    (`_selectIndexHandler`, built in the Element constructor and cached as the wrapper).
+    Defining an index with `configurable: false` sets the option but answers false
+    (`Object.defineProperty` throws), because a Proxy may not report a non-configurable
+    property its target lacks; Chromium answers true.
+  - `select[i] = option` at an index of 100,000 or more is ignored, as in Chromium; upstream
+    throws RangeError. `select.length` over 100,000 warns on the engine console, as Chromium
+    does, not through the page's `console.warn` as upstream does.
+  - The live table collections answer false to `Reflect.set` and `Reflect.defineProperty` of
+    an index, as upstream and WebIDL do. Chromium answers true (and changes nothing) yet
+    throws on a strict-mode assignment; a Proxy cannot do both. Their own keys list expandos
+    before the supported names (Chromium); upstream lists names first.
+  - Receivers are this realm's own wrappers only: upstream forwards a receiver from a child
+    realm to that realm (`_tableRealmDispatch`, `_documentRealmMember`); the port's frames run
+    in separate engines.
+  - Port additions: `caption`, `createCaption`/`deleteCaption`, `createTHead`/`deleteTHead`,
+    `createTFoot`/`deleteTFoot`, and `datalist.options` (which answered `[]`).
+  - Still different (pre-existing, not from this port): element wrappers carry enumerable
+    internal own properties (`_nid`, `_style`, ...), so `Object.keys(select)` lists them
+    after the indices.
+- Response (`cbcafc1`): the engine's responses are marked by a closure flag the constructor
+  reads first (`_createInternalResponse`), where upstream passes a closure token as a third
+  constructor argument. Same effect; neither is reachable from page script.
+- Text control selection (`7451e39`, `48538d6`): a selection without a direction reads
+  `forward`, as Chromium does on Linux and upstream's results do; the shim used to answer
+  `none`. setRangeText writes the selection directly rather than through the page-visible
+  setSelectionRange (upstream calls `this.setSelectionRange`). setSelectionRange on a
+  non-text input still does not throw InvalidStateError (Chromium does).
+- queueMicrotask (`aea9bca`): upstream reports through a deno_core op that keeps the
+  checkpoint going; the port's queue is a promise reaction, so it only had to report the
+  exception (`_reportException`).
+- Box metrics under a pending transform (`30e8d7a`): upstream relayouts for any pending
+  transform edit on an ancestor of the measured element; the port keeps the retained layout
+  when the ancestor's edit keeps its transform state (none, or a valid transform, in both),
+  `CssDeclarations.InlineTransformKeepsContainingBlock`. Chromium changes a descendant's
+  offsetParent and containing block only when that state switches (measured).
+- Computed style (`35b9448`): upstream adds a per-task non-geometric cascade cache and a
+  reduced snapshot for a set of properties; the port keeps one full snapshot per element and
+  instead leaves the custom properties out of `op_computed_style_static` until script reads
+  a `--` name, `length` or `item()`, and lets that op answer from a current render.
 
 ### Operator font directories load per render pass, not into a cached base database
 
