@@ -23843,7 +23843,7 @@ function _caretToEndOnValueChange(el, before, after) {
   if (before === after || !_hasTextSelection(el)) return;
   _ns_selectionStart.set(el, after.length);
   _ns_selectionEnd.set(el, after.length);
-  _ns_selectionDir.set(el, 'none');
+  _ns_selectionDir.set(el, 'forward');
 }
 
 // Element.prototype.selectionStart - get/set selection start position
@@ -23881,11 +23881,14 @@ if (!Element.prototype.selectionEnd) {
 // Element.prototype.selectionDirection - get/set selection direction
 if (!Element.prototype.selectionDirection) {
   Object.defineProperty(Element.prototype, 'selectionDirection', {
+    // Chromium 157 on Linux reports a selection without a direction as "forward" (also after
+    // `selectionDirection = 'none'`), and null for an element without text selection.
     get: function() {
-      return _ns_selectionDir.get(this) ?? 'none';
+      if (!_hasTextSelection(this)) return null;
+      return _ns_selectionDir.get(this) === 'backward' ? 'backward' : 'forward';
     },
     set: function(v) {
-      _ns_selectionDir.set(this, v === 'forward' || v === 'backward' ? v : 'none');
+      _ns_selectionDir.set(this, v === 'backward' ? 'backward' : 'forward');
     },
     enumerable: true,
     configurable: true
@@ -23894,43 +23897,79 @@ if (!Element.prototype.selectionDirection) {
 
 // Element.prototype.setSelectionRange - set text selection range
 if (!Element.prototype.setSelectionRange) {
+  // upstream 48538d6: the offsets convert as unsigned longs and clamp to the value's length,
+  // and a start past the end collapses to the end (Chromium 157: setSelectionRange(-1, 99)
+  // on "abc" selects 3..3, (5, 1) selects 1..1).
   Element.prototype.setSelectionRange = function setSelectionRange(start, end, direction) {
-    start = Math.max(0, parseInt(start, 10) || 0);
-    end = Math.max(0, parseInt(end, 10) || 0);
-    direction = direction === 'forward' || direction === 'backward' ? direction : 'none';
+    start = +start >>> 0;
+    end = +end >>> 0;
+    const value = this.value;
+    if (typeof value === 'string') {
+      start = _MathMin(start, value.length);
+      end = _MathMin(end, value.length);
+    }
+    if (start > end) start = end;
     _ns_selectionStart.set(this, start);
     _ns_selectionEnd.set(this, end);
-    _ns_selectionDir.set(this, direction);
+    _ns_selectionDir.set(this, direction === 'backward' ? 'backward' : 'forward');
   };
   _markNative(Element.prototype.setSelectionRange);
 }
 
 // Element.prototype.setRangeText - replace selection with text
 if (!Element.prototype.setRangeText) {
+  // upstream 7451e39 + 48538d6: the text controls (inputs whose type falls back to text
+  // included) only, else InvalidStateError; one argument or all three, else TypeError; an
+  // unknown selection mode is a TypeError and start past end an IndexSizeError; the offsets
+  // convert as unsigned longs and clamp to the value; "preserve" keeps a selection before the
+  // replaced range, shifts one after it and collapses one inside it. The result is a forward
+  // selection (Chromium 157 on Linux; upstream's tests expect the same). Selection state is
+  // written directly, not through the page-visible setSelectionRange.
   Element.prototype.setRangeText = function setRangeText(replacement, start, end, selectMode) {
-    const val = this.value;
-    if (!val) return;
-    const strVal = String(val);
-    start = start === undefined ? (this.selectionStart ?? 0) : Math.max(0, parseInt(start, 10) || 0);
-    end = end === undefined ? (this.selectionEnd ?? 0) : Math.max(0, parseInt(end, 10) || 0);
-    const newValue = strVal.slice(0, start) + String(replacement) + strVal.slice(end);
-    this.value = newValue;
-    selectMode = selectMode || 'preserve';
-    if (selectMode === 'select') {
-      const replLen = String(replacement).length;
-      _ns_selectionStart.set(this, start);
-      _ns_selectionEnd.set(this, start + replLen);
-      _ns_selectionDir.set(this, 'none');
-    } else if (selectMode === 'start') {
-      _ns_selectionStart.set(this, start);
-      _ns_selectionEnd.set(this, start);
-      _ns_selectionDir.set(this, 'none');
-    } else if (selectMode === 'end') {
-      const replLen = String(replacement).length;
-      _ns_selectionStart.set(this, start + replLen);
-      _ns_selectionEnd.set(this, start + replLen);
-      _ns_selectionDir.set(this, 'none');
+    if (!_hasTextSelection(this)) {
+      throw new DOMException("Failed to execute 'setRangeText' on '" + (this.localName === 'textarea' ? 'HTMLTextAreaElement' : 'HTMLInputElement') + "': The input element's type ('" + _stringToLowerCase(_String(_hostDom.getAttribute(this, 'type') || '')) + "') does not support selection.", 'InvalidStateError');
     }
+    if (arguments.length === 0 || arguments.length === 2) {
+      throw new TypeError("Failed to execute 'setRangeText': " + (arguments.length === 0 ? '1 argument required, but only 0 present.' : 'No function was found that matched the signature provided.'));
+    }
+    const text = _String(replacement);
+    const explicit = arguments.length >= 3;
+    let lo = explicit ? (+start >>> 0) : 0;
+    let hi = explicit ? (+end >>> 0) : 0;
+    const mode = selectMode === undefined ? 'preserve' : _String(selectMode);
+    if (mode !== 'select' && mode !== 'start' && mode !== 'end' && mode !== 'preserve') {
+      throw new TypeError("Failed to execute 'setRangeText': The provided value '" + mode + "' is not a valid enum value of type SelectionMode.");
+    }
+    const value = _String(this.value ?? '');
+    const beforeStart = _MathMin(this.selectionStart ?? 0, value.length);
+    const beforeEnd = _MathMin(this.selectionEnd ?? 0, value.length);
+    if (!explicit) { lo = beforeStart; hi = beforeEnd; }
+    if (lo > hi) {
+      throw new DOMException("Failed to execute 'setRangeText': The provided start value (" + lo + ") is larger than the provided end value (" + hi + ").", 'IndexSizeError');
+    }
+    lo = _MathMin(lo, value.length);
+    hi = _MathMin(hi, value.length);
+    this.value = _stringSlice(value, 0, lo) + text + _stringSlice(value, hi);
+    const afterEnd = lo + text.length;
+    const delta = text.length - (hi - lo);
+    let selectionStart = beforeStart;
+    let selectionEnd = beforeEnd;
+    if (mode === 'select') {
+      selectionStart = lo;
+      selectionEnd = afterEnd;
+    } else if (mode === 'start') {
+      selectionStart = selectionEnd = lo;
+    } else if (mode === 'end') {
+      selectionStart = selectionEnd = afterEnd;
+    } else {
+      if (selectionStart > hi) selectionStart += delta;
+      else if (selectionStart > lo) selectionStart = lo;
+      if (selectionEnd > hi) selectionEnd += delta;
+      else if (selectionEnd > lo) selectionEnd = afterEnd;
+    }
+    _ns_selectionStart.set(this, selectionStart);
+    _ns_selectionEnd.set(this, selectionEnd);
+    _ns_selectionDir.set(this, 'forward');
   };
   _markNative(Element.prototype.setRangeText);
 }
@@ -23943,7 +23982,7 @@ if (!Element.prototype.select) {
     const len = String(val).length;
     _ns_selectionStart.set(this, 0);
     _ns_selectionEnd.set(this, len);
-    _ns_selectionDir.set(this, 'none');
+    _ns_selectionDir.set(this, 'forward');
   };
   _markNative(Element.prototype.select);
 }
