@@ -277,4 +277,26 @@ public sealed class ScriptOrderTests
             ["ok loading -", "ok onload", "missing onerror", "rsc interactive -", "DCL -", "rsc complete -", "load"],
             log);
     }
+
+    // upstream a695bfc (page.rs nomodule_classic_scripts_do_not_run): parsed and dynamic
+    // classic scripts marked nomodule do not run; a module does. Already the case here;
+    // Chromium 157 logs the same sequence for the same page (measured).
+    [Fact]
+    public async Task NomoduleClassicScriptsDoNotRun()
+    {
+        string[] log = await LoadAsync(
+            "script-order-nomodule",
+            "<!doctype html><html><head>" + Head
+            + "<script>log('classic');</script>"
+            + "<script nomodule>log('nomodule-inline');</script>"
+            + "<script type=module>log('module');</script>"
+            + "<script nomodule type=text/javascript>log('nomodule-typed');</script>"
+            + "<script>const dynamic = document.createElement('script');"
+            + "dynamic.setAttribute('nomodule', ''); dynamic.textContent = \"log('nomodule-dynamic')\";"
+            + "document.head.appendChild(dynamic);"
+            + "const plain = document.createElement('script'); plain.textContent = \"log('dynamic')\";"
+            + "document.head.appendChild(plain);</script>"
+            + "</head><body></body></html>");
+        Assert.Equal(["classic", "dynamic", "rsc interactive -", "module", "DCL -", "rsc complete -", "load"], log);
+    }
 }
