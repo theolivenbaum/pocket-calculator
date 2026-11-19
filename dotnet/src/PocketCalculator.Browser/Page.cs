@@ -335,6 +335,13 @@ public sealed partial class Page : IDisposable
     /// </summary>
     private int? _pendingHistoryTraversal;
 
+    /// <summary>
+    /// The current document's navigation milestones (upstream 60107d1): a new record per
+    /// navigation, handed to each runtime built for the document, so a resumed runtime keeps
+    /// them.
+    /// </summary>
+    private NavigationTiming _navigationTiming = new();
+
     public List<NetworkEvent> NetworkEvents { get; } = [];
 
     public bool InterceptEnabled { get; private set; }
@@ -557,6 +564,7 @@ public sealed partial class Page : IDisposable
         rt.SetTitle(Title);
         rt.SetReferrer(Referrer);
         rt.SetReferrerPolicyHeader(ReferrerPolicyHeader);
+        rt.NavigationTiming = _navigationTiming;
         (List<string> sessionHistory, int sessionIndex) = PredictedSessionHistory();
         rt.SetSessionHistory(sessionHistory, sessionIndex, sessionIndex);
 

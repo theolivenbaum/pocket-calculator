@@ -404,6 +404,16 @@ public sealed partial class PocketCalculatorJsRuntime
     public void SetSessionHistory(IEnumerable<string> urls, int documentStart, int current, int documentLength = 0) =>
         State.SessionHistory.Set(urls, documentStart, current, documentLength);
 
+    /// <summary>
+    /// The navigation milestones this document reports through <c>performance</c>
+    /// (upstream 60107d1); the page's own record, shared rather than copied.
+    /// </summary>
+    public NavigationTiming NavigationTiming
+    {
+        get => State.NavigationTiming;
+        set => State.NavigationTiming = value ?? throw new ArgumentNullException(nameof(value));
+    }
+
     /// <summary>The session history as the document last left it.</summary>
     public SessionHistory SessionHistory => State.SessionHistory;
 

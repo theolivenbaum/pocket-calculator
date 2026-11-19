@@ -362,6 +362,111 @@ public sealed class PageTests
         Assert.Equal(two, page.UrlString());
     }
 
+    /// <summary>Upstream 60107d1.</summary>
+    [Fact]
+    public async Task NavigationTimingRecordsLifecycleBoundariesNotFutureEvents()
+    {
+        using Page page = PageFixtures.ImportMapTestPage("navigation-timing", "http://127.0.0.1:9", "<html><body></body></html>");
+        const string html = """
+            <!doctype html><script>
+                globalThis.__navigationSamples = [];
+                function sample() {
+                    const timing = performance.timing;
+                    __navigationSamples.push([
+                        timing.navigationStart, timing.responseEnd,
+                        timing.domContentLoadedEventStart, timing.domContentLoadedEventEnd,
+                        timing.loadEventStart, timing.loadEventEnd
+                    ]);
+                }
+                sample();
+                document.addEventListener('DOMContentLoaded', sample);
+                window.addEventListener('load', sample);
+            </script><p>Real navigation timing</p>
+            """;
+        await page.NavigateAsync("data:text/html;base64," + Convert.ToBase64String(Encoding.UTF8.GetBytes(html)));
+        PageFixtures.AssertJson(
+            "[true,true,true,true,true,true,true,true,true,true]",
+            page.Evaluate("""
+                (() => {
+                    const [parser, dom, load] = __navigationSamples;
+                    const final = performance.timing;
+                    const entry = performance.getEntriesByType('navigation')[0];
+                    return [
+                        parser[3] === 0 && parser[5] === 0,
+                        Number.isFinite(parser[1]) && parser[1] >= parser[0],
+                        dom[2] > 0 && dom[3] === 0,
+                        load[4] > 0 && load[5] === 0,
+                        final.domContentLoadedEventEnd >= dom[2],
+                        final.loadEventStart >= final.domContentLoadedEventEnd,
+                        final.loadEventEnd >= load[4],
+                        performance.timeOrigin >= final.navigationStart
+                            && performance.timeOrigin < final.navigationStart + 1,
+                        // No fabricated transport phases.
+                        final.domainLookupStart === 0 && final.connectStart === 0
+                            && final.secureConnectionStart === 0 && entry.connectEnd === 0,
+                        entry.loadEventEnd >= entry.domContentLoadedEventEnd && entry.fetchStart > 0
+                    ];
+                })()
+                """));
+    }
+
+    /// <summary>
+    /// Port addition: a page's own DOMContentLoaded or load dispatch does not set the marks
+    /// (they used to come from page-visible listeners).
+    /// </summary>
+    [Fact]
+    public async Task NavigationTimingIgnoresSyntheticLifecycleEvents()
+    {
+        using Page page = PageFixtures.NewPage("navigation-timing-synthetic");
+        const string html = "<script>document.dispatchEvent(new Event('DOMContentLoaded'));"
+            + "window.dispatchEvent(new Event('load'));"
+            + "globalThis.early = [performance.timing.domContentLoadedEventStart, performance.timing.loadEventStart];</script>";
+        await page.NavigateAsync("data:text/html;base64," + Convert.ToBase64String(Encoding.UTF8.GetBytes(html)));
+        PageFixtures.AssertJson("[0,0]", page.Evaluate("early"));
+    }
+
+    /// <summary>Upstream 60107d1.</summary>
+    [Fact]
+    public async Task NavigationTimingSurvivesSuspensionButResetsOnNavigation()
+    {
+        using Page page = PageFixtures.ImportMapTestPage("navigation-timing-retention", "http://127.0.0.1:9", "<html><body></body></html>");
+        await page.NavigateAsync("data:text/html,<p>First</p>");
+        const string expression = "[performance.timeOrigin, performance.timing.navigationStart, performance.timing.loadEventEnd]";
+        JsonNode before = page.Evaluate(expression)!;
+        Assert.True(before[2]!.GetValue<double>() > before[1]!.GetValue<double>());
+        page.SuspendJs();
+        page.ResumeJs();
+        Assert.Equal(before.ToJsonString(), page.Evaluate(expression)!.ToJsonString());
+        await Task.Delay(5);
+        await page.NavigateAsync("data:text/html,<p>Second</p>");
+        JsonNode after = page.Evaluate(expression)!;
+        Assert.True(after[0]!.GetValue<double>() > before[0]!.GetValue<double>());
+        Assert.True(after[1]!.GetValue<double>() >= before[2]!.GetValue<double>());
+    }
+
+    /// <summary>Upstream 60107d1.</summary>
+    [Fact]
+    public async Task NavigationTimingTerminatedHandlersDoNotRecordCompletion()
+    {
+        string? previous = Environment.GetEnvironmentVariable("POCKETCALCULATOR_SCRIPT_DEADLINE_MS");
+        Environment.SetEnvironmentVariable("POCKETCALCULATOR_SCRIPT_DEADLINE_MS", "250");
+        try
+        {
+            using Page page = PageFixtures.ImportMapTestPage("terminated-navigation-timing", "http://127.0.0.1:9", "<html><body></body></html>");
+            foreach ((string evt, string field) in new[] { ("DOMContentLoaded", "domContentLoadedEventEnd"), ("load", "loadEventEnd") })
+            {
+                string html = $"<script>window.addEventListener('{evt}',()=>{{globalThis.entered=true;while(true){{}}}});</script>";
+                await page.NavigateAsync("data:text/html;base64," + Convert.ToBase64String(Encoding.UTF8.GetBytes(html)));
+                Assert.Equal("true", page.Evaluate("globalThis.entered === true")?.ToJsonString());
+                Assert.Equal(0.0, PageFixtures.AsDouble(page.Evaluate($"performance.timing.{field}")));
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("POCKETCALCULATOR_SCRIPT_DEADLINE_MS", previous);
+        }
+    }
+
     /// <summary>Upstream 721e40f. Chromium 1243 gives the same values for a new tab.</summary>
     [Fact]
     public async Task BlankNavigationHasNoDoctypeAndStartsInQuirksMode()

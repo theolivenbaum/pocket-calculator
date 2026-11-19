@@ -154,6 +154,14 @@ public static class DomOps
                 return gs.MediaPreferences.DarkColorScheme ? "true" : "false";
             case "emulated_media":
                 return SerdeJson.String(gs.MediaPreferences.MediaType);
+            // upstream 60107d1: the document's navigation milestones, kept by the host, and
+            // the shim's lifecycle marks (recorded once, from the host's own lifecycle
+            // helper, not from page-visible listeners).
+            case "performance_timing":
+                return gs.NavigationTiming.ToJson();
+            case "performance_lifecycle":
+                gs.NavigationTiming.Record(arg1);
+                return "null";
         }
 
         if (cmd == "note_focus")

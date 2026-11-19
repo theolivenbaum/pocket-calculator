@@ -937,6 +937,8 @@ public sealed partial class PocketCalculatorJsRuntime
     /// </remarks>
     public void RunPageInit()
     {
+        // upstream 60107d1: the document starts parsing as the realm initializes.
+        State.NavigationTiming.Record("domLoading");
         try
         {
             InvokeHostScript("<obscura:page-init>", HostScript.WrapStatements("__obscura_host.init();"));

@@ -537,6 +537,8 @@ public sealed partial class Page
             throw PageException.InvalidUrl(parseError.Message());
         }
         UrlRecord url = parsed;
+        // upstream 60107d1: a navigation starts a new timeline.
+        _navigationTiming = new NavigationTiming();
 
         // The previous document's background render-resource loads end with it.
         RetireRenderResources();
@@ -621,6 +623,7 @@ public sealed partial class Page
 
         Response response;
         bool wasIntercepted = false;
+        _navigationTiming.Record("fetchStart");
         try
         {
             if (await InterceptNavigationAsync(url, method, body, profile, cancellationToken)
@@ -681,6 +684,8 @@ public sealed partial class Page
             Lifecycle = LifecycleState.Failed;
             throw PageException.Network(error.Message);
         }
+
+        _navigationTiming.Record("responseEnd");
 
         // Store binary main resources (images, PDFs, octet-stream) base64 so
         // Network.getResponseBody returns intact bytes. A UTF-8-lossy text store
@@ -942,6 +947,7 @@ public sealed partial class Page
 
     public void NavigateBlank()
     {
+        _navigationTiming = new NavigationTiming();
         _pendingFrameWork.Clear();
         Frames.Clear();
         Js = null;

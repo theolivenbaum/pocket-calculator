@@ -71,6 +71,12 @@ public sealed class PocketCalculatorState
     public int? PendingHistoryTraversal { get; set; }
 
     /// <summary>
+    /// The document's navigation milestones (upstream 60107d1), handed over by the page and
+    /// shared with it, so they survive a suspended runtime and reset on navigation.
+    /// </summary>
+    public NavigationTiming NavigationTiming { get; set; } = new();
+
+    /// <summary>
     /// Whether the document has an opaque origin whatever its URL says, as a frame
     /// sandboxed without <c>allow-same-origin</c> does. Port addition: Rust derives
     /// no origin host-side at all (see <see cref="StateHelpers.DocumentOrigin"/>).

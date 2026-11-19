@@ -15780,48 +15780,27 @@ _markNative(PerformanceMeasure);
 _markNative(PerformanceResourceTiming);
 _markNative(PerformanceNavigationTiming);
 
-// Document-lifecycle marks, all relative to performance.timeOrigin. Reset on
-// every page init; a field left at 0 is a phase the page has not reached yet,
-// which is what Chromium reports while a page is still loading.
-var _navTiming = null;
+// Document-lifecycle marks, all relative to performance.timeOrigin; a field at 0 is a phase
+// the page has not reached yet, which is what Chromium reports while a page is still loading.
+// upstream 60107d1: the host records them (NavigationTiming): fetchStart and responseEnd
+// around the document fetch, domLoading at realm init, the rest from __obscura_host's
+// lifecycle steps, once each. DEVIATION from the port's earlier shim, which laid DNS, TCP,
+// TLS, request and response phases out proportionally (fabricated values; they are 0 now,
+// as for resource timing below) and took the lifecycle marks from page-visible listeners,
+// so a synthetic DOMContentLoaded set them.
 var _perfUserEntries = [];
 function _perfRound(v) { return Math.round(v * 10) / 10; }
-function _navTimingReset(elapsed) {
-  // No transport metrics reach JS, so the pre-response phases are laid out
-  // proportionally inside [navigationStart, now]. They are ordered and
-  // monotonic, which is all a consumer can rely on.
-  var e = elapsed > 0 ? elapsed : 1;
-  var https = false;
-  try { https = new URL(__currentUrl()).protocol === "https:"; } catch (err) {}
-  _navTiming = {
-    fetchStart: _perfRound(Math.max(0.1, e * 0.02)),
-    domainLookupStart: _perfRound(e * 0.05),
-    domainLookupEnd: _perfRound(e * 0.12),
-    connectStart: _perfRound(e * 0.12),
-    secureConnectionStart: https ? _perfRound(e * 0.18) : 0,
-    connectEnd: _perfRound(e * 0.30),
-    requestStart: _perfRound(e * 0.32),
-    responseStart: _perfRound(e * 0.75),
-    responseEnd: _perfRound(e * 0.95),
-    domLoading: _perfRound(e * 0.95),
-    domInteractive: 0,
-    domContentLoadedEventStart: 0,
-    domContentLoadedEventEnd: 0,
-    domComplete: 0,
-    loadEventStart: 0,
-    loadEventEnd: 0,
-    redirectCount: 0,
-    type: "navigate",
-    // The negotiated ALPN protocol is not exposed to JS by the host, so it is
-    // derived from the scheme: h2 is what Chromium reports for nearly every
-    // https origin.
-    nextHopProtocol: https ? "h2" : "http/1.1",
-    bodySize: -1,
-  };
+function _navTimes() {
+  try {
+    var t = _JSONparse(_dom("performance_timing"));
+    if (t && typeof t === "object") return t;
+  } catch (e) {}
+  return { timeOrigin: 0 };
 }
+var _navBodySizeValue = -1;
+function _navTimingReset() { _navBodySizeValue = -1; }
 function _navBodySize() {
-  if (!_navTiming) return 0;
-  if (_navTiming.bodySize >= 0) return _navTiming.bodySize;
+  if (_navBodySizeValue >= 0) return _navBodySizeValue;
   var size = 0;
   try {
     // No response-size accounting reaches JS. The serialized document is the
@@ -15831,34 +15810,33 @@ function _navBodySize() {
       ? globalThis.document.documentElement.outerHTML : "";
     size = html ? html.length : 0;
   } catch (e) { size = 0; }
-  _navTiming.bodySize = size;
+  _navBodySizeValue = size;
   return size;
 }
 function _navigationEntry() {
-  if (!_navTiming) _navTimingReset(0);
-  var t = _navTiming;
+  var t = _navTimes();
+  // A reached mark never rounds down to 0, which reads as "not reached".
+  var r = function (v) { return v ? Math.max(0.1, _perfRound(+v)) : 0; };
+  var https = false;
+  try { https = new URL(__currentUrl()).protocol === "https:"; } catch (err) {}
   var body = _navBodySize();
   return new PerformanceNavigationTiming(__currentUrl(), {
     startTime: 0,
-    duration: t.loadEventEnd,
-    fetchStart: t.fetchStart,
-    domainLookupStart: t.domainLookupStart,
-    domainLookupEnd: t.domainLookupEnd,
-    connectStart: t.connectStart,
-    connectEnd: t.connectEnd,
-    secureConnectionStart: t.secureConnectionStart,
-    requestStart: t.requestStart,
-    responseStart: t.responseStart,
-    responseEnd: t.responseEnd,
-    domInteractive: t.domInteractive,
-    domContentLoadedEventStart: t.domContentLoadedEventStart,
-    domContentLoadedEventEnd: t.domContentLoadedEventEnd,
-    domComplete: t.domComplete,
-    loadEventStart: t.loadEventStart,
-    loadEventEnd: t.loadEventEnd,
-    type: t.type,
-    redirectCount: t.redirectCount,
-    nextHopProtocol: t.nextHopProtocol,
+    duration: r(t.loadEventEnd),
+    fetchStart: r(t.fetchStart),
+    responseEnd: r(t.responseEnd),
+    domInteractive: r(t.domInteractive),
+    domContentLoadedEventStart: r(t.domContentLoadedEventStart),
+    domContentLoadedEventEnd: r(t.domContentLoadedEventEnd),
+    domComplete: r(t.domComplete),
+    loadEventStart: r(t.loadEventStart),
+    loadEventEnd: r(t.loadEventEnd),
+    type: "navigate",
+    redirectCount: 0,
+    // The negotiated ALPN protocol is not exposed to JS by the host, so it is
+    // derived from the scheme: h2 is what Chromium reports for nearly every
+    // https origin.
+    nextHopProtocol: https ? "h2" : "http/1.1",
     responseStatus: 200,
     contentType: "text/html",
     encodedBodySize: body,
@@ -15961,23 +15939,23 @@ function _perfAllEntries() {
 // The legacy PerformanceTiming surface, derived from the same marks so the two
 // APIs cannot disagree. Absolute epoch milliseconds; 0 means "not reached".
 function _perfLegacyTiming() {
-  var t0 = globalThis.performance.timeOrigin || 0;
-  var t = _navTiming || {};
-  var abs = function (v) { return v ? Math.round(t0 + v) : 0; };
+  var t = _navTimes();
+  var t0 = +t.timeOrigin || globalThis.performance.timeOrigin || 0;
+  var abs = function (v) { return v ? Math.round(t0 + (+v)) : 0; };
   return {
-    navigationStart: Math.round(t0),
+    navigationStart: Math.floor(t0),
     unloadEventStart: 0,
     unloadEventEnd: 0,
     redirectStart: 0,
     redirectEnd: 0,
     fetchStart: abs(t.fetchStart),
-    domainLookupStart: abs(t.domainLookupStart),
-    domainLookupEnd: abs(t.domainLookupEnd),
-    connectStart: abs(t.connectStart),
-    connectEnd: abs(t.connectEnd),
-    secureConnectionStart: abs(t.secureConnectionStart),
-    requestStart: abs(t.requestStart),
-    responseStart: abs(t.responseStart),
+    domainLookupStart: 0,
+    domainLookupEnd: 0,
+    connectStart: 0,
+    connectEnd: 0,
+    secureConnectionStart: 0,
+    requestStart: 0,
+    responseStart: 0,
     responseEnd: abs(t.responseEnd),
     domLoading: abs(t.domLoading),
     domInteractive: abs(t.domInteractive),
@@ -15988,53 +15966,6 @@ function _perfLegacyTiming() {
     loadEventEnd: abs(t.loadEventEnd),
   };
 }
-// Records the document-lifecycle marks. The host drives readyState and
-// dispatches DOMContentLoaded/load, and those transitions are the only signal
-// bootstrap gets, so the marks hang off them. The listeners are registered
-// from __obscura_init, ahead of any page script, so the *Start marks land
-// before the page's own handlers; the matching *End marks are taken from a
-// microtask, which runs once the whole dispatch has finished.
-function _installNavigationTimingHooks() {
-  try {
-    globalThis.document.addEventListener('DOMContentLoaded', function () {
-      if (!_navTiming) return;
-      if (!_navTiming.domContentLoadedEventStart) _navTiming.domContentLoadedEventStart = performance.now();
-      queueMicrotask(function () {
-        if (_navTiming) _navTiming.domContentLoadedEventEnd = performance.now();
-      });
-    });
-  } catch (e) {}
-  try {
-    globalThis.addEventListener('load', function () {
-      if (!_navTiming) return;
-      if (!_navTiming.loadEventStart) _navTiming.loadEventStart = performance.now();
-      queueMicrotask(function () {
-        if (_navTiming) _navTiming.loadEventEnd = performance.now();
-      });
-    });
-  } catch (e) {}
-}
-// readyState is a plain global the host assigns to. Intercepting the
-// assignment is what lets domInteractive/domComplete be real measurements
-// instead of copies of navigationStart.
-var _documentReadyStateValue;
-try {
-  Object.defineProperty(_hostVars, '__documentReadyState__', {
-    get() { return _documentReadyStateValue; },
-    set(value) {
-      _documentReadyStateValue = value;
-      if (!_navTiming) return;
-      if (value === 'interactive' && !_navTiming.domInteractive) {
-        _navTiming.domInteractive = performance.now();
-      } else if (value === 'complete') {
-        if (!_navTiming.domInteractive) _navTiming.domInteractive = performance.now();
-        if (!_navTiming.domComplete) _navTiming.domComplete = performance.now();
-      }
-    },
-    configurable: true,
-    enumerable: false,
-  });
-} catch (e) {}
 globalThis.performance = globalThis.performance || {
   now: (function() {
     // Monotonically non-decreasing: return the wall-clock offset, but never a
@@ -22906,22 +22837,20 @@ function _pageInit() {
   var memValues = _hostVars.__obscura_stealth ? [4, 8] : [0.25, 0.5, 1, 2, 4, 8];
   _hostVars.__obscura_mem = memValues[Math.floor(_fpRand(401) * memValues.length)];
 
-  // A navigation start precedes the wall clock, so skew into the past only: an
-  // origin ahead of it makes performance.now() and the rAF timestamp negative.
-  const t0 = Date.now() - 1 - Math.floor(_fpRand(641) * 100);
+  // upstream 60107d1: the navigation's start as the host recorded it (it used to be a
+  // randomly skewed Date.now()), so performance.now() and the marks share one origin.
+  const t0 = +_navTimes().timeOrigin || Date.now();
   // performance's attributes are read-only accessors on Performance.prototype (see the
   // global interfaces at the end of this file); the shim writes its state directly.
   _ifaceSet(globalThis.performance, 'timeOrigin', t0);
-  // performance.timing is a live projection of _navTiming now, so the marks
-  // are seeded here rather than pinned to navigationStart.
+  // performance.timing is a live projection of the host's marks (_navTimes).
   _perfUserEntries = [];
   // A document owns its own timeline. The host cleared its own record list when
   // it installed this document, so the cursor restarts at 0 and the subresources
   // fetched for this document (stylesheets and scripts already went out by now)
   // are read from the beginning.
   _resourceTimingReset();
-  _navTimingReset(Date.now() - t0);
-  _installNavigationTimingHooks();
+  _navTimingReset();
   var _totalHeap = 15000000 + Math.floor(_fpRand(620) * 85000000);
   _ifaceSet(globalThis.performance, 'memory', {
     jsHeapSizeLimit: 4294705152,
@@ -28366,18 +28295,33 @@ globalThis.__obscura_host_handoff = Object.freeze({
     // its place among the window's listeners (Rust called onload first).
     const fire = (target, event) => { try { _dispatch(target, _markTrusted(event)); } catch (e) {} };
     const plain = (type, bubbles) => new Event(type, { bubbles: !!bubbles, cancelable: false });
+    // upstream 60107d1: the navigation timing marks are taken here, around the user
+    // agent's own steps; an End mark is recorded only once its dispatch returned.
+    const mark = (name) => { try { _dom('performance_lifecycle', name); } catch (e) {} };
     switch (_String(phase)) {
-      case 'interactive': _hostVars.__documentReadyState__ = 'interactive'; return;
-      case 'complete': _hostVars.__documentReadyState__ = 'complete'; return;
+      case 'interactive':
+        mark('domInteractive');
+        _hostVars.__documentReadyState__ = 'interactive';
+        return;
+      case 'complete':
+        mark('domInteractive');
+        mark('domComplete');
+        _hostVars.__documentReadyState__ = 'complete';
+        return;
       case 'DOMContentLoaded':
+        mark('domContentLoadedEventStart');
         fire(_realmDocument || globalThis, plain('DOMContentLoaded', true));
+        mark('domContentLoadedEventEnd');
         return;
       case 'readystatechange':
         if (_realmDocument) fire(_realmDocument, plain('readystatechange'));
         return;
       case 'load': {
         _hostVars.__documentReadyState__ = 'complete';
+        mark('domComplete');
+        mark('loadEventStart');
         try { _dispatchWindowLoad(_markTrusted(plain('load')), _realmDocument); } catch (e) {}
+        mark('loadEventEnd');
         return;
       }
     }
