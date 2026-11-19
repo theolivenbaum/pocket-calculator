@@ -125,6 +125,7 @@ const _stringTrim = _uncurry(String.prototype.trim);
 const _stringIndexOf = _uncurry(String.prototype.indexOf);
 const _stringLastIndexOf = _uncurry(String.prototype.lastIndexOf);
 const _objectHasOwn = Object.hasOwn;
+const _objectToStringAtBoot = _uncurry(Object.prototype.toString);
 const _reflectApply = Reflect.apply;
 const _objectKeys = Object.keys;
 const _objectCreate = Object.create;
@@ -10400,6 +10401,39 @@ function _arrayBufferFromBytes(bytes) {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
 
+// The bytes a Response body method reads: a supplied stream's chunks (upstream a1dd711), a
+// fetch() body once it has arrived (upstream 3aa2f59), or the bytes given.
+async function _responseBodyBytes(response) {
+  if (response._streamSource) return _readResponseStream(response._streamSource);
+  return response._fetchBody ? await response._fetchBody.promise : response._bodyBytes;
+}
+
+// upstream a1dd711: a Response's supplied stream, read to the end into one buffer. Its
+// chunks must be Uint8Arrays. DEVIATION from crates/obscura-js/js/bootstrap.js, which
+// rejects with the stream's own error: a failed read (an errored stream or a chunk that is
+// not a Uint8Array) is a TypeError "Failed to fetch", as Chromium reports both.
+async function _readResponseStream(stream) {
+  const reader = stream.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      let step;
+      try { step = await reader.read(); }
+      catch (_) { throw new TypeError('Failed to fetch'); }
+      if (step.done) break;
+      const value = step.value;
+      if (_objectToStringAtBoot(value) !== '[object Uint8Array]') throw new TypeError('Failed to fetch');
+      const chunk = value.slice();
+      chunks.push(chunk); total += chunk.byteLength;
+    }
+  } finally { reader.releaseLock(); }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return bytes;
+}
+
 function _installWasmStreamingFallback() {
   if (typeof WebAssembly === 'undefined') return;
   if (WebAssembly.instantiateStreaming && WebAssembly.instantiateStreaming.__obscuraFallback) return;
@@ -11638,7 +11672,13 @@ function _decodeBodyWithCharset(bytes, headers) {
 if (typeof Response === 'undefined') {
   globalThis.Response = class Response {
     constructor(body, init = {}) {
-      this._bodyBytes = _bodyToUint8Array(body); this._status = init.status === undefined ? 200 : Number(init.status); this._statusText = init.statusText || '';
+      // upstream a1dd711: a ReadableStream body is the response's body as it is, read on
+      // demand; a locked or disturbed one is refused. Port: only the shim's own streams
+      // are recognised (by their private record), so a page's replaced global cannot pass.
+      const stream = body !== null && typeof body === 'object' && _weakMapGet(_readableStreamRecords, body) !== undefined ? body : null;
+      if (stream !== null && (stream.locked || stream._disturbed)) throw new TypeError("Failed to construct 'Response': Response body object should not be disturbed or locked");
+      this._streamSource = stream;
+      this._bodyBytes = stream !== null ? new Uint8Array() : _bodyToUint8Array(body); this._status = init.status === undefined ? 200 : Number(init.status); this._statusText = init.statusText || '';
       this._ok = this._status >= 200 && this._status < 300;
       this._headers = new Headers(init.headers);
       this._type = init.type || 'basic'; this._url = init.url || ''; this._redirected = !!init.redirected;
@@ -11656,13 +11696,15 @@ if (typeof Response === 'undefined') {
       this._bodySignal = null;
     }
     _consumeBody() {
-      if (this._bodyUsed) throw new TypeError("Body is already consumed");
+      // upstream a1dd711: a locked body cannot be read either.
+      if (this.bodyUsed || this._streamSource?.locked || this._bodyStream?.locked) throw new TypeError("Body is already consumed or locked");
       // An aborted body rejects with the signal's reason and is left unused, as in
       // Chromium. DEVIATION from crates/obscura-js, which marks it used first.
       if (this._bodyAborted) throw this._bodyAbortReason;
       this._bodyUsed = true;
     }
     get body() {
+      if (this._streamSource) return this._streamSource;
       if (this._bodyNull) return null;
       if (this._bodyUsed) throw new TypeError("Body is already consumed");
       if (!this._bodyStream) {
@@ -11684,29 +11726,32 @@ if (typeof Response === 'undefined') {
             }
           },
         });
-        // bodyUsed flips the moment the stream is locked for reading
-        // (spec: the body becomes "disturbed"), which no state probe can
-        // observe on a native ReadableStream, so hook getReader instead.
-        const response = this;
-        const stream = this._bodyStream;
-        const getReader = stream.getReader.bind(stream);
-        stream.getReader = function () {
-          response._bodyUsed = true;
-          return getReader();
-        };
-        stream.releaseLock = function () {
-          response._bodyUsed = true;
-          stream.locked = false;
-        };
+        // upstream a1dd711: locking the body does not disturb it; reading or cancelling does.
+        // Port: the stream records that itself (_disturbed), so no getReader hook is needed.
       }
       return this._bodyStream;
     }
-    get bodyUsed() { return this._bodyUsed; }
-    async text() { this._consumeBody(); return _decodeBodyWithCharset(this._fetchBody ? await this._fetchBody.promise : this._bodyBytes, this.headers); }
-    async json() { this._consumeBody(); return _JSONparse(await _decodeBodyWithCharset(this._fetchBody ? await this._fetchBody.promise : this._bodyBytes, this.headers)); }
-    async arrayBuffer() { this._consumeBody(); return _arrayBufferFromBytes(this._fetchBody ? await this._fetchBody.promise : this._bodyBytes); }
-    async blob() { this._consumeBody(); return new Blob([this._fetchBody ? await this._fetchBody.promise : this._bodyBytes]); }
+    get bodyUsed() { return this._bodyUsed || !!this._streamSource?._disturbed || !!this._bodyStream?._disturbed; }
+    async text() { this._consumeBody(); return _decodeBodyWithCharset(await _responseBodyBytes(this), this.headers); }
+    async json() { this._consumeBody(); return _JSONparse(await _decodeBodyWithCharset(await _responseBodyBytes(this), this.headers)); }
+    async arrayBuffer() { this._consumeBody(); return _arrayBufferFromBytes(await _responseBodyBytes(this)); }
+    async blob() { this._consumeBody(); return new Blob([await _responseBodyBytes(this)]); }
     clone() {
+      // upstream a1dd711: a used or locked body cannot be cloned (Chromium's message).
+      if (this.bodyUsed || this._streamSource?.locked || this._bodyStream?.locked) {
+        throw new TypeError("Failed to execute 'clone' on 'Response': Response body is already used");
+      }
+      if (this._streamSource) {
+        // upstream a1dd711: a stream body is teed, this response keeping one branch. Port:
+        // the clone's chunks are copies, as Fetch's "clone a body" tees with cloneForBranch2
+        // and Chromium does; upstream shares them.
+        const [left, right] = this._streamSource._tee(true);
+        this._streamSource = left;
+        const teed = new Response(right, { status: this.status, statusText: this.statusText, headers: this.headers, type: this.type, url: this.url, redirected: this.redirected });
+        const teedGuard = _headersGuards.get(this.headers);
+        if (teedGuard) _headersGuards.set(teed.headers, teedGuard);
+        return teed;
+      }
       const copy = new Response(this._bodyNull ? null : this._bodyBytes, { status: this.status, statusText: this.statusText, headers: this.headers, type: this.type, url: this.url, redirected: this.redirected });
       // upstream 3aa2f59: a clone of a fetch() response shares its body resource, counted,
       // and gets its own copy of the bytes.
@@ -21076,6 +21121,14 @@ if (typeof ReadableStream === 'undefined') {
       this._state = "readable";
       this._error = null;
       this.locked = false;
+      // upstream a1dd711: a stream is disturbed once read or cancelled (a Response over it is
+      // then used), and pulls its source on demand, up to its high-water mark.
+      this._disturbed = false;
+      this._started = false;
+      this._pulling = false;
+      this._pullAgain = false;
+      this._highWaterMark = strategy.highWaterMark === undefined ? 1 : Number(strategy.highWaterMark);
+      if (Number.isNaN(this._highWaterMark) || this._highWaterMark < 0) throw new RangeError('Invalid highWaterMark');
       const stream = this;
       const record = {
         enqueue(chunk) {
@@ -21083,6 +21136,7 @@ if (typeof ReadableStream === 'undefined') {
           const pending = stream._reads.shift();
           if (pending) pending.resolve({value: chunk, done: false});
           else stream._queue.push(chunk);
+          stream._pullIfNeeded();
         },
         close() {
           if (stream._state !== "readable") return;
@@ -21102,7 +21156,8 @@ if (typeof ReadableStream === 'undefined') {
           while (stream._reads.length) stream._reads.shift().reject(error);
           while (stream._closedWaiters.length) stream._closedWaiters.shift().reject(error);
         },
-        get desiredSize() { return Math.max(0, 1 - stream._queue.length); },
+        // upstream a1dd711: the high-water mark less what is queued, negative when over it.
+        get desiredSize() { return stream._highWaterMark - stream._queue.length; },
       };
       _weakMapSet(_readableStreamRecords, this, record);
       // A ReadableStreamDefaultController (see the global interfaces near the end of this file).
@@ -21110,11 +21165,32 @@ if (typeof ReadableStream === 'undefined') {
       try {
         const started = source.start?.(this._controller);
         if (started && typeof started.then === "function") {
-          started.catch((error) => this._controller.error(error));
+          _reflectApply(_promiseThenAtBoot, _promiseResolveAtBoot(started), [
+            () => { this._started = true; this._pullIfNeeded(); },
+            (error) => record.error(error),
+          ]);
+        } else {
+          this._started = true;
+          if (typeof source.pull === 'function') queueMicrotask(() => this._pullIfNeeded());
         }
       } catch (error) {
-        this._controller.error(error);
+        record.error(error);
       }
+    }
+    // upstream a1dd711: call the source's pull() when a read waits or the queue is under the
+    // high-water mark, one pull at a time.
+    _pullIfNeeded() {
+      if (!this._started || this._state !== 'readable' || this._closeRequested || typeof this._source.pull !== 'function'
+          || (!this._reads.length && this._highWaterMark - this._queue.length <= 0)) return;
+      if (this._pulling) { this._pullAgain = true; return; }
+      this._pulling = true;
+      const record = _weakMapGet(_readableStreamRecords, this);
+      _reflectApply(_promiseThenAtBoot,
+        _reflectApply(_promiseThenAtBoot, _promiseResolveAtBoot(undefined), [() => this._source.pull(this._controller)]),
+        [() => {
+          this._pulling = false;
+          if (this._pullAgain) { this._pullAgain = false; this._pullIfNeeded(); }
+        }, (error) => { this._pulling = false; record.error(error); }]);
     }
     getReader() {
       if (this.locked) throw new TypeError("ReadableStream is locked");
@@ -21123,14 +21199,16 @@ if (typeof ReadableStream === 'undefined') {
       let closedPromise;
       return {
         read() {
+          stream._disturbed = true;
           if (stream._queue.length > 0) {
             const value = stream._queue.shift();
             if (!stream._queue.length && stream._closeRequested) _weakMapGet(_readableStreamRecords, stream).close();
+            stream._pullIfNeeded();
             return Promise.resolve({ value, done: false });
           }
           if (stream._state === "closed") return Promise.resolve({ value: undefined, done: true });
           if (stream._state === "errored") return Promise.reject(stream._error);
-          return new Promise((resolve, reject) => stream._reads.push({resolve, reject}));
+          return new Promise((resolve, reject) => { stream._reads.push({resolve, reject}); stream._pullIfNeeded(); });
         },
         releaseLock() { stream.locked = false; },
         cancel(reason) { return stream.cancel(reason); },
@@ -21148,6 +21226,7 @@ if (typeof ReadableStream === 'undefined') {
       };
     }
     cancel(reason) {
+      this._disturbed = true;
       // upstream 3aa2f59: an errored stream rejects with its error, and a closed one does not
       // run its source's cancel again (a second cancel of a fetch() body).
       if (this._state === "errored") return Promise.reject(this._error);
@@ -21181,28 +21260,51 @@ if (typeof ReadableStream === 'undefined') {
       });
       return transform.readable;
     }
-    tee() {
-      let leftController;
-      let rightController;
-      const left = new ReadableStream({start(controller) { leftController = controller; }});
-      const right = new ReadableStream({start(controller) { rightController = controller; }});
-      (async () => {
-        try {
-          const reader = this.getReader();
-          while (true) {
-            const {value, done} = await reader.read();
-            if (done) break;
-            leftController.enqueue(value);
-            rightController.enqueue(value);
-          }
-          leftController.close();
-          rightController.close();
-        } catch (error) {
-          leftController.error(error);
-          rightController.error(error);
+    tee() { return this._tee(false); }
+    // upstream a1dd711: the branches pull from this stream only when one of them wants a
+    // chunk, an error reaches both, and this stream is cancelled, with both reasons, once
+    // both branches are. Port: cloneForBranch2 (Response.clone) gives the second branch
+    // copies of byte chunks, as Fetch's "clone a body" and Chromium do; tee() shares them.
+    _tee(cloneForBranch2) {
+      const reader = this.getReader(), controllers = [], cancelled = [false, false], reasons = [];
+      let reading = null, finished = false, completeCancel, rejectCancel;
+      const cancellation = new Promise((resolve, reject) => { completeCancel = resolve; rejectCancel = reject; });
+      cancellation.catch(() => {});
+      const errorBranches = error => {
+        if (finished) return;
+        finished = true;
+        for (let i = 0; i < 2; i++) if (!cancelled[i]) controllers[i].error(error);
+        reader.releaseLock(); completeCancel();
+      };
+      reader.closed.catch(errorBranches);
+      const copyOf = value => ArrayBuffer.isView(value) ? value.slice() : value;
+      const pull = () => {
+        if (!reading && !finished) {
+          reading = reader.read().then(({value, done}) => {
+            if (finished) return;
+            if (done) {
+              finished = true;
+              for (let i = 0; i < 2; i++) if (!cancelled[i]) controllers[i].close();
+              reader.releaseLock(); completeCancel();
+            } else {
+              if (!cancelled[0]) controllers[0].enqueue(value);
+              if (!cancelled[1]) controllers[1].enqueue(cloneForBranch2 ? copyOf(value) : value);
+            }
+          }, errorBranches).finally(() => { reading = null; });
         }
-      })();
-      return [left, right];
+        return reading;
+      };
+      return [0, 1].map(index => new ReadableStream({
+        start(controller) { controllers[index] = controller; }, pull,
+        cancel(reason) {
+          cancelled[index] = true; reasons[index] = reason;
+          if (cancelled[0] && cancelled[1]) {
+            finished = true;
+            Promise.resolve(reader.cancel(reasons)).then(completeCancel, rejectCancel).finally(() => reader.releaseLock());
+          }
+          return cancellation;
+        },
+      }));
     }
     [Symbol.asyncIterator]() {
       const reader = this.getReader();

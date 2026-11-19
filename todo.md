@@ -495,7 +495,12 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       of the exchange deadline (M3), is read bounded (M4) and records its network event, stored
       body and timing when it ends; a body that fails or is cancelled after the headers reports
       one loadingFailed under the response's id
-- [ ] Network fidelity: `a1dd711`
+- [x] `a1dd711`: `new Response(readableStream)` keeps the stream as its body (it was
+      "[object ReadableStream]") and reads it on demand; a locked or disturbed stream is
+      refused, `clone()` tees it, a used or locked body cannot be read or cloned, and locking a
+      body no longer marks it used (reading or cancelling does). ReadableStream gained pull()
+      on demand with a high-water mark, a signed desiredSize, a disturbed flag, and a lazy
+      tee() that cancels its source once both branches are cancelled, with both reasons
 - [x] `0155807` (AbortSignal): fetch() rejects with the signal's reason before and during the
       request (the op is cancelled, Network.loadingFailed net::ERR_ABORTED), an unread body
       errors on abort, Request has its own following signal, private signal state, trusted
@@ -2509,6 +2514,15 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   Chromium; upstream marks it used. A failed request's network event takes a fresh
   `fetch-{N}` id when it fails (upstream allocates it up front). AbortSignal getters throw
   "Illegal invocation" on a non-signal, as Chromium's do.
+- Response streams (`a1dd711`): a body read from a supplied stream that errors, or that
+  yields a chunk which is not a Uint8Array, rejects with TypeError "Failed to fetch", as in
+  Chromium; upstream rejects with the stream's own error. `Response.clone()` of a stream body
+  gives the clone copies of the chunks (Fetch tees with cloneForBranch2, and Chromium's clone
+  reads `[1]` where upstream's test expects the shared `[9]`); a plain `tee()` still shares
+  them, as in Chromium. A stream body is recognised by the shim's private stream record, not
+  `instanceof` the page-writable global. Disturbance is tracked by the stream itself, so the
+  fetched body's `getReader` hook is gone rather than rewritten. The constructor's and
+  `clone()`'s messages are Chromium's.
 - Fetch bodies (`3aa2f59`): `op_fetch_body` resolves with the body as base64, not a buffer,
   because the op's task completes off the page's thread where no typed array can be made; the
   shim decodes it (FetchOps.OpFetchBodyAsync). The body is read as soon as the headers are in
