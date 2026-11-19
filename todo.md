@@ -398,7 +398,8 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
       before the next autonomous pump turn (it starved behind the pump until the await timed
       out); a fulfilled fetch/XHR reports responseReceived/loadingFinished and its body under its
       pause id; Fetch.failRequest of a non-document request emits Network.loadingFailed
-- [ ] CDP: open `dfc546d`
+- [x] `dfc546d` (#917): `DOM.describeNode`/`resolveNode` with an `objectId` that resolves to no
+      node are errors; they answered with node 0, the document
 - [x] `939086a`/`e70183d` setBypassCSP (validated ack), `e5bcd75` Page.close and stopLoading
       (stopLoading drops a queued navigation; cancelling loads is `361f15d`),
       `192561c` removeScriptToEvaluateOnNewDocument errors on an unknown id (preload scripts

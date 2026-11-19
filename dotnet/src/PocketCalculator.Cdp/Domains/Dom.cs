@@ -248,7 +248,11 @@ public static partial class Dom
                     // The realm that minted the id: the page's, an isolated world's, or a
                     // child frame's, whose node ids are its own document's.
                     double? resolved = page.EvaluateInObjectRealm(objectId, code).AsF64();
-                    nodeId = resolved is { } value and >= 0 ? (ulong)value : 0UL;
+                    // upstream dfc546d: a stale or foreign objectId is an error, not node 0 (the
+                    // document), which handed automation the wrong element.
+                    nodeId = resolved is { } value and >= 0
+                        ? (ulong)value
+                        : throw new DomainError($"objectId {objectId} could not be resolved to a node");
                     document = page.FrameIdOfObject(objectId);
                 }
                 else
@@ -279,7 +283,11 @@ public static partial class Dom
                 {
                     string code = $"__obscura_cdp.nidOf({CdpUtil.ObjectIdLiteral(objectId)})";
                     double? resolved = page.EvaluateInObjectRealm(objectId, code).AsF64();
-                    nodeId = resolved is { } value and >= 0 ? (ulong)value : 0UL;
+                    // upstream dfc546d: a stale or foreign objectId is an error, not node 0 (the
+                    // document), which handed automation the wrong element.
+                    nodeId = resolved is { } value and >= 0
+                        ? (ulong)value
+                        : throw new DomainError($"objectId {objectId} could not be resolved to a node");
                 }
                 else
                 {
