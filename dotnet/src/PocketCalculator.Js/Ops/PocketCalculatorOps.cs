@@ -276,8 +276,14 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
                 "op_realm_origin", () => StateHelpers.DocumentOrigin(FrameState(U32(frameId))), "null")));
         // Port addition: a History API move of the realm's URL, checked and kept host-side
         // (SECURITY.md L9).
-        Bind(ops, "op_history_url", (Func<object?, object?, bool>)(
-            (url, frameId) => CoreOps.OpHistoryUrl(FrameState(U32(frameId)), S(url))));
+        Bind(ops, "op_history_url", (Func<object?, object?, object?, object?, bool>)(
+            (url, frameId, action, index) => CoreOps.OpHistoryUrl(FrameState(U32(frameId)), S(url), S(action), Index(index))));
+        // Upstream 1a0773d: the page's session history, and a traversal to another
+        // document's entry. A frame's realm has none (BindRealmOverrides).
+        Bind(ops, "op_session_history", (Func<string>)(
+            () => CoreOps.OpSessionHistory(RealmState())));
+        Bind(ops, "op_history_traverse", (Func<object?, bool>)(
+            index => CoreOps.OpHistoryTraverse(RealmState(), Index(index))));
         // Port addition: the isolate's WebAssembly.Memory budget (see OpWasmMemoryAdmit).
         var wasmRealm = new StrongBox<double>(0);
         _wasmRealms.Add(wasmRealm, wasmRealm);
@@ -449,6 +455,9 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
             (url, method, body) => CoreOps.OpNavigate(state, S(url), S(method), S(body))));
         Bind(ops, "op_navigate_frame", (Action<object?, object?, object?, object?>)(
             (url, method, body, target) => CoreOps.OpNavigateFrame(state, S(url), S(method), S(body), S(target))));
+        Bind(ops, "op_session_history", (Func<string>)(() => CoreOps.OpSessionHistory(state)));
+        Bind(ops, "op_history_traverse", (Func<object?, bool>)(
+            index => CoreOps.OpHistoryTraverse(state, Index(index))));
         Bind(ops, "op_get_cookies", (Func<string>)(() => CoreOps.OpGetCookies(state)));
         Bind(ops, "op_set_cookie", (Func<object?, string?>)(
             cookie => CoreOps.OpSetCookie(state, S(cookie))));
@@ -874,6 +883,13 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
     {
         var number = D(value);
         return double.IsFinite(number) && number >= 0 && number <= uint.MaxValue ? (uint)number : 0u;
+    }
+
+    /// <summary>A non-negative int index, or -1 for anything else.</summary>
+    private static int Index(object? value)
+    {
+        var number = D(value);
+        return double.IsFinite(number) && number >= 0 && number <= int.MaxValue ? (int)number : -1;
     }
 
     private static ulong U64(object? value)

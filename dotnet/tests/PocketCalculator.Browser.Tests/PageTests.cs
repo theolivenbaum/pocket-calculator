@@ -330,6 +330,92 @@ public sealed class PageTests
         }
     }
 
+    /// <summary>
+    /// Upstream 1a0773d (#1068): page script sees the tab's session history.
+    /// history.length counts earlier documents, and history.back()/forward() load them
+    /// while moving the history cursor instead of appending entries.
+    /// </summary>
+    [Fact]
+    public async Task PageHistoryTraversesAcrossDocuments()
+    {
+        const string one = "data:text/html,<title>one</title>";
+        const string two = "data:text/html,<title>two</title>";
+        using Page page = PageFixtures.FramePage("history-across-documents");
+        await page.NavigateAsync(one);
+        await page.NavigateAsync(two);
+        Assert.Equal(2.0, PageFixtures.AsDouble(page.Evaluate("history.length")));
+
+        page.Evaluate("history.back()");
+        Assert.True(await page.ProcessPendingNavigationAsync());
+        Assert.Equal(one, page.UrlString());
+        Assert.Equal((2, 0), (page.History.Count, page.HistoryIndex));
+        Assert.Equal(2.0, PageFixtures.AsDouble(page.Evaluate("history.length")));
+
+        page.Evaluate("history.go(1)");
+        Assert.True(await page.ProcessPendingNavigationAsync());
+        Assert.Equal(two, page.UrlString());
+        Assert.Equal((2, 1), (page.History.Count, page.HistoryIndex));
+
+        // Out-of-range traversal stays put.
+        page.Evaluate("history.go(5)");
+        Assert.False(await page.ProcessPendingNavigationAsync());
+        Assert.Equal(two, page.UrlString());
+    }
+
+    /// <summary>
+    /// Upstream 1a0773d: same-document entries sit between the documents. A push drops
+    /// the forward documents, and back() past the document's own entries loads the
+    /// previous document.
+    /// </summary>
+    [Fact]
+    public async Task PageHistoryCountsSameDocumentEntriesOnce()
+    {
+        const string one = "data:text/html,<title>one</title>";
+        const string two = "data:text/html,<title>two</title>";
+        using Page page = PageFixtures.FramePage("history-same-document");
+        await page.NavigateAsync(one);
+        await page.NavigateAsync(two);
+        page.Evaluate("history.back()");
+        await page.ProcessPendingNavigationAsync();
+        Assert.Equal(one, page.UrlString());
+
+        page.Evaluate("history.pushState(null, '', '#a')");
+        Assert.Equal(2.0, PageFixtures.AsDouble(page.Evaluate("history.length")));
+        // Recording the pushState URL on the page must not double count it.
+        page.SyncVirtualUrl();
+        Assert.Equal(2.0, PageFixtures.AsDouble(page.Evaluate("history.length")));
+        Assert.Equal([one, one + "#a"], page.History);
+
+        page.Evaluate("history.go(-2)");
+        Assert.False(await page.ProcessPendingNavigationAsync());
+        // A same-document move (upstream 0ecc417's version of this step: the page is back
+        // on the document's first entry, not left on '#a').
+        page.Evaluate("history.back()");
+        Assert.True((await page.ProcessPendingNavigationOutcomeAsync()).IsSameDocument);
+        Assert.Equal(string.Empty, PageFixtures.AsString(page.Evaluate("location.hash")));
+        Assert.Equal(one, page.UrlString());
+    }
+
+    /// <summary>
+    /// The traversal history.go() queues is page-initiated: from a web document it cannot
+    /// reach a file: entry the operator put in the history (SECURITY.md H3).
+    /// </summary>
+    [Fact]
+    public async Task PageHistoryTraversalKeepsTheFileGate()
+    {
+        const string web = "data:text/html,<title>web</title>";
+        const string local = "file:///etc/hostname";
+        using Page page = PageFixtures.FramePage("history-file-gate");
+        await page.NavigateAsync(web);
+        page.SetHistory([local, web], 1);
+        Assert.Equal(2.0, PageFixtures.AsDouble(page.Evaluate("history.length")));
+
+        page.Evaluate("history.back()");
+        Assert.False(await page.ProcessPendingNavigationAsync());
+        Assert.Equal(web, page.UrlString());
+        Assert.Equal(1, page.HistoryIndex);
+    }
+
     [Fact]
     public void APerPageNavigationChainLimitWinsOverTheEnvironment()
     {

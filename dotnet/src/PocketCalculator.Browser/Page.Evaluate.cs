@@ -379,7 +379,17 @@ public sealed partial class Page
     /// </summary>
     public bool HasPendingIndexedDbNotifications => Context.IndexedDb.HasPendingNotifications;
 
-    public PendingNavigation? TakePendingNavigation() => Js?.TakePendingNavigation();
+    public PendingNavigation? TakePendingNavigation()
+    {
+        if (Js is not { } js || js.TakePendingNavigation() is not { } navigation)
+        {
+            return null;
+        }
+
+        // Upstream 1a0773d: a history.go() to another document travels with its entry.
+        _pendingHistoryTraversal = js.TakePendingHistoryTraversal();
+        return navigation;
+    }
 
     /// <summary>True when the page queued a navigation nobody has taken yet.</summary>
     public bool HasPendingNavigation => Js?.HasPendingNavigation ?? false;

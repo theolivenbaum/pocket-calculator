@@ -131,6 +131,8 @@ shown with the deno_core attribute markers stripped: `String` is a JS string,
 | `op_load_image_metadata` | async | `nid: u32` | `String` |
 | `op_navigate` | fast | `url: &str, method: &str, body: &str` | `(void)` |
 | `op_navigate_frame` | fast | `url: &str, method: &str, body: &str, target: &str` | `(void)` |
+| `op_session_history` | sync | `(none)` | `String`: `"documentStart,current,length"` of the calling realm's session history; length 0 for a frame (upstream 1a0773d) |
+| `op_history_traverse` | fast | `index: u32` | `bool`: queues a navigation to another document's session history entry, recorded like `op_navigate`; false out of range or inside the document's own entries (upstream 1a0773d) |
 | `op_post_frame_message` | fast | `target_frame_id: u32, source_frame_id: u32, origin: &str, target_origin: &str, data_json: &str` | `(void)` |
 | `op_posted_task` | sync | `frame_id: u32, callback: v8::Global<v8::Function>` | `f64` |
 | `op_posted_task_generation` | fast | `frame_id: u32` | `f64` |
@@ -403,7 +405,7 @@ so these are called unguarded:
 | `op_indexed_db` | fast | `action: String, payload: String` (JSON) | `String`: JSON, the command's answer or `{"error": name}`; upstream 3dea548 (`indexed_db.rs`) |
 | `op_indexed_db_task` | fast | | `f64`: the calling document's task counter, which ends a transaction's active window |
 | `op_frame_same_origin` | fast | `frame_id: u32` | `f64`: 1 same-origin, 0 cross-origin, -1 unknown |
-| `op_history_url` | fast | `url: String, frame_id: u32` | `bool`: false, and nothing kept, when the document may not be rewritten to `url`; `""` clears it |
+| `op_history_url` | fast | `url: String, frame_id: u32, action: "push"\|"replace"\|"traverse"\|"", index: i32` | `bool`: false, and nothing kept, when the document may not be rewritten to `url`; `""` clears it. `action` and `index` (the document's entry left current) keep the host's session history in step |
 | `op_wasm_memory_admit` | fast | `held_bytes: f64, delta_bytes: f64` | `bool`: whether the isolate's WebAssembly memory budget allows `delta_bytes` more |
 | `op_worker_import_script` | sync | `url: String, worker_url: String, scope: Object, runner: Function` | `String`: `""` once `runner(scope, source, final_url, muted)` has run, `"network"` on a network error (blocks on the fetch) |
 | `op_script_declarations` | fast | `source: String` | `String`: `{"s":strict,"v":[vars],"f":[functions],"l":[lexicals]}`, the script's top-level names |
@@ -420,7 +422,9 @@ and write an `about:srcdoc` or `about:blank` frame's cookies for its creator's U
 `op_history_url` replaces upstream's page-writable `__virtualUrl` global: the
 History API reports each move of the document URL, the host checks it against the
 committed URL ("can have its URL rewritten") and keeps it, and `Page.Url` reads
-only that. `op_wasm_memory_admit` is asked before `new WebAssembly.Memory` and
+only that. Its `action` and `index` arguments also replace upstream's
+`__obscuraHistory.take()` (0ecc417): the host records the document's same-document
+entries as they happen instead of reading them back out of the realm. `op_wasm_memory_admit` is asked before `new WebAssembly.Memory` and
 `grow`; the shim guards both with a `typeof` test.
 
 `op_run_fetched_script` runs the host-held body of a 2xx `no-cors` internal load

@@ -385,6 +385,42 @@ public sealed partial class PocketCalculatorJsRuntime
         return pending;
     }
 
+    /// <summary>
+    /// The session history index that accompanies the pending navigation when page script
+    /// traversed to another document with <c>history.go()</c> (upstream 1a0773d).
+    /// </summary>
+    public int? TakePendingHistoryTraversal()
+    {
+        var index = State.PendingHistoryTraversal;
+        State.PendingHistoryTraversal = null;
+        return index;
+    }
+
+    /// <summary>
+    /// Hand the document the page's session history: every entry, the index of the
+    /// document's first entry, the current entry, and how many entries the document owns
+    /// (0: those up to the current one).
+    /// </summary>
+    public void SetSessionHistory(IEnumerable<string> urls, int documentStart, int current, int documentLength = 0) =>
+        State.SessionHistory.Set(urls, documentStart, current, documentLength);
+
+    /// <summary>The session history as the document last left it.</summary>
+    public SessionHistory SessionHistory => State.SessionHistory;
+
+    /// <summary>
+    /// Whether the document moved itself through the History API since the last call
+    /// (<c>op_history_url</c>), clearing the flag.
+    /// </summary>
+    public bool TakeHistoryChanged()
+    {
+        bool changed = State.HistoryChanged;
+        State.HistoryChanged = false;
+        return changed;
+    }
+
+    /// <summary>The URL the host committed for the document, before any History API move.</summary>
+    public string CommittedUrl => State.Url;
+
     public IReadOnlyList<(string Name, string Payload)> TakePendingBindingCalls()
     {
         var calls = State.PendingBindingCalls.ToArray();

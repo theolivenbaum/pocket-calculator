@@ -1821,20 +1821,12 @@ public static partial class Page
 
                 if (targetUrl is not null)
                 {
-                    page.SetHistoryIndex(entryId);
-                }
-
-                if (targetUrl is { } url)
-                {
-                    // Stash + restore history so PushHistory doesn't clobber the cursor we
-                    // just moved.
-                    List<string> stashHistory = [.. page.History];
-                    int stashIndex = page.HistoryIndex;
-                    BrowserPage navigating = ctx.GetSessionPageMut(sessionId)
-                        ?? throw new DomainError("No page for session");
+                    // Upstream 1a0773d: the load moves the cursor to the entry (and the new
+                    // document's window.history sees it there); a load that fails leaves
+                    // history where the page actually is (upstream #920).
                     try
                     {
-                        await navigating.NavigateWithWaitAsync(url, WaitUntil.DomContentLoaded)
+                        await page.NavigateToHistoryEntryAsync(entryId, WaitUntil.DomContentLoaded)
                             .ConfigureAwait(false);
                     }
                     catch (PageException exception)
@@ -1842,9 +1834,8 @@ public static partial class Page
                         throw new DomainError(exception.Message);
                     }
 
-                    navigating.History.Clear();
-                    navigating.History.AddRange(stashHistory);
-                    navigating.HistoryIndex = stashIndex;
+                    BrowserPage navigating = ctx.GetSessionPageMut(sessionId)
+                        ?? throw new DomainError("No page for session");
                     string frameId = navigating.FrameId;
                     string pageId = navigating.Id;
                     List<NetworkEvent> networkEvents = [.. navigating.NetworkEvents];
@@ -1873,8 +1864,7 @@ public static partial class Page
             {
                 if (ctx.GetSessionPageMut(sessionId) is { } page)
                 {
-                    page.History.Clear();
-                    page.HistoryIndex = 0;
+                    page.SetHistory([], 0);
                 }
 
                 return DomainResult.Empty();

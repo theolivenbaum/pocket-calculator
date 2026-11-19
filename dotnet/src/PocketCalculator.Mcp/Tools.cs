@@ -815,18 +815,16 @@ internal static partial class Tools
         var prevIdx = page.HistoryIndex - 1;
         var url = page.History[prevIdx];
         RefuseFileNavigation(url);
-        page.SetHistoryIndex(prevIdx);
-        var stash = (History: new List<string>(page.History), Index: page.HistoryIndex);
         try
         {
-            await page.NavigateWithWaitAsync(url, WaitUntil.DomContentLoaded).ConfigureAwait(false);
+            // The load moves the history cursor to the entry (upstream 1a0773d).
+            await page.NavigateToHistoryEntryAsync(prevIdx, WaitUntil.DomContentLoaded).ConfigureAwait(false);
         }
         catch (Exception error) when (error is not ToolException)
         {
             throw new ToolException(error.Message);
         }
 
-        RestoreHistory(state.PageMut(), stash.History, stash.Index);
         state.InteractiveRefs.Clear();
         return $"Back to {url}";
     }
@@ -842,32 +840,18 @@ internal static partial class Tools
         var nextIdx = page.HistoryIndex + 1;
         var url = page.History[nextIdx];
         RefuseFileNavigation(url);
-        page.SetHistoryIndex(nextIdx);
-        var stash = (History: new List<string>(page.History), Index: page.HistoryIndex);
         try
         {
-            await page.NavigateWithWaitAsync(url, WaitUntil.DomContentLoaded).ConfigureAwait(false);
+            // The load moves the history cursor to the entry (upstream 1a0773d).
+            await page.NavigateToHistoryEntryAsync(nextIdx, WaitUntil.DomContentLoaded).ConfigureAwait(false);
         }
         catch (Exception error) when (error is not ToolException)
         {
             throw new ToolException(error.Message);
         }
 
-        RestoreHistory(state.PageMut(), stash.History, stash.Index);
         state.InteractiveRefs.Clear();
         return $"Forward to {url}";
-    }
-
-    /// <summary>
-    /// <c>page.history = stash.0; page.history_index = stash.1;</c>. Back / forward
-    /// navigate through the normal path, which appends to history, so the stash is
-    /// put back to keep the cursor where the agent moved it.
-    /// </summary>
-    private static void RestoreHistory(Page page, List<string> history, int index)
-    {
-        page.History.Clear();
-        page.History.AddRange(history);
-        page.HistoryIndex = index;
     }
 
     internal static async Task<string> ReloadAsync(BrowserState state)

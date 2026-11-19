@@ -142,9 +142,17 @@ public sealed partial class Page
             profile = profile with { Referrer = clientReferrer.Url, ReferrerPolicy = clientReferrer.Policy };
         }
         string referrer = DocumentReferrer(profile, url);
-        await RunWithNavigationDeadlineAsync(
-            token => NavigateWithWaitPostInnerAsync(url, waitUntil, method, body, referrer, profile, token),
-            cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await RunWithNavigationDeadlineAsync(
+                token => NavigateWithWaitPostInnerAsync(url, waitUntil, method, body, referrer, profile, token),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            _pendingHistoryTraversal = null;
+            throw;
+        }
         PushHistory(UrlString());
     }
 
@@ -1186,14 +1194,23 @@ public sealed partial class Page
         // Chromium drops the navigation and the page stays where it is.
         if (NavigationPolicy.RefusesPageInitiated(pending, url))
         {
+            _pendingHistoryTraversal = null;
             return PageNavigationOutcome.None;
         }
 
         ResourceRequest profile = NavigationProfile(pending);
         string sourceUrl = DocumentReferrer(profile, url);
-        await RunWithNavigationDeadlineAsync(
-            token => NavigateWithWaitPostInnerAsync(url, WaitUntil.Load, method, body, sourceUrl, profile, token),
-            cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await RunWithNavigationDeadlineAsync(
+                token => NavigateWithWaitPostInnerAsync(url, WaitUntil.Load, method, body, sourceUrl, profile, token),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            _pendingHistoryTraversal = null;
+            throw;
+        }
         PushHistory(UrlString());
         return PageNavigationOutcome.CrossDocument;
     }

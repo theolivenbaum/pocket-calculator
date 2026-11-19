@@ -51,6 +51,26 @@ public sealed class PocketCalculatorState
     public string? HistoryUrl { get; set; }
 
     /// <summary>
+    /// Set when <c>op_history_url</c> moved the document (push, replace or a traversal
+    /// between its own entries); taken by the Page when it adopts the move.
+    /// </summary>
+    public bool HistoryChanged { get; set; }
+
+    /// <summary>
+    /// The tab's session history as the owning page handed it to this document (upstream
+    /// 1a0773d <c>session_history</c>). Empty for frames and for runtimes outside a page,
+    /// where <c>history</c> covers only the document's own entries.
+    /// </summary>
+    public SessionHistory SessionHistory { get; } = new();
+
+    /// <summary>
+    /// The session history index a cross-document <c>history.go()</c> asked for. It
+    /// travels with <see cref="PendingNavigation"/>, which carries the entry's URL, so the
+    /// page moves its cursor instead of appending an entry (upstream 1a0773d).
+    /// </summary>
+    public int? PendingHistoryTraversal { get; set; }
+
+    /// <summary>
     /// Whether the document has an opaque origin whatever its URL says, as a frame
     /// sandboxed without <c>allow-same-origin</c> does. Port addition: Rust derives
     /// no origin host-side at all (see <see cref="StateHelpers.DocumentOrigin"/>).
@@ -977,6 +997,87 @@ public sealed record PendingNavigation(string Url, string Method, string Body)
 
     /// <summary>Whether the initiating realm had transient user activation.</summary>
     public bool UserActivated { get; init; }
+}
+
+/// <summary>
+/// A page's session history as one document sees it (upstream 1a0773d
+/// <c>SessionHistory</c>): every entry's URL, where the document's own entries start, how
+/// many it owns, and the current entry.
+/// </summary>
+/// <remarks>
+/// Deviation: upstream's host learns the document's same-document entries by pulling a
+/// change record out of the page realm (<c>__obscuraHistory.take()</c>, 0ecc417). Here the
+/// host keeps them itself: every push, replace and traversal already reaches it through
+/// <c>op_history_url</c>, which checks the URL, so this list is written only by the host
+/// and never parsed back out of page-controlled objects.
+/// </remarks>
+public sealed class SessionHistory
+{
+    public List<string> Urls { get; } = [];
+
+    /// <summary>Index of the document's first entry.</summary>
+    public int DocumentStart { get; private set; }
+
+    /// <summary>How many entries, from <see cref="DocumentStart"/>, are the document's own.</summary>
+    public int DocumentLength { get; private set; }
+
+    public int Current { get; private set; }
+
+    public bool IsEmpty => Urls.Count == 0;
+
+    /// <summary>
+    /// Replace the history. The document owns <paramref name="documentLength"/> entries from
+    /// <paramref name="documentStart"/>, by default those up to <paramref name="current"/>.
+    /// </summary>
+    public void Set(IEnumerable<string> urls, int documentStart, int current, int documentLength = 0)
+    {
+        Urls.Clear();
+        Urls.AddRange(urls);
+        if (Urls.Count == 0)
+        {
+            DocumentStart = DocumentLength = Current = 0;
+            return;
+        }
+
+        Current = Math.Clamp(current, 0, Urls.Count - 1);
+        DocumentStart = Math.Clamp(documentStart, 0, Current);
+        DocumentLength = Math.Clamp(documentLength, Current - DocumentStart + 1, Urls.Count - DocumentStart);
+    }
+
+    /// <summary>
+    /// Record a History API move of the document: <paramref name="action"/> is <c>push</c>,
+    /// <c>replace</c> or <c>traverse</c>, and <paramref name="index"/> the document's entry
+    /// it leaves current. Anything else, or an index outside the document, is ignored.
+    /// </summary>
+    public void Record(string action, int index, string url)
+    {
+        if (Urls.Count == 0)
+        {
+            return;
+        }
+
+        int at = DocumentStart + index;
+        switch (action)
+        {
+            case "push" when index >= 1 && index <= DocumentLength:
+                // A push drops every entry after the current one, the forward documents too.
+                if (at < Urls.Count)
+                {
+                    Urls.RemoveRange(at, Urls.Count - at);
+                }
+                Urls.Add(url);
+                Current = at;
+                DocumentLength = index + 1;
+                break;
+            case "replace" when index >= 0 && index < DocumentLength && at < Urls.Count:
+                Urls[at] = url;
+                Current = at;
+                break;
+            case "traverse" when index >= 0 && index < DocumentLength && at < Urls.Count:
+                Current = at;
+                break;
+        }
+    }
 }
 
 /// <summary>

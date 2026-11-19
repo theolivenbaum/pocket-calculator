@@ -469,7 +469,7 @@ public sealed partial class RuntimeTests
         Assert.Equal("http://example.com/next#a", fixture.Runtime.HistoryUrl);
 
         Assert.Equal("false", fixture.Runtime.Evaluate(
-            "String(__obscura_test_ops.op_history_url('https://bank.example/', 0))")?.ToString());
+            "String(__obscura_test_ops.op_history_url('https://bank.example/', 0, 'push', 1))")?.ToString());
         Assert.Equal("http://example.com/next#a", fixture.Runtime.HistoryUrl);
 
         fixture.Runtime.Evaluate("history.back()");

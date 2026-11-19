@@ -107,6 +107,9 @@ public static class Target
                     if (url is "about:blank" or "")
                     {
                         page.NavigateBlank();
+                        // Upstream 1a0773d: Chrome keeps the new tab's about:blank as the first
+                        // session history entry, so history.back() can return to it.
+                        page.PushHistory(page.UrlString());
                     }
                     else
                     {

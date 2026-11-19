@@ -322,6 +322,19 @@ public sealed partial class Page : IDisposable
 
     public int HistoryIndex { get; set; }
 
+    /// <summary>
+    /// Index of the current document's first history entry; the entries after it up to
+    /// <see cref="HistoryIndex"/> are its same-document (pushState) URLs (upstream 1a0773d).
+    /// </summary>
+    private int _documentHistoryStart;
+
+    /// <summary>
+    /// The entry a navigation in flight traverses to: a page-initiated <c>history.go()</c>
+    /// taken with its pending navigation, or a client's history navigation. Committing
+    /// the load moves the cursor to the entry instead of appending one (upstream 1a0773d).
+    /// </summary>
+    private int? _pendingHistoryTraversal;
+
     public List<NetworkEvent> NetworkEvents { get; } = [];
 
     public bool InterceptEnabled { get; private set; }
@@ -544,6 +557,8 @@ public sealed partial class Page : IDisposable
         rt.SetTitle(Title);
         rt.SetReferrer(Referrer);
         rt.SetReferrerPolicyHeader(ReferrerPolicyHeader);
+        (List<string> sessionHistory, int sessionIndex) = PredictedSessionHistory();
+        rt.SetSessionHistory(sessionHistory, sessionIndex, sessionIndex);
 
         rt.SetUserAgent(HttpClient.UserAgent);
         rt.SetPlatform(Context.Platform, Context.UaPlatform, Context.UaPlatformVersion);
@@ -725,24 +740,178 @@ public sealed partial class Page : IDisposable
     /// past the cursor (matching Chrome: navigating after a goBack clobbers the
     /// forward history).
     /// </summary>
+    /// <remarks>
+    /// Upstream 1a0773d: a navigation that traverses to an entry (<c>history.go()</c>, a
+    /// client's back or forward) moves the cursor to it instead, and the new document's
+    /// <c>window.history</c> is handed the result.
+    /// </remarks>
     public void PushHistory(string url)
     {
         if (url.Length == 0)
         {
             return;
         }
-        // Don't dupe consecutive entries (Page.reload would otherwise pile up).
-        if (HistoryIndex < History.Count
-            && string.Equals(History[HistoryIndex], url, StringComparison.Ordinal))
+
+        int? traversal = _pendingHistoryTraversal;
+        _pendingHistoryTraversal = null;
+        if (traversal is { } index && index < History.Count
+            && string.Equals(History[index], url, StringComparison.Ordinal))
+        {
+            HistoryIndex = index;
+        }
+        else if (!(HistoryIndex < History.Count
+            && string.Equals(History[HistoryIndex], url, StringComparison.Ordinal)))
+        {
+            // Consecutive duplicates are skipped so Page.reload does not pile up entries.
+            if (History.Count != 0 && HistoryIndex < History.Count - 1)
+            {
+                History.RemoveRange(HistoryIndex + 1, History.Count - HistoryIndex - 1);
+            }
+            History.Add(url);
+            HistoryIndex = History.Count - 1;
+        }
+
+        _documentHistoryStart = HistoryIndex;
+        if (AdoptDocumentHistory())
         {
             return;
         }
-        if (History.Count != 0 && HistoryIndex < History.Count - 1)
+        SyncJsSessionHistory();
+    }
+
+    /// <summary>
+    /// Take the document's own history moves into <see cref="History"/> when the session
+    /// history it was handed at creation is the one just committed. A document that called
+    /// <c>pushState</c> while it loaded has entries past its first one, and the host's
+    /// copy of them (op_history_url) is the record. Port addition: upstream overwrote them
+    /// with the page's history on commit.
+    /// </summary>
+    private bool AdoptDocumentHistory()
+    {
+        if (Js is not { } js || js.SessionHistory is not { IsEmpty: false } mirror
+            || mirror.DocumentStart != _documentHistoryStart
+            || mirror.DocumentStart >= History.Count
+            || mirror.Urls.Count <= mirror.DocumentStart)
         {
-            History.RemoveRange(HistoryIndex + 1, History.Count - HistoryIndex - 1);
+            return false;
         }
-        History.Add(url);
-        HistoryIndex = History.Count - 1;
+
+        for (int i = 0; i <= mirror.DocumentStart; i++)
+        {
+            if (!string.Equals(mirror.Urls[i], History[i], StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        if (mirror.Urls.Count == History.Count && mirror.Current == HistoryIndex)
+        {
+            return true;
+        }
+
+        History.Clear();
+        History.AddRange(mirror.Urls);
+        HistoryIndex = mirror.Current;
+        return true;
+    }
+
+    /// <summary>
+    /// Copy the document's same-document entries, as the host recorded them through
+    /// <c>op_history_url</c>, into <see cref="History"/> (upstream 1a0773d
+    /// <c>push_same_document_history</c>, 0ecc417 <c>apply_history_update</c>). The copy
+    /// is the page's history with this document's entries spliced in, so it replaces
+    /// <see cref="History"/> whole, which also keeps a pushState from being counted twice.
+    /// </summary>
+    private void AdoptDocumentHistoryEntries(PocketCalculatorJsRuntime js, bool moved)
+    {
+        if (!moved || js.SessionHistory is not { IsEmpty: false } mirror)
+        {
+            return;
+        }
+
+        History.Clear();
+        History.AddRange(mirror.Urls);
+        HistoryIndex = mirror.Current;
+        _documentHistoryStart = mirror.DocumentStart;
+    }
+
+    /// <summary>
+    /// Replace the history and cursor, treating the current document as the entry at
+    /// <paramref name="index"/> (upstream 1a0773d <c>set_history</c>). Client history
+    /// navigations and <c>Page.resetNavigationHistory</c> rewrite history through this.
+    /// </summary>
+    public void SetHistory(IEnumerable<string> history, int index)
+    {
+        ArgumentNullException.ThrowIfNull(history);
+        List<string> entries = [.. history];
+        History.Clear();
+        History.AddRange(entries);
+        HistoryIndex = index;
+        _documentHistoryStart = index;
+        SyncJsSessionHistory();
+    }
+
+    /// <summary>
+    /// Give the document's <c>window.history</c> the page's session history, so
+    /// <c>history.length</c> and a cross-document <c>history.go()</c> see every entry
+    /// (upstream 1a0773d).
+    /// </summary>
+    public void SyncJsSessionHistory()
+    {
+        if (Js is { } js)
+        {
+            js.SetSessionHistory(History, _documentHistoryStart, HistoryIndex);
+        }
+    }
+
+    /// <summary>
+    /// The session history as it will be once the document being created commits through
+    /// <see cref="PushHistory"/>: the entry a traversal targets, the current entry on a
+    /// reload, or a new entry replacing the forward ones (upstream 1a0773d).
+    /// </summary>
+    private (List<string> Urls, int Index) PredictedSessionHistory()
+    {
+        string url = UrlString();
+        if (_pendingHistoryTraversal is { } index && index < History.Count
+            && string.Equals(History[index], url, StringComparison.Ordinal))
+        {
+            return ([.. History], index);
+        }
+        if (HistoryIndex < History.Count && string.Equals(History[HistoryIndex], url, StringComparison.Ordinal))
+        {
+            return ([.. History], HistoryIndex);
+        }
+        if (url.Length == 0)
+        {
+            return ([], 0);
+        }
+
+        List<string> urls = [.. History.Take(Math.Min(History.Count, HistoryIndex + 1))];
+        urls.Add(url);
+        return (urls, urls.Count - 1);
+    }
+
+    /// <summary>
+    /// Navigate to session history entry <paramref name="index"/> on a client's behalf
+    /// (CDP <c>Page.navigateToHistoryEntry</c>, MCP back and forward): the load moves the
+    /// cursor to the entry, and a load that fails leaves history as it was.
+    /// </summary>
+    public async Task NavigateToHistoryEntryAsync(int index, WaitUntil waitUntil, CancellationToken cancellationToken = default)
+    {
+        if (index < 0 || index >= History.Count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(index));
+        }
+
+        _pendingHistoryTraversal = index;
+        try
+        {
+            await NavigateWithWaitAsync(History[index], waitUntil, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _pendingHistoryTraversal = null;
+        }
     }
 
     /// <summary>
@@ -789,7 +958,12 @@ public sealed partial class Page : IDisposable
         // __virtualUrl: a page could set it to any URL and move Page.Url and what CDP and
         // MCP report (SECURITY.md L9). The host keeps the History API URL itself, checked
         // against the committed document URL when the page moved it.
-        string? virtualUrl = js.HistoryUrl;
+        // A traversal back to the document's first entry clears the History API URL: the
+        // document is at its committed URL again (port: upstream reads '' as no change and
+        // leaves the page on the entry it came from until 0ecc417's take()).
+        bool moved = js.TakeHistoryChanged();
+        AdoptDocumentHistoryEntries(js, moved);
+        string? virtualUrl = js.HistoryUrl ?? (moved ? js.CommittedUrl : null);
         if (string.IsNullOrEmpty(virtualUrl) || PageUrl.TryParse(virtualUrl) is not { } parsed)
         {
             return PageNavigationOutcome.None;
@@ -800,7 +974,12 @@ public sealed partial class Page : IDisposable
         }
         UrlRecord? previous = Url;
         Url = parsed;
-        PushHistory(UrlString());
+        if (js.SessionHistory.IsEmpty)
+        {
+            // No session history was handed to this document (none was recorded yet):
+            // record the URL as before.
+            PushHistory(UrlString());
+        }
 
         // No document was fetched, so the DOM, the JS realm and every execution context
         // built on it survive: whichever API moved the URL, this is a same-document

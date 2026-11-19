@@ -1236,6 +1236,21 @@ public sealed partial class RuntimeTests
         Assert.True(obj["illegal"]!.GetValue<bool>());
     }
 
+    /// <summary>Upstream d01bc8d (for 1a0773d).</summary>
+    [Fact]
+    public void HistoryReadsHostSessionEntriesAndQueuesCrossDocumentTraversal()
+    {
+        using var fixture = RuntimeFixture.Setup("<html><body></body></html>");
+        var rt = fixture.Runtime;
+        rt.SetSessionHistory(["http://example.com/one", "http://example.com/two"], 1, 1);
+        Assert.Equal(2.0, rt.Evaluate("history.length")!.GetValue<double>());
+        rt.Evaluate("history.back()");
+        var pending = rt.TakePendingNavigation();
+        Assert.NotNull(pending);
+        Assert.Equal(("http://example.com/one", "GET", string.Empty), (pending.Url, pending.Method, pending.Body));
+        Assert.Equal(0, rt.TakePendingHistoryTraversal());
+    }
+
     [Fact]
     public void StyleAttributeParsesIntoStyleObject()
     {

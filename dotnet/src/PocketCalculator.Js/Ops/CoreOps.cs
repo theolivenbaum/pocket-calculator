@@ -353,26 +353,90 @@ public static class CoreOps
     /// scheme, credentials, host and port, and outside http(s) the same path, and the same
     /// query too unless the scheme is <c>file</c>. It is the check that makes Chromium
     /// throw <c>SecurityError</c> from <c>pushState</c>.
+    /// <para>
+    /// <paramref name="action"/> (<c>push</c>, <c>replace</c> or <c>traverse</c>) and
+    /// <paramref name="index"/>, the document's entry the move leaves current, keep the
+    /// page's session history (<see cref="PocketCalculatorState.SessionHistory"/>) in step,
+    /// for <c>history.length</c> and for the page's own record of the entries. Upstream
+    /// 1a0773d/0ecc417 read them back out of the realm instead.
+    /// </para>
     /// </remarks>
-    public static bool OpHistoryUrl(PocketCalculatorState state, string url) => OpGuard.Run(
+    public static bool OpHistoryUrl(PocketCalculatorState state, string url, string action = "", int index = -1) => OpGuard.Run(
         "op_history_url",
         () =>
         {
             ArgumentNullException.ThrowIfNull(state);
+            string entryUrl;
             if (url.Length == 0)
             {
                 state.HistoryUrl = null;
-                return true;
+                entryUrl = state.Url;
+            }
+            else
+            {
+                if (Url.UrlRecord.Parse(url) is not { } target
+                    || Url.UrlRecord.Parse(state.Url) is not { } document
+                    || !CanRewriteUrl(document, target))
+                {
+                    return false;
+                }
+
+                state.HistoryUrl = target.Href;
+                entryUrl = target.Href;
             }
 
-            if (Url.UrlRecord.Parse(url) is not { } target
-                || Url.UrlRecord.Parse(state.Url) is not { } document
-                || !CanRewriteUrl(document, target))
+            state.HistoryChanged = true;
+            state.SessionHistory.Record(action, index, entryUrl);
+            return true;
+        },
+        false);
+
+    /// <summary>
+    /// <c>op_session_history</c> (upstream 1a0773d): <c>"documentStart,current,length"</c>
+    /// of the realm's session history; length is 0 when the realm has none (a frame).
+    /// </summary>
+    public static string OpSessionHistory(PocketCalculatorState state) => OpGuard.Run(
+        "op_session_history",
+        () =>
+        {
+            ArgumentNullException.ThrowIfNull(state);
+            SessionHistory history = state.SessionHistory;
+            return string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"{history.DocumentStart},{history.Current},{history.Urls.Count}");
+        },
+        "0,0,0");
+
+    /// <summary>
+    /// <c>op_history_traverse</c> (upstream 1a0773d): queue a navigation to another
+    /// document's session history entry, recorded like <c>op_navigate</c> so the page judges
+    /// it as page-initiated (the <c>file:</c> gate included, SECURITY.md H3).
+    /// </summary>
+    /// <returns>False when the index is out of range.</returns>
+    /// <remarks>
+    /// Deviation: upstream also accepts an index inside the document's own entries, which
+    /// reloads a same-document entry as a new document. The shim never asks for one, and
+    /// the host refuses it.
+    /// </remarks>
+    public static bool OpHistoryTraverse(PocketCalculatorState state, int index) => OpGuard.Run(
+        "op_history_traverse",
+        () =>
+        {
+            ArgumentNullException.ThrowIfNull(state);
+            SessionHistory history = state.SessionHistory;
+            if (index < 0 || index >= history.Urls.Count
+                || (index >= history.DocumentStart && index < history.DocumentStart + history.DocumentLength))
             {
                 return false;
             }
 
-            state.HistoryUrl = target.Href;
+            OpNavigate(state, history.Urls[index], "GET", string.Empty);
+            if (state.PendingNavigation is null)
+            {
+                return false;
+            }
+
+            state.PendingHistoryTraversal = index;
             return true;
         },
         false);
@@ -415,6 +479,8 @@ public static class CoreOps
             // target), so the request is judged against the document that asked.
             var policy = state.NextNavigationReferrerPolicy ?? StateHelpers.DocumentReferrerPolicy(state);
             state.NextNavigationReferrerPolicy = null;
+            // A later navigation replaces a queued history traversal with it.
+            state.PendingHistoryTraversal = null;
             state.PendingNavigation = new PendingNavigation(url, method, body)
             {
                 // A srcdoc document initiates as its parent (port addition).

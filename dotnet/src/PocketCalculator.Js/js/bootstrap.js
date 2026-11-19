@@ -9817,12 +9817,17 @@ function __currentUrl() {
   return _virtualUrl || _domParse("document_url") || "about:blank";
 }
 // Moves the document URL the way the History API does, telling the host; null goes
-// back to the committed document URL. False when the host refuses the URL.
-function _setHistoryUrl(url) {
+// back to the committed document URL. False when the host refuses the URL. `action`
+// ('push', 'replace', 'traverse') and `index`, the document's entry left current, keep
+// the host's session history in step (port: upstream 0ecc417 reads them back out of the
+// realm through __obscuraHistory.take()).
+function _setHistoryUrl(url, action, index) {
   const op = __obscuraCore.ops.op_history_url;
   let accepted = typeof op !== 'function';
   if (!accepted) {
-    try { accepted = !!op(url == null ? '' : _String(url), _realmFrameId); } catch (e) { accepted = false; }
+    try {
+      accepted = !!op(url == null ? '' : _String(url), _realmFrameId, action || '', index == null ? -1 : index);
+    } catch (e) { accepted = false; }
   }
   if (accepted) _virtualUrl = url == null ? null : _String(url);
   return accepted;
@@ -16419,6 +16424,25 @@ globalThis.atob = globalThis.atob || ((s) => {
 (() => {
   const stack = [{state: null, url: undefined}]; // initial entry; url=undefined means "use document URL"
   let idx = 0;
+  // Upstream 1a0773d: the page owns the tab's session history. `stack` covers only this
+  // document's entries; the entries before it and after its last one come from the host,
+  // which also tracks this document's pushes (op_history_url), so a push has already
+  // dropped the forward entries there. Upstream counts those with a local flag instead.
+  const session = () => {
+    try {
+      // "start,current,length", read without String.prototype.split, which a page can
+      // redirect through Symbol.split.
+      const text = _String(__obscuraCore.ops.op_session_history());
+      const a = _stringIndexOf(text, ','), b = _stringIndexOf(text, ',', a + 1);
+      const start = +_stringSlice(text, 0, a), current = +_stringSlice(text, a + 1, b);
+      const length = +_stringSlice(text, b + 1);
+      if (length > 0) {
+        const after = length - start - stack.length;
+        return {start, current, before: start, after: after > 0 ? after : 0};
+      }
+    } catch (e) {}
+    return {start: 0, current: 0, before: 0, after: 0};
+  };
   const historyToken = Symbol("History");
   const resolveOrFallback = (url) => {
     // A missing url (pushState/replaceState called with < 3 args) keeps the
@@ -16456,13 +16480,13 @@ globalThis.atob = globalThis.atob || ((s) => {
   };
   // The host checks the URL again against the document URL it committed, and keeps
   // it; the entry is only written once it has agreed.
-  const commitUrl = (method, target) => {
+  const commitUrl = (method, target, action, index) => {
     const documentUrl = __currentUrl();
-    if (!_setHistoryUrl(target)) throw rewriteError(method, target, documentUrl);
+    if (!_setHistoryUrl(target, action, index)) throw rewriteError(method, target, documentUrl);
   };
   const applyVirtual = () => {
     const entry = stack[idx];
-    _setHistoryUrl(entry.url ?? null);
+    _setHistoryUrl(entry.url ?? null, 'traverse', idx);
   };
   // Traversal (back/forward) across a fragment fires hashchange; pushState and
   // replaceState fire nothing at all, even when the URL they write differs in
@@ -16486,7 +16510,10 @@ globalThis.atob = globalThis.atob || ((s) => {
     constructor(token) {
       if (token !== historyToken) throw new TypeError("Illegal constructor");
     }
-    get length() { return stack.length; }
+    get length() {
+      const {before, after} = session();
+      return before + stack.length + after;
+    }
     get state() { return stack[idx].state; }
     get scrollRestoration() { return this._scrollRestoration || "auto"; }
     set scrollRestoration(value) {
@@ -16498,7 +16525,7 @@ globalThis.atob = globalThis.atob || ((s) => {
     pushState(state, _title, url) {
       const resolved = resolveOrFallback(url);
       assertRewritable('pushState', resolved);
-      commitUrl('pushState', resolved);
+      commitUrl('pushState', resolved, 'push', idx + 1);
       // Truncate forward entries (real Chrome drops the forward stack on a
       // new push) then append + advance.
       stack.length = idx + 1;
@@ -16508,14 +16535,23 @@ globalThis.atob = globalThis.atob || ((s) => {
     replaceState(state, _title, url) {
       const resolved = resolveOrFallback(url);
       assertRewritable('replaceState', resolved);
-      commitUrl('replaceState', resolved);
+      commitUrl('replaceState', resolved, 'replace', idx);
       stack[idx] = {state: state ?? null, url: resolved};
     }
     go(n) {
       n = (n | 0);
       if (n === 0) return; // real spec: go(0) reloads. We don't reload SPAs.
-      const next = Math.max(0, Math.min(stack.length - 1, idx + n));
-      if (next === idx) return;
+      const next = idx + n;
+      if (next < 0 || next >= stack.length) {
+        // Upstream 1a0773d: another document's entry. The host queues a navigation to
+        // it, page-initiated and so behind the same file: gate as any other, and moves
+        // its cursor there instead of appending when it commits. Out of range stays put.
+        const {start, before, after} = session();
+        if ((next < 0 && -next <= before) || (next >= stack.length && next - (stack.length - 1) <= after)) {
+          try { __obscuraCore.ops.op_history_traverse(start + next); } catch (e) {}
+        }
+        return;
+      }
       const prevUrl = __currentUrl();
       idx = next;
       applyVirtual();
