@@ -1607,7 +1607,18 @@ globalThis.cancelAnimationFrame = (id) => {
   _rafPending.delete(id);
   if (_rafCurrentBatch) _rafCurrentBatch.delete(id);
 };
-globalThis.queueMicrotask = globalThis.queueMicrotask || ((fn) => Promise.resolve().then(fn));
+// upstream aea9bca: an exception thrown by a queued microtask is reported (an ErrorEvent at
+// the window, then the console), as in Chromium 157, rather than surfacing as an
+// unhandledrejection of the shim's own promise. Later microtasks still run. The callback is
+// queued with the boot-time Promise methods, and a non-function is a TypeError.
+globalThis.queueMicrotask = globalThis.queueMicrotask || _markNative({ queueMicrotask(callback) {
+  if (typeof callback !== 'function') {
+    throw new TypeError("Failed to execute 'queueMicrotask' on 'Window': parameter 1 is not of type 'Function'.");
+  }
+  _reflectApply(_promiseThenAtBoot, _promiseResolveAtBoot(undefined), [() => {
+    try { callback(); } catch (error) { _reportException(error); }
+  }]);
+} }.queueMicrotask);
 
 // Browser posted tasks need an event-loop boundary but no clock delay. Tokio's
 // timer wheel imposes roughly a one-millisecond floor even for delay zero,
