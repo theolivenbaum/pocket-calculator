@@ -187,6 +187,16 @@ public static class FetchCommand
             throw new CliException($"Failed to navigate to {urlStr}: {OperatorHint.WithHint(error.Message)}");
         }
 
+        // Upstream 0a14a4c: a network-idle wait that ran into the deadline is an error, as
+        // Puppeteer's and Playwright's goto with networkidle are against Chromium (a
+        // TimeoutError); it used to wait a fixed 5 s and report idle anyway.
+        if (waitCondition is WaitUntil.NetworkIdle0 or WaitUntil.NetworkIdle2
+            && page.LoadAbandoned && page.Readiness >= DocumentReadiness.Loaded)
+        {
+            throw new CliException(
+                $"Failed to navigate to {urlStr}: Network error: network idle exceeded the navigation deadline");
+        }
+
         if (page.LoadAbandoned)
         {
             // Not quiet-gated: the output is a partial page, which the caller should know

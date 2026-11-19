@@ -203,6 +203,7 @@ public sealed partial class Page
             $"navigation exceeded {navTimeoutMs.ToString(CultureInfo.InvariantCulture)}ms deadline";
 
         var deadline = new CancellationTokenSource(navTimeout);
+        _navigationDeadline = navTimeout < TimeSpan.Zero || navTimeout > TimeSpan.FromDays(1) ? null : DateTime.UtcNow + navTimeout;
         var linked = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token, cancellationToken);
         LoadAbandoned = false;
         Task navigation;
@@ -271,6 +272,9 @@ public sealed partial class Page
     /// connection or the CLI.
     /// </summary>
     internal TimeSpan NavigationBackstopGrace { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>When the navigation in flight reaches its deadline (UTC).</summary>
+    private DateTime? _navigationDeadline;
 
     private TimeSpan BackstopAfter(TimeSpan navTimeout)
     {
@@ -784,14 +788,37 @@ public sealed partial class Page
         {
             int threshold = waitUntil == WaitUntil.NetworkIdle2 ? 2 : 0;
 
-            // Same hazard as the post-script settle: a synchronous poll can pin the
-            // thread past the 5s network-idle deadline, so arm a watchdog that
-            // terminates the isolate ~500ms past it.
-            WatchdogToken? netIdleWatchdog = Js?.ArmWatchdog(TimeSpan.FromMilliseconds(5500));
-            DateTime deadline = DateTime.UtcNow.AddSeconds(5);
-            DateTime? idleSince = null;
+            await WaitForNetworkIdleAsync(threshold, cancellationToken).ConfigureAwait(false);
+        }
+    }
 
-            while (true)
+    /// <summary>
+    /// Wait for at most <paramref name="threshold"/> active requests over a 500 ms quiet
+    /// window, until the navigation's own deadline (upstream 0a14a4c).
+    /// </summary>
+    /// <remarks>
+    /// Upstream 0a14a4c replaced a fixed 5 s wait that then reported
+    /// <see cref="LifecycleState.NetworkIdle"/> whether or not the network went quiet.
+    /// Upstream fails the navigation when the deadline passes first. Here the deadline is
+    /// the navigation token, and its expiry after the commit leaves the page as it stood
+    /// (<see cref="RunWithNavigationDeadlineAsync"/>, <see cref="LoadAbandoned"/>): the
+    /// lifecycle stays short of network idle, so no client is told it was reached, and the
+    /// CLI fails a <c>--wait-until networkidle</c> fetch on it as upstream does.
+    /// </remarks>
+    internal async Task WaitForNetworkIdleAsync(int threshold, CancellationToken cancellationToken)
+    {
+        // A synchronous poll can pin the thread past the deadline, so a watchdog
+        // terminates the isolate 500 ms after it (the token fires first).
+        TimeSpan remaining = _navigationDeadline is { } at
+            ? TimeSpan.FromTicks(Math.Max(0L, (at - DateTime.UtcNow).Ticks))
+            : TimeSpan.FromDays(1);
+        WatchdogToken? netIdleWatchdog = Js?.ArmWatchdog(remaining + TimeSpan.FromMilliseconds(500));
+        DateTime? idleSince = null;
+        bool reachedIdle = false;
+        bool terminated = false;
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
             {
                 int active = HttpClient.ActiveRequests;
                 DateTime now = DateTime.UtcNow;
@@ -801,17 +828,13 @@ public sealed partial class Page
                     idleSince ??= now;
                     if (now - idleSince.Value >= TimeSpan.FromMilliseconds(500))
                     {
+                        reachedIdle = true;
                         break;
                     }
                 }
                 else
                 {
                     idleSince = null;
-                }
-
-                if (now >= deadline)
-                {
-                    break;
                 }
 
                 if (Js is { } idleJs)
@@ -830,13 +853,24 @@ public sealed partial class Page
                     await Task.Delay(100, cancellationToken).ConfigureAwait(false);
                 }
             }
-
-            if (netIdleWatchdog is { } token)
-            {
-                Js?.DisarmWatchdog(token);
-            }
-            Lifecycle = LifecycleState.NetworkIdle;
         }
+        finally
+        {
+            if (netIdleWatchdog is { } token && Js is { } js)
+            {
+                terminated = js.DisarmWatchdog(token);
+            }
+        }
+
+        if (reachedIdle && !terminated)
+        {
+            Lifecycle = LifecycleState.NetworkIdle;
+            return;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        Lifecycle = LifecycleState.Failed;
+        throw PageException.Network("network idle exceeded the navigation deadline");
     }
 
     /// <summary>

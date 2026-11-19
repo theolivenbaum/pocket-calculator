@@ -125,4 +125,67 @@ public sealed class NavigationDeadlineTests
 
         return html.Append("</div></body></html>").ToString();
     }
+
+    private static TestHttpServer HeldRequestServer(ManualResetEventSlim release) => TestHttpServer.Start(request =>
+    {
+        if (request.Path == "/held")
+        {
+            release.Wait(TimeSpan.FromSeconds(20));
+            return TestResponse.Text("ok");
+        }
+
+        return TestResponse.Html("<html><body><script>fetch('/held')</script></body></html>");
+    });
+
+    /// <summary>
+    /// Upstream 0a14a4c (<c>network_idle_uses_navigation_deadline_without_reporting_false_idle</c>):
+    /// a request that never finishes holds network idle to the navigation's deadline, and
+    /// idle is not reported. The committed page is kept (the port's deadline deviation),
+    /// as Chromium keeps it when Playwright's goto(networkidle) times out.
+    /// </summary>
+    [Fact]
+    public async Task NetworkIdleUsesTheNavigationDeadlineWithoutReportingFalseIdle()
+    {
+        using var release = new ManualResetEventSlim();
+        using TestHttpServer server = HeldRequestServer(release);
+        using Page page = PageFixtures.NewPage("network-idle-deadline");
+        page.SetNavigationTimeout(TimeSpan.FromMilliseconds(1500));
+        var clock = Stopwatch.StartNew();
+        try
+        {
+            await page.NavigateWithWaitAsync($"{server.Origin}/", WaitUntil.NetworkIdle0);
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(5), $"returned after {clock.Elapsed}");
+        Assert.True(page.LoadAbandoned);
+        Assert.Equal(DocumentReadiness.Loaded, page.Readiness);
+        Assert.False(page.Lifecycle.IsNetworkIdle());
+        Assert.Equal(2.0, PageFixtures.AsDouble(page.Evaluate("1 + 1")));
+    }
+
+    /// <summary>
+    /// Upstream 0a14a4c (<c>network_idle_does_not_stop_at_five_seconds_when_budget_remains</c>,
+    /// shortened): network idle is reached once the held request finishes, inside the
+    /// navigation's budget.
+    /// </summary>
+    [Fact]
+    public async Task NetworkIdleWaitsForAHeldRequestWhileBudgetRemains()
+    {
+        using var release = new ManualResetEventSlim();
+        using TestHttpServer server = HeldRequestServer(release);
+        using Page page = PageFixtures.NewPage("network-idle-budget");
+        page.SetNavigationTimeout(TimeSpan.FromSeconds(15));
+        using var timer = new Timer(_ => release.Set(), null, TimeSpan.FromMilliseconds(800), Timeout.InfiniteTimeSpan);
+        var clock = Stopwatch.StartNew();
+
+        await page.NavigateWithWaitAsync($"{server.Origin}/", WaitUntil.NetworkIdle0);
+
+        Assert.True(clock.Elapsed >= TimeSpan.FromMilliseconds(1200), $"idle after {clock.Elapsed}");
+        Assert.False(page.LoadAbandoned);
+        Assert.True(page.Lifecycle.IsNetworkIdle());
+    }
 }

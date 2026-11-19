@@ -737,11 +737,11 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
         Bind(ops, "op_fetch_url", (Func<object?, object?, object?, object?, object?, object?, object?, object?, Task<string>>)(
             (url, method, headers, body, origin, mode, credentials, options) =>
                 FetchCancellation(document, options) is { } cancellation
-                    ? FetchOps.OpFetchUrlAsync(
+                    ? TrackActive(RealmState(), () => FetchOps.OpFetchUrlAsync(
                         RealmState(), S(url), S(method), S(headers), Bytes(body), S(origin), S(mode), S(credentials),
                         FetchOps.IsInternalDestination(FetchDestination(options, S(mode))), document,
                         tailOnPageLoop: true, cancellation: cancellation,
-                        destination: FetchDestination(options, S(mode)), bodyResource: true)
+                        destination: FetchDestination(options, S(mode)), bodyResource: true))
                     : Task.FromException<string>(new OpException("Bad resource ID"))));
         Bind(ops, "op_fetch_body", (Func<object?, Task<string>>)(
             rid => FetchOps.OpFetchBodyAsync(document, U32(rid))));
@@ -750,6 +750,14 @@ public sealed class PocketCalculatorOps(PocketCalculatorState page, RealmStates?
         Bind(ops, "op_try_close", (Action<object?>)(
             rid => OpGuard.Run("op_try_close", () => FetchOps.CloseCancelHandle(document, U32(rid)))));
     }
+
+    /// <summary>
+    /// A page request counted as on the wire in the page client until its response headers
+    /// arrive, so network idle waits for it. Port: the shim's fetch sends on its own
+    /// handler, which the page client's in-flight count did not see.
+    /// </summary>
+    private static Task<string> TrackActive(PocketCalculatorState state, Func<Task<string>> request) =>
+        state.HttpClient is { } client ? client.TrackActive(request) : request();
 
     /// <summary>
     /// The destination <paramref name="options"/> carries (upstream 359362f): a string, or the

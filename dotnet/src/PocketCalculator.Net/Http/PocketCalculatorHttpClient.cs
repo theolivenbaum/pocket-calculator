@@ -165,6 +165,34 @@ public sealed class PocketCalculatorHttpClient : IDisposable
     /// <summary>Requests currently on the wire.</summary>
     public int ActiveRequests => Volatile.Read(ref _inFlight);
 
+    /// <summary>
+    /// Count a request made outside this client (a page's <c>fetch()</c>, which sends on
+    /// its own handler) as on the wire until <paramref name="request"/> completes, so
+    /// network idle waits for it as upstream's shared client does (upstream 0a14a4c).
+    /// </summary>
+    public Task<T> TrackActive<T>(Func<Task<T>> request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        Interlocked.Increment(ref _inFlight);
+        Task<T> task;
+        try
+        {
+            task = request();
+        }
+        catch
+        {
+            Interlocked.Decrement(ref _inFlight);
+            throw;
+        }
+
+        _ = task.ContinueWith(
+            _ => Interlocked.Decrement(ref _inFlight),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        return task;
+    }
+
     /// <summary>True when nothing is on the wire.</summary>
     public bool IsNetworkIdle => ActiveRequests == 0;
 
