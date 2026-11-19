@@ -292,6 +292,23 @@ public sealed class CdpContext
     public HashSet<string> RuntimeEnabledSessions { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// Sessions that called <c>Page.setLifecycleEventsEnabled(true)</c> (upstream 3f8a8d1),
+    /// independent of <c>Runtime.enable</c>.
+    /// </summary>
+    public HashSet<string> LifecycleEnabledSessions { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The phases of each page's current main-frame document reached so far, in
+    /// <see cref="LifecyclePhases"/> order, kept for a session that subscribes later
+    /// (upstream 1959c5e).
+    /// </summary>
+    public Dictionary<string, double?[]> LifecycleTimestamps { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>The lifecycle phases a subscription replays, in order.</summary>
+    public static readonly string[] LifecyclePhases =
+        ["commit", "DOMContentLoaded", "load", "networkAlmostIdle", "networkIdle"];
+
+    /// <summary>
     /// Legacy direct-embedder configuration. Protocol-created worlds live only in
     /// the per-page world list, so this does not grow with page churn.
     /// </summary>
@@ -487,6 +504,8 @@ public sealed class CdpContext
         page.NavigateBlank();
         Pages.Add(page);
         CurrentLoaderIds[id] = $"loader-blank-{id}";
+        double now = (DateTime.UtcNow - DateTime.UnixEpoch).TotalSeconds;
+        LifecycleTimestamps[id] = [now, now, now, now, now];
         pageId = id;
         error = null;
         return true;
@@ -618,6 +637,7 @@ public sealed class CdpContext
         }
 
         CurrentLoaderIds.Remove(id);
+        LifecycleTimestamps.Remove(id);
         AnnouncedFrames.Remove(id);
         // A closed page's init scripts and bindings go with it, as its target's do in Chromium.
         PreloadScripts.RemoveAll(entry => string.Equals(entry.Owner, id, StringComparison.Ordinal));
@@ -626,6 +646,7 @@ public sealed class CdpContext
         {
             Screencasts.Remove(sessionId);
             RuntimeEnabledSessions.Remove(sessionId);
+            LifecycleEnabledSessions.Remove(sessionId);
         }
 
         if (_pageContexts.Remove(id, out var contextIds))

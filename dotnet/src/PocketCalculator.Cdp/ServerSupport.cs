@@ -136,7 +136,7 @@ internal static class ServerSupport
         JsonNode? result = req.Method switch
         {
             "Network.enable" or "Network.setCacheDisabled" or "Network.setRequestInterception"
-                or "Page.setLifecycleEventsEnabled" or "Page.setInterceptFileChooserDialog"
+                or "Page.setInterceptFileChooserDialog"
                 or "Runtime.runIfWaitingForDebugger" or "Runtime.discardConsoleEntries"
                 or "Performance.enable" or "Log.enable" or "Security.enable"
                 or "Emulation.setTouchEmulationEnabled"

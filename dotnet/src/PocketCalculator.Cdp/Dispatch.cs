@@ -728,16 +728,31 @@ public static class Dispatcher
             for (var i = 0; i < loads; i++)
             {
                 var ts = (DateTime.UtcNow - DateTime.UnixEpoch).TotalSeconds;
+                // upstream 1959c5e: document.open() keeps the loader but starts a new document,
+                // whose own phases a later subscriber replays.
+                ctx.LifecycleTimestamps[page.Id] = [ctx.LifecycleTimestamps.GetValueOrDefault(page.Id)?[0] ?? ts, ts, ts, ts, ts];
                 foreach (var sessionId in sessions)
                 {
-                    ctx.PendingEvents.Add(Lifecycle(page.FrameId, loaderId, "init", ts, sessionId));
+                    // upstream 3f8a8d1: Page.lifecycleEvent only for sessions that subscribed
+                    // with Page.setLifecycleEventsEnabled, as in Chromium.
+                    var lifecycle = ctx.LifecycleEnabledSessions.Contains(sessionId);
+                    if (lifecycle)
+                    {
+                        ctx.PendingEvents.Add(Lifecycle(page.FrameId, loaderId, "init", ts, sessionId));
+                    }
                     ctx.PendingEvents.Add(CdpEvent.WithSession(
                         "Page.domContentEventFired", new JsonObject { ["timestamp"] = ts }, sessionId));
-                    ctx.PendingEvents.Add(Lifecycle(page.FrameId, loaderId, "DOMContentLoaded", ts, sessionId));
+                    if (lifecycle)
+                    {
+                        ctx.PendingEvents.Add(Lifecycle(page.FrameId, loaderId, "DOMContentLoaded", ts, sessionId));
+                    }
                     ctx.PendingEvents.Add(CdpEvent.WithSession(
                         "Page.loadEventFired", new JsonObject { ["timestamp"] = ts }, sessionId));
-                    ctx.PendingEvents.Add(Lifecycle(page.FrameId, loaderId, "load", ts, sessionId));
-                    ctx.PendingEvents.Add(Lifecycle(page.FrameId, loaderId, "networkIdle", ts, sessionId));
+                    if (lifecycle)
+                    {
+                        ctx.PendingEvents.Add(Lifecycle(page.FrameId, loaderId, "load", ts, sessionId));
+                        ctx.PendingEvents.Add(Lifecycle(page.FrameId, loaderId, "networkIdle", ts, sessionId));
+                    }
                 }
             }
         }

@@ -248,6 +248,7 @@ public static class Target
                     ctx.Sessions.TryGetValue(sessionId, out string? pageId);
                     ctx.Sessions.Remove(sessionId);
                     ctx.RuntimeEnabledSessions.Remove(sessionId);
+                    ctx.LifecycleEnabledSessions.Remove(sessionId);
                     if (pageId is not null)
                     {
                         ctx.RefreshRuntimeEventCollection(pageId);

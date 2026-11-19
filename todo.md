@@ -414,8 +414,12 @@ Correctness, by area (order and grouping as in the review's per-area "suggested 
 - [x] `8fe6d99` + `2e0b63f`: a click on a details element's first summary toggles it (el.click()
       and CDP mouse), open changes queue one coalescing toggle event (matches Chromium 1243)
 - [ ] CDP input editing: `d88df74`, `c714042`; with open `ec62004` / `a156914`
-- [ ] CDP lifecycle and sessions: `3f8a8d1` + `de227e9`, `1959c5e`, `a74e050`, `b8586de` +
-      `34346af`, `875c531`, `7034ad6`
+- [x] `3f8a8d1` + `de227e9` + `1959c5e`: `Page.setLifecycleEventsEnabled` is a real, validated
+      subscription (off the fast path), independent of `Runtime.enable`; a reopened document's
+      `Page.lifecycleEvent`s go only to subscribers, and enabling replays the current
+      document's reached phases with their original timestamps (a failed navigation only
+      `commit`, `document.open()` restarts the later phases)
+- [ ] CDP lifecycle and sessions: `a74e050`, `b8586de` + `34346af`, `875c531`; `7034ad6` already
 - [x] `eb2b515`: `DOM.querySelector[All]` search the `nodeId`'s subtree (absent or 0 is the
       document), and an unknown or malformed `nodeId` or an invalid selector is an error, not 0
       or []. With it, `:scope` is now bound to the query's element (it always meant the
@@ -2589,6 +2593,11 @@ Each is commented at its site. Where upstream and Chromium differ, Chromium wins
   third-party areas (`origin + " " + top-level site`, the port's own key) persist too. A FIFO
   or device is skipped by its zero length, since .NET exposes no file type. Budgets count
   UTF-16 code units, as Chromium's quota does; upstream counts UTF-8 bytes.
+
+- Lifecycle replay (`1959c5e`): a document reopened with `document.open()` reports
+  `networkIdle` after its `load` (the port's addition for Playwright's `setContent`), so a
+  replay after it carries `networkAlmostIdle` and `networkIdle` too; upstream replays only
+  `commit`, `DOMContentLoaded` and `load` there.
 
 ### Operator font directories load per render pass, not into a cached base database
 

@@ -323,6 +323,9 @@ public static partial class Page
             SessionId = es,
         });
         ctx.PendingEvents.AddRange(phase1);
+        // upstream 1959c5e: what this document reaches, for a later subscriber's replay.
+        double?[] reachedPhases = [ts, null, null, null, null];
+        ctx.LifecycleTimestamps[pageId] = reachedPhases;
 
         if (ctx.FetchIntercept.Enabled)
         {
@@ -412,6 +415,7 @@ public static partial class Page
         var phase3 = new List<CdpEvent>();
         if (readiness >= DocumentReadiness.DomContentLoaded)
         {
+            reachedPhases[1] = ts;
             phase3.Add(new CdpEvent
             {
                 Method = "Page.lifecycleEvent",
@@ -449,6 +453,7 @@ public static partial class Page
             return;
         }
 
+        reachedPhases[2] = ts;
         phase3.Add(new CdpEvent
         {
             Method = "Page.lifecycleEvent",
@@ -464,6 +469,8 @@ public static partial class Page
         if (reachedNetworkIdle || waitUntil is WaitUntil.Load or WaitUntil.DomContentLoaded)
         {
             double idleTs = Timestamp();
+            reachedPhases[3] = idleTs;
+            reachedPhases[4] = idleTs;
             phase3.Add(new CdpEvent
             {
                 Method = "Page.lifecycleEvent",
@@ -1249,6 +1256,7 @@ public static partial class Page
                 {
                     ctx.NavEventsEmitted.Add(start.PageId);
                     double ts = Timestamp();
+                    ctx.LifecycleTimestamps[start.PageId] = [ts, ts, ts, ts, ts];
                     string loaderId = $"loader-blank-{start.PageId}";
                     string? es = sessionId;
                     // Build the frame through the schema-complete helper: generated CDP
@@ -1395,7 +1403,45 @@ public static partial class Page
             }
 
             case "setLifecycleEventsEnabled":
+            {
+                // upstream 3f8a8d1 / 1959c5e: a real subscription. Enabling replays the phases
+                // the current document already reached, as Chromium does, so a client that
+                // subscribes after a load still hears it.
+                bool enabled = parameters.Get("enabled").AsBool()
+                    ?? throw new DomainError("enabled must be a boolean");
+                if (sessionId is { } session)
+                {
+                    if (!ctx.Sessions.ContainsKey(session))
+                    {
+                        throw new DomainError("Unknown page session");
+                    }
+                    if (!enabled)
+                    {
+                        ctx.LifecycleEnabledSessions.Remove(session);
+                        return DomainResult.Empty();
+                    }
+                    ctx.LifecycleEnabledSessions.Add(session);
+                    // Chromium replays on every enable, with the document's original timings.
+                    if (ctx.GetSessionPage(session) is { } current
+                        && ctx.LifecycleTimestamps.TryGetValue(current.Id, out double?[]? timings)
+                        && ctx.CurrentLoaderIds.TryGetValue(current.Id, out string? currentLoader))
+                    {
+                        for (int i = 0; i < CdpContext.LifecyclePhases.Length; i++)
+                        {
+                            if (timings[i] is { } reached)
+                            {
+                                ctx.PendingEvents.Add(new CdpEvent
+                                {
+                                    Method = "Page.lifecycleEvent",
+                                    Params = LifecycleEvent(current.FrameId, currentLoader, CdpContext.LifecyclePhases[i], reached),
+                                    SessionId = session,
+                                });
+                            }
+                        }
+                    }
+                }
                 return DomainResult.Empty();
+            }
 
             case "addScriptToEvaluateOnNewDocument":
             {

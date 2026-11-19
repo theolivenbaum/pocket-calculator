@@ -201,6 +201,8 @@ public sealed class NavigationLifecycle
             ctx, 2, "Target.attachToTarget", new JsonObject { ["targetId"] = target, ["flatten"] = true }, null);
         string session = attached.Result!["sessionId"].AsString()!;
         await CoreCdp.CdpAsync(ctx, 3, "Runtime.enable", new JsonObject(), session);
+        // Page.lifecycleEvent reaches only subscribed sessions (upstream 3f8a8d1), as Playwright's is.
+        await CoreCdp.CdpAsync(ctx, 3, "Page.setLifecycleEventsEnabled", new JsonObject { ["enabled"] = true }, session);
         JsonNode frame = (await CoreCdp.CdpAsync(ctx, 4, "Page.getFrameTree", new JsonObject(), session))["frameTree"]!["frame"]!;
         string frameId = frame["id"].AsString()!;
         string loaderId = frame["loaderId"].AsString()!;
@@ -228,7 +230,7 @@ public sealed class NavigationLifecycle
         Assert.Equal(world, console.Params!["executionContextId"].AsI64());
         Assert.Equal("--tag--", console.Params!["args"]![0]!["value"].AsString());
 
-        // Every session on the page hears it: createTarget's and attachToTarget's.
+        // Only the subscribed session hears the lifecycle; both hear the Page events.
         List<CdpEvent> lifecycle = [.. Events(ctx, "Page.lifecycleEvent").Where(e => e.SessionId == session)];
         Assert.Equal(
             new[] { "init", "DOMContentLoaded", "load", "networkIdle" },
@@ -238,7 +240,7 @@ public sealed class NavigationLifecycle
             Assert.Equal(loaderId, e.Params!["loaderId"].AsString());
             Assert.Equal(frameId, e.Params!["frameId"].AsString());
         });
-        Assert.Equal(8, Events(ctx, "Page.lifecycleEvent").Count);
+        Assert.Equal(4, Events(ctx, "Page.lifecycleEvent").Count);
         Assert.Single(Events(ctx, "Page.domContentEventFired"), e => e.SessionId == session);
         Assert.Single(Events(ctx, "Page.loadEventFired"), e => e.SessionId == session);
         Assert.Empty(Events(ctx, "Page.frameNavigated"));
